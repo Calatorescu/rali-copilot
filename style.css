@@ -142,8 +142,9 @@ html, body { height: 100%; overflow: hidden; background: var(--bg); color: var(-
 .meta-val  { display: block; font-size: 15px; font-weight: 700; }
 
 .gps-status { display: flex; flex-direction: column; gap: 10px; align-items: center;
-              background: var(--surf); border: 1px solid var(--red); border-radius: 12px;
+              background: var(--surf); border: 1px solid var(--border); border-radius: 12px;
               padding: 14px; margin-top: 12px; text-align: center; }
+.gps-status.err { border-color: var(--red); }
 .gps-status #gps-status-txt { font-size: 13px; line-height: 1.5; color: var(--text); }
 
 .chrono-card  { background: var(--surf); border-radius: 16px; padding: 16px; margin-top: auto; }

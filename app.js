@@ -60,15 +60,31 @@ function gpsInit() {
     return;
   }
   gpsDot('searching');
-  gpsStatus(null);
-  // Dacă API-ul Permissions e disponibil, anunță din timp un refuz
-  navigator.permissions?.query?.({ name: 'geolocation' }).then(p => {
-    if (p.state === 'denied') {
-      gpsDot('off');
-      gpsStatus('Permisiunea de locație e refuzată pentru acest site. Activeaz-o din setările browserului (🔒 lângă adresă → Locație → Permite), apoi apasă butonul.', true);
-    }
-  }).catch(() => {});
-  startWatch();
+  // Promptul de locație e fiabil DOAR la un gest al utilizatorului (tap), nu automat
+  // la încărcare — mai ales într-un PWA. Așa că pornim watch-ul automat doar dacă
+  // permisiunea e deja acordată; altfel cerem un tap explicit pe „Activează GPS".
+  const q = navigator.permissions?.query?.({ name: 'geolocation' });
+  if (!q) {
+    // Permissions API indisponibil: încercăm direct, dar lăsăm și butonul ca plasă de siguranță
+    gpsStatus('Dacă vitezometrul rămâne pe 0, apasă „Activează GPS" și permite locația.', true);
+    startWatch();
+    return;
+  }
+  q.then(p => {
+    const handle = () => {
+      if (p.state === 'granted') {
+        gpsStatus('📡 Caut semnal GPS… (sub cer liber)', false);
+        startWatch();
+      } else if (p.state === 'denied') {
+        gpsDot('off');
+        gpsStatus('Permisiunea de locație e refuzată. Apasă 🔒 lângă adresă → Locație → Permite, apoi butonul de mai jos.', true, true);
+      } else {
+        gpsStatus('Apasă „Activează GPS" și permite locația ca să pornești vitezometrul.', true);
+      }
+    };
+    handle();
+    p.onchange = handle; // dacă acorzi permisiunea din setări, pornește singur
+  }).catch(() => { gpsStatus('Apasă „Activează GPS" pentru a porni locația.', true); });
 }
 
 function startWatch() {
@@ -119,21 +135,23 @@ function gpsErr(e) {
   }
   gpsDot('off');
   if (e.code === 1) {
-    gpsStatus('Permisiunea de locație e refuzată. Apasă 🔒 lângă adresă → Locație → Permite, apoi butonul de mai jos.', true);
+    gpsStatus('Permisiunea de locație e refuzată. Apasă 🔒 lângă adresă → Locație → Permite, apoi butonul de mai jos.', true, true);
   } else if (e.code === 2) {
-    gpsStatus('Poziție indisponibilă. Verifică dacă locația e pornită pe telefon (GPS / „Locație" în setări).', true);
+    gpsStatus('Poziție indisponibilă. Verifică dacă locația e pornită pe telefon (GPS / „Locație" în setări).', true, true);
   } else {
-    gpsStatus('Eroare GPS: ' + e.message, true);
+    gpsStatus('Eroare GPS: ' + e.message, true, true);
   }
 }
 
 // Afișează/ascunde caseta de status GPS. msg=null => ascunde.
-function gpsStatus(msg, showRetry) {
+// isError=true colorează chenarul roșu (eroare); altfel e neutru (info/căutare).
+function gpsStatus(msg, showRetry, isError) {
   const box = document.getElementById('gps-status');
   if (!box) return;
   if (!msg) { box.classList.add('hidden'); return; }
   document.getElementById('gps-status-txt').textContent = msg;
   document.getElementById('btn-gps-retry').style.display = showRetry ? '' : 'none';
+  box.classList.toggle('err', !!isError);
   box.classList.remove('hidden');
 }
 
