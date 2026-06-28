@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="ro">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <meta name="theme-color" content="#0a0a0a">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="RALI">
+  <title>RALI Co-pilot</title>
+  <link rel="manifest" href="manifest.json">
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="app">
+
+    <!-- ── HEADER ── -->
+    <header id="header">
+      <span id="gps-dot" class="gps-dot" title="GPS"></span>
+      <span id="header-title">RALI</span>
+      <span id="header-right">
+        <span id="wake-icon" class="wake-icon" title="Ecran activ">☀</span>
+        <span id="rt-badge" class="rt-badge hidden">RT</span>
+      </span>
+    </header>
+
+    <!-- ══════════════════════════════════════════
+         TAB: VITEZĂ
+    ══════════════════════════════════════════ -->
+    <section id="tab-speed" class="tab active">
+      <div class="speed-wrap">
+        <div class="speed-num" id="speed-val">0</div>
+        <div class="speed-unit">km/h</div>
+      </div>
+
+      <div class="meta-grid">
+        <div class="meta-card">
+          <span class="meta-lbl">GPS precizie</span>
+          <span class="meta-val" id="m-accuracy">—</span>
+        </div>
+        <div class="meta-card">
+          <span class="meta-lbl">Altitudine</span>
+          <span class="meta-val" id="m-altitude">—</span>
+        </div>
+        <div class="meta-card">
+          <span class="meta-lbl">Direcție</span>
+          <span class="meta-val" id="m-heading">—</span>
+        </div>
+      </div>
+
+      <div class="chrono-card">
+        <div class="chrono-time" id="chrono-disp">00:00.0</div>
+        <div class="chrono-btns">
+          <button class="btn btn-sec" id="btn-chrono-reset">RESET</button>
+          <button class="btn btn-pri" id="btn-chrono-toggle">START</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ══════════════════════════════════════════
+         TAB: RT
+    ══════════════════════════════════════════ -->
+    <section id="tab-rt" class="tab">
+
+      <!-- Setup panel -->
+      <div id="rt-setup">
+        <p class="section-label">PARAMETRI RT</p>
+
+        <div class="field-group">
+          <label>Viteză medie țintă (km/h)</label>
+          <input type="number" id="rt-spd" value="40" min="5" max="120" step="0.1" inputmode="decimal">
+        </div>
+
+        <div class="field-group">
+          <label>Distanță totală RT (km)</label>
+          <input type="number" id="rt-dst" value="2.00" min="0.1" max="50" step="0.01" inputmode="decimal">
+        </div>
+
+        <div class="field-group">
+          <label>Tip start</label>
+          <div class="radio-row">
+            <label class="radio-lbl"><input type="radio" name="rt-type" value="auto" checked> Auto-start</label>
+            <label class="radio-lbl"><input type="radio" name="rt-type" value="standing"> Standing start</label>
+          </div>
+        </div>
+
+        <div class="rt-preview" id="rt-preview"></div>
+
+        <button class="btn btn-pri btn-lg" id="btn-rt-start">PORNEȘTE RT</button>
+      </div>
+
+      <!-- Active panel -->
+      <div id="rt-live" class="hidden">
+        <div class="dev-box" id="dev-box">
+          <div class="dev-num" id="dev-num">0.0</div>
+          <div class="dev-lbl" id="dev-lbl">secunde</div>
+        </div>
+
+        <div class="stats-card">
+          <div class="stat-row"><span>Timp scurs</span><span id="s-elapsed">0:00</span></div>
+          <div class="stat-row"><span>Timp ideal</span><span id="s-ideal">0:00</span></div>
+          <div class="stat-row"><span>Distanță parcursă</span><span id="s-dist">0.000 km</span></div>
+          <div class="stat-row"><span>Distanță rămasă</span><span id="s-rem">—</span></div>
+          <div class="stat-row accent"><span>Viteză necesară</span><span id="s-reqspd">— km/h</span></div>
+        </div>
+
+        <div class="prog-row">
+          <div class="prog-bar"><div class="prog-fill" id="prog-fill"></div></div>
+          <span id="prog-pct">0%</span>
+        </div>
+
+        <button class="btn btn-danger btn-lg" id="btn-rt-stop">STOP RT</button>
+      </div>
+    </section>
+
+    <!-- ══════════════════════════════════════════
+         TAB: COPILOT
+    ══════════════════════════════════════════ -->
+    <section id="tab-copilot" class="tab tab-chat">
+      <div class="chat-msgs" id="chat-msgs">
+        <div class="msg msg-bot">
+          <span class="bubble">RALI activ. Cu ce te pot ajuta?</span>
+        </div>
+      </div>
+
+      <div class="quick-row" id="quick-row">
+        <button class="qbtn" data-p="Cât timp mai am la RT curent? Cum stau?">⏱ Status RT</button>
+        <button class="qbtn" data-p="Calculează bateria pentru 80 km la munte.">🔋 Baterie</button>
+        <button class="qbtn" data-p="Care e formula pentru calculul devierii la RT?">📐 Formulă</button>
+        <button class="qbtn" data-p="Reamintește-mi regulile TC și penalizările.">🚦 TC / Penalizări</button>
+      </div>
+
+      <div class="chat-input-wrap">
+        <input type="text" id="chat-in" placeholder="Întreabă copilotul…" maxlength="300" autocomplete="off">
+        <button class="btn btn-send" id="btn-send">▶</button>
+      </div>
+    </section>
+
+    <!-- ══════════════════════════════════════════
+         TAB: SETĂRI
+    ══════════════════════════════════════════ -->
+    <section id="tab-settings" class="tab">
+      <p class="section-label">SETĂRI</p>
+
+      <div class="settings-block">
+        <div class="field-group">
+          <label>Claude API Key</label>
+          <div class="input-row">
+            <input type="password" id="api-key" placeholder="sk-ant-api03-…" autocomplete="off">
+            <button class="btn btn-sec btn-sm" id="btn-save-key">Salvează</button>
+          </div>
+        </div>
+
+        <div class="field-group">
+          <label>Model Claude</label>
+          <select id="model-sel">
+            <option value="claude-haiku-4-5-20251001">Haiku 4.5 — rapid</option>
+            <option value="claude-sonnet-4-6">Sonnet 4.6 — inteligent</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="settings-block">
+        <p class="block-title">MAȘINA</p>
+        <p class="info-line">Tesla Model Y Juniper AWD Long Range</p>
+        <p class="info-line">Baterie: 82 kWh &nbsp;·&nbsp; Consum munte: ~20 kWh/100 km</p>
+        <p class="info-line">Autonomie munte: 280–320 km la 100%</p>
+        <p class="info-line">Buffer recomandat finish: 15%</p>
+      </div>
+
+      <div class="settings-block">
+        <p class="block-title">CAMPIONAT 2026</p>
+        <p class="info-line done">✓ Reșița Banatul Montan — 26-27 iun (loc 14/22)</p>
+        <p class="info-line">Sibiu — 6-8 aug</p>
+        <p class="info-line">Sinaia — 11-12 sep</p>
+        <p class="info-line">Iași-Chișinău — 9-10 oct</p>
+        <p class="info-line">Christmas Tour — 4-5 dec</p>
+      </div>
+
+      <div id="set-status" class="set-status"></div>
+
+      <div class="settings-block">
+        <p class="block-title">DESPRE</p>
+        <p class="info-line">RALI Co-pilot v1.0 · Transilvania eCLASIC</p>
+        <p class="info-line">Andreas Suciu · A.R.E.S. Championship</p>
+      </div>
+    </section>
+
+    <!-- ── TAB BAR ── -->
+    <nav id="nav">
+      <button class="nav-btn active" data-tab="speed">
+        <span class="nav-ico">⚡</span>
+        <span class="nav-lbl">VITEZĂ</span>
+      </button>
+      <button class="nav-btn" data-tab="rt">
+        <span class="nav-ico">🏁</span>
+        <span class="nav-lbl">RT</span>
+      </button>
+      <button class="nav-btn" data-tab="copilot">
+        <span class="nav-ico">🎙</span>
+        <span class="nav-lbl">COPILOT</span>
+      </button>
+      <button class="nav-btn" data-tab="settings">
+        <span class="nav-ico">⚙️</span>
+        <span class="nav-lbl">SETĂRI</span>
+      </button>
+    </nav>
+
+  </div>
+  <script src="app.js"></script>
+</body>
+</html>

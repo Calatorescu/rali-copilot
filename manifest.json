@@ -1,0 +1,18 @@
+{
+  "name": "RALI Co-pilot",
+  "short_name": "RALI",
+  "description": "Co-pilot virtual pentru regularitate — Transilvania eCLASIC",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "background_color": "#0a0a0a",
+  "theme_color": "#0a0a0a",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
