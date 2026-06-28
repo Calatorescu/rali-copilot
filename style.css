@@ -83,6 +83,11 @@ html, body { height: 100%; overflow: hidden; background: var(--bg); color: var(-
 .btn-send   { width: 46px; height: 46px; border-radius: 23px; padding: 0; font-size: 18px;
               display: flex; align-items: center; justify-content: center;
               flex: 0 0 auto; background: var(--pri); color: #fff; }
+.btn-photo  { width: 40px; height: 40px; border-radius: 20px; padding: 0; font-size: 18px;
+              display: flex; align-items: center; justify-content: center;
+              flex: 0 0 auto; background: none; border: none; opacity: 0.6; }
+.btn-photo:active { opacity: 1; transform: scale(.92); }
+.btn-photo:disabled { opacity: 0.25; }
 
 .section-label { font-size: 11px; font-weight: 700; letter-spacing: 3px; color: var(--dim); }
 .hidden { display: none !important; }
@@ -195,4 +200,5 @@ html, body { height: 100%; overflow: hidden; background: var(--bg); color: var(-
 .input-row      { display: flex; gap: 8px; align-items: center; }
 .input-row input { flex: 1; font-size: 14px; padding: 10px 12px; }
 
-.set-status { text-align: center; font-size: 13px; color: var(--green); min-height: 18px; }
+.set-status  { text-align: center; font-size: 13px; color: var(--green); min-height: 18px; }
+.scan-status { font-size: 13px; line-height: 1.4; padding: 4px 2px; }

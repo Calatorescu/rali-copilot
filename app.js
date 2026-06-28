@@ -265,6 +265,129 @@ function rtRender() {
 }
 
 // ══════════════════════════════════════════════════════════════
+//  VISION — camera + Claude multimodal
+// ══════════════════════════════════════════════════════════════
+function openCamera(onData) {
+  const inp = document.createElement('input');
+  inp.type = 'file';
+  inp.accept = 'image/*';
+  inp.capture = 'environment';
+  inp.onchange = () => {
+    const file = inp.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => onData(reader.result.split(',')[1], file.type);
+    reader.readAsDataURL(file);
+  };
+  inp.click();
+}
+
+async function callClaudeVision(b64, mime, textPrompt, maxTok, sysPrompt) {
+  const key = S.cfg.apiKey;
+  if (!key) throw new Error('Adaugă API Key în SETĂRI.');
+  const body = {
+    model: S.cfg.model,
+    max_tokens: maxTok || 300,
+    messages: [{
+      role: 'user',
+      content: [
+        { type: 'image', source: { type: 'base64', media_type: mime, data: b64 } },
+        { type: 'text', text: textPrompt }
+      ]
+    }]
+  };
+  if (sysPrompt) body.system = sysPrompt;
+  const res = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'x-api-key': key,
+      'anthropic-version': '2023-06-01',
+      'content-type': 'application/json',
+      'anthropic-dangerous-direct-browser-access': 'true'
+    },
+    body: JSON.stringify(body)
+  });
+  if (!res.ok) {
+    const j = await res.json().catch(() => ({}));
+    throw new Error(j.error?.message || `HTTP ${res.status}`);
+  }
+  const j = await res.json();
+  return j.content[0].text.trim();
+}
+
+async function rtScan() {
+  if (!S.cfg.apiKey) { alert('Adaugă Claude API Key în SETĂRI.'); return; }
+  openCamera(async (b64, mime) => {
+    const btn = el('btn-rt-scan');
+    const sta = el('rt-scan-status');
+    btn.textContent = '⏳ Analizez...';
+    btn.disabled = true;
+    sta.className = 'scan-status';
+    sta.style.color = 'var(--dim)';
+    sta.textContent = '';
+    try {
+      const raw = await callClaudeVision(b64, mime,
+        `Ești copilotul de raliu. Analizează roadbook-ul din fotografie și extrage parametrii RT (Regularity Test).
+Returnează DOAR JSON valid, fără alt text:
+{"speed": 40.0, "distance": 5.74, "start": "standing", "note": "RT 4"}
+- speed = viteza medie impusă în km/h (număr zecimal)
+- distance = distanța totală RT în km (număr zecimal)
+- start = "standing" (start din loc, simbol cu fulg/snowflake) sau "auto" (start din mers)
+- note = identificator scurt (ex: "RT 4", "TR 1")
+Dacă nu identifici un parametru cu siguranță, pune null.`, 200);
+
+      const match = raw.match(/\{[\s\S]*?\}/);
+      if (!match) throw new Error('Format neașteptat');
+      const d = JSON.parse(match[0]);
+
+      if (d.speed != null)    el('rt-spd').value = d.speed;
+      if (d.distance != null) el('rt-dst').value = d.distance;
+      if (d.start === 'standing') document.querySelector('input[name="rt-type"][value="standing"]').checked = true;
+      if (d.start === 'auto')     document.querySelector('input[name="rt-type"][value="auto"]').checked     = true;
+      rtPreview();
+
+      const spd = d.speed    != null ? `${d.speed} km/h` : '? km/h';
+      const dst = d.distance != null ? `${d.distance} km` : '? km';
+      const stt = d.start === 'standing' ? 'standing start' : d.start === 'auto' ? 'auto-start' : '?';
+      sta.textContent = `✓ ${d.note ? d.note + ': ' : ''}${spd} · ${dst} · ${stt}`;
+      sta.style.color = 'var(--green)';
+    } catch (e) {
+      sta.textContent = `✗ ${e.message}`;
+      sta.style.color = 'var(--red)';
+    } finally {
+      btn.disabled = false;
+      btn.textContent = '📷 Scanează roadbook';
+    }
+  });
+}
+
+async function chatPhoto() {
+  if (S.chat.busy) return;
+  if (!S.cfg.apiKey) { addMsg('bot', 'Adaugă Claude API Key în SETĂRI.'); return; }
+  openCamera(async (b64, mime) => {
+    const txt = el('chat-in').value.trim();
+    el('chat-in').value = '';
+    addMsg('user', '📷' + (txt ? ' ' + txt : ' [foto]'));
+    addTyping();
+    S.chat.busy = true;
+    el('btn-chat-photo').disabled = true;
+    try {
+      const ctx = rtContext();
+      const prompt = [ctx, txt || 'Analizează fotografia și spune-mi ce e relevant pentru ralie.'].filter(Boolean).join('\n');
+      const reply = await callClaudeVision(b64, mime, prompt, 400, SYSTEM);
+      removeTyping();
+      addMsg('bot', reply);
+    } catch (e) {
+      removeTyping();
+      addMsg('bot', `Eroare: ${e.message}`);
+    } finally {
+      S.chat.busy = false;
+      el('btn-chat-photo').disabled = false;
+    }
+  });
+}
+
+// ══════════════════════════════════════════════════════════════
 //  CLAUDE API
 // ══════════════════════════════════════════════════════════════
 const SYSTEM = `Ești RALI, copilotul virtual al lui Andreas Suciu la Transilvania eCLASIC 2026 (regularitate 100% electric, A.R.E.S. Championship).
@@ -417,8 +540,12 @@ function init() {
   el('btn-rt-stop').addEventListener('click', rtStop);
   rtPreview();
 
+  // RT Scan
+  el('btn-rt-scan').addEventListener('click', rtScan);
+
   // Chat
   el('btn-send').addEventListener('click', sendChat);
+  el('btn-chat-photo').addEventListener('click', chatPhoto);
   el('chat-in').addEventListener('keydown', e => { if (e.key === 'Enter') sendChat(); });
   document.querySelectorAll('.qbtn').forEach(b => {
     b.addEventListener('click', () => {
