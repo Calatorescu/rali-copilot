@@ -49,8 +49,30 @@ function ls(k, v) {
 //  GPS
 // ══════════════════════════════════════════════════════════════
 function gpsInit() {
-  if (!navigator.geolocation) { gpsDot('off'); return; }
+  if (!window.isSecureContext) {
+    gpsDot('off');
+    gpsStatus('GPS-ul cere conexiune securizată (HTTPS). Deschide aplicația printr-o adresă https://, nu http:// sau fișier local.', false);
+    return;
+  }
+  if (!navigator.geolocation) {
+    gpsDot('off');
+    gpsStatus('Acest browser nu oferă geolocație.', false);
+    return;
+  }
   gpsDot('searching');
+  gpsStatus(null);
+  // Dacă API-ul Permissions e disponibil, anunță din timp un refuz
+  navigator.permissions?.query?.({ name: 'geolocation' }).then(p => {
+    if (p.state === 'denied') {
+      gpsDot('off');
+      gpsStatus('Permisiunea de locație e refuzată pentru acest site. Activeaz-o din setările browserului (🔒 lângă adresă → Locație → Permite), apoi apasă butonul.', true);
+    }
+  }).catch(() => {});
+  startWatch();
+}
+
+function startWatch() {
+  if (S.gps.watchId != null) navigator.geolocation.clearWatch(S.gps.watchId);
   S.gps.watchId = navigator.geolocation.watchPosition(gpsOk, gpsErr,
     { enableHighAccuracy: true, maximumAge: 500, timeout: 15000 });
 }
@@ -64,6 +86,7 @@ function gpsOk(pos) {
   S.gps.lat      = c.latitude;
   S.gps.lng      = c.longitude;
   gpsDot('active');
+  gpsStatus(null);
   renderSpeed();
   if (S.rt.active)   rtGpsTick(pos);
   if (S.road.active) navGpsTick(pos);
@@ -86,7 +109,45 @@ function calcSpeed(pos) {
   return S.gps.speed;
 }
 
-function gpsErr(e) { gpsDot('off'); console.warn('GPS:', e.message); }
+function gpsErr(e) {
+  console.warn('GPS:', e.code, e.message);
+  if (e.code === 3) {
+    // TIMEOUT — semnal slab, dar watch-ul rămâne activ; rămânem în „căutare"
+    gpsDot('searching');
+    gpsStatus('Semnal GPS slab — caut fix… (sub cer liber, nu sub copertină)', false);
+    return;
+  }
+  gpsDot('off');
+  if (e.code === 1) {
+    gpsStatus('Permisiunea de locație e refuzată. Apasă 🔒 lângă adresă → Locație → Permite, apoi butonul de mai jos.', true);
+  } else if (e.code === 2) {
+    gpsStatus('Poziție indisponibilă. Verifică dacă locația e pornită pe telefon (GPS / „Locație" în setări).', true);
+  } else {
+    gpsStatus('Eroare GPS: ' + e.message, true);
+  }
+}
+
+// Afișează/ascunde caseta de status GPS. msg=null => ascunde.
+function gpsStatus(msg, showRetry) {
+  const box = document.getElementById('gps-status');
+  if (!box) return;
+  if (!msg) { box.classList.add('hidden'); return; }
+  document.getElementById('gps-status-txt').textContent = msg;
+  document.getElementById('btn-gps-retry').style.display = showRetry ? '' : 'none';
+  box.classList.remove('hidden');
+}
+
+// Reîncearcă: getCurrentPosition declanșează promptul de permisiune dacă e în „prompt"
+function gpsRetry() {
+  gpsDot('searching');
+  gpsStatus('Caut semnal…', false);
+  if (!navigator.geolocation) return;
+  navigator.geolocation.getCurrentPosition(
+    pos => { gpsOk(pos); startWatch(); },
+    gpsErr,
+    { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
+  );
+}
 
 function gpsDot(s) {
   const d = document.getElementById('gps-dot');
@@ -1126,6 +1187,7 @@ function init() {
   // Chrono
   el('btn-chrono-toggle').addEventListener('click', chronoToggle);
   el('btn-chrono-reset').addEventListener('click', chronoReset);
+  el('btn-gps-retry').addEventListener('click', gpsRetry);
 
   // RT
   el('rt-spd').addEventListener('input', rtPreview);

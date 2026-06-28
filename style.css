@@ -141,6 +141,11 @@ html, body { height: 100%; overflow: hidden; background: var(--bg); color: var(-
 .meta-lbl  { display: block; font-size: 10px; color: var(--dim); letter-spacing: .5px; margin-bottom: 3px; }
 .meta-val  { display: block; font-size: 15px; font-weight: 700; }
 
+.gps-status { display: flex; flex-direction: column; gap: 10px; align-items: center;
+              background: var(--surf); border: 1px solid var(--red); border-radius: 12px;
+              padding: 14px; margin-top: 12px; text-align: center; }
+.gps-status #gps-status-txt { font-size: 13px; line-height: 1.5; color: var(--text); }
+
 .chrono-card  { background: var(--surf); border-radius: 16px; padding: 16px; margin-top: auto; }
 .chrono-time  { font-size: 56px; font-weight: 800; text-align: center;
                 font-variant-numeric: tabular-nums; letter-spacing: -2px;
