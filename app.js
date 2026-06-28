@@ -20,7 +20,7 @@ const S = {
   tc: { targetMs: null, tickId: null, announced: {} },
   pen: (() => { try { return JSON.parse(ls('rali_pen') || '{}'); } catch(e) { return {}; } })(),
   voice: { rtLastMs: 0, rtLastDev: null },
-  rec: { obj: null, listening: false },
+  rec: { obj: null, listening: false, cancelled: false },
   chat: { busy: false },
   cfg: {
     apiKey: ls('rali_key') || '',
@@ -168,6 +168,11 @@ function fmtSec(s) {
 
 function pad(n) { return n.toString().padStart(2, '0'); }
 
+// Durată cu unitate corectă: "3:00 min" peste un minut, "45 sec" sub
+function fmtSecU(s) {
+  return Math.abs(s) >= 60 ? `${fmtSec(s)} min` : `${fmtSec(s)} sec`;
+}
+
 // ══════════════════════════════════════════════════════════════
 //  RT — SETUP
 // ══════════════════════════════════════════════════════════════
@@ -195,10 +200,10 @@ function rtPreview() {
   const ckm  = chg ? (parseFloat(el('rt-chg-km').value)  || null) : null;
   const total = rtIdealTime(dst, spd, spd2, ckm);
   const half  = rtIdealTime(dst / 2, spd, spd2, ckm);
-  let html = `Timp ideal total: <strong>${fmtSec(total)} sec</strong>&nbsp;&nbsp;La 50%: ${fmtSec(half)} sec`;
+  let html = `Timp ideal total: <strong>${fmtSecU(total)}</strong>&nbsp;&nbsp;La 50%: ${fmtSecU(half)}`;
   if (spd2 && ckm) {
     const tChg = rtIdealTime(ckm, spd, spd2, ckm);
-    html += `<br>Schimbare la ${ckm.toFixed(2)} km (${fmtSec(tChg)} sec): ${spd} → ${spd2} km/h`;
+    html += `<br>Schimbare la ${ckm.toFixed(2)} km (${fmtSecU(tChg)}): ${spd} → ${spd2} km/h`;
   }
   el('rt-preview').innerHTML = html;
 }
@@ -806,12 +811,25 @@ function renderPresets() {
     const chip = document.createElement('button');
     chip.className = 'preset-chip';
     const chgTxt = p.spd2 ? `→${p.spd2}` : '';
-    chip.innerHTML = `<span>${p.name}</span><span class="px">${p.spd}${chgTxt}·${p.dist}km</span>`;
-    chip.addEventListener('click', () => applyPreset(i));
-    chip.addEventListener('contextmenu', e => { e.preventDefault(); deletePreset(i); });
-    // long-press to delete
-    let lp; chip.addEventListener('touchstart', () => { lp = setTimeout(() => deletePreset(i), 700); }, {passive:true});
+    const nameSpan = document.createElement('span');
+    nameSpan.textContent = p.name;                       // textContent: fără injecție HTML
+    const pxSpan = document.createElement('span');
+    pxSpan.className = 'px';
+    pxSpan.textContent = `${p.spd}${chgTxt}·${p.dist}km`;
+    chip.append(nameSpan, pxSpan);
+
+    let lpFired = false, lp;
+    chip.addEventListener('click', () => {
+      if (lpFired) { lpFired = false; return; }           // suprimă click după long-press
+      applyPreset(i);
+    });
+    chip.addEventListener('contextmenu', e => { e.preventDefault(); lpFired = true; deletePreset(i); });
+    chip.addEventListener('touchstart', () => {
+      lpFired = false;
+      lp = setTimeout(() => { lpFired = true; deletePreset(i); }, 700);
+    }, { passive: true });
     chip.addEventListener('touchend', () => clearTimeout(lp));
+    chip.addEventListener('touchmove', () => clearTimeout(lp), { passive: true });
     row.appendChild(chip);
   });
   const add = document.createElement('button');
@@ -881,10 +899,11 @@ function tcSet() {
 }
 
 function tcSyncPlus1() {
-  // plecare la următorul minut rotund + 1 (util când n-ai ora exactă)
+  // plecare la minutul rotund următor; dacă e sub 20s, sare la cel de după
   const t = new Date();
   t.setSeconds(0, 0);
-  t.setMinutes(t.getMinutes() + 2);
+  t.setMinutes(t.getMinutes() + 1);
+  if (t.getTime() - Date.now() < 20000) t.setMinutes(t.getMinutes() + 1);
   S.tc.targetMs = t.getTime();
   S.tc.announced = {};
   el('tc-time').value = `${pad(t.getHours())}:${pad(t.getMinutes())}:00`;
@@ -1008,11 +1027,12 @@ function resetPenalties() {
 function micToggle() {
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
   if (!SR) { addMsg('bot', 'Recunoaștere vocală indisponibilă pe acest browser.'); return; }
-  if (S.rec.listening) { S.rec.obj?.stop(); return; }
+  // A doua apăsare = anulează (fără trimitere)
+  if (S.rec.listening) { S.rec.cancelled = true; S.rec.obj?.stop(); return; }
 
   const rec = new SR();
   rec.lang = 'ro-RO'; rec.interimResults = false; rec.maxAlternatives = 1;
-  S.rec.obj = rec; S.rec.listening = true;
+  S.rec.obj = rec; S.rec.listening = true; S.rec.cancelled = false;
   el('btn-chat-mic').classList.add('listening');
 
   rec.onresult = e => {
@@ -1023,10 +1043,15 @@ function micToggle() {
   rec.onend = () => {
     S.rec.listening = false;
     el('btn-chat-mic').classList.remove('listening');
-    if (el('chat-in').value.trim()) sendChat();
+    if (!S.rec.cancelled && el('chat-in').value.trim()) sendChat();
   };
-  rec.start();
-  vibrate([20]);
+  try {
+    rec.start();
+    vibrate([20]);
+  } catch (e) {
+    S.rec.listening = false;
+    el('btn-chat-mic').classList.remove('listening');
+  }
 }
 
 // ══════════════════════════════════════════════════════════════
