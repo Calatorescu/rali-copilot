@@ -5,7 +5,7 @@
 //  Orice eroare JS necapturată e afișată pe ecran (cu numărul versiunii),
 //  ca să putem diagnostica pe telefon fără consolă de developer.
 // ══════════════════════════════════════════════════════════════
-const BUILD = 'v8';
+const BUILD = 'v9';
 function showFatal(msg) {
   let b = document.getElementById('fatal-banner');
   if (!b) {
@@ -668,8 +668,11 @@ async function navScan() {
 
 function navUpdateList() {
   const n = S.road.boxes.length;
+  // sumKm poate lipsi (null) dacă scanarea roadbook-ului nu l-a extras pentru un box;
+  // fără gardă, .toFixed pe null arunca si bloca tot init-ul (inclusiv GPS-ul).
+  const fmtKm = v => (typeof v === 'number' && isFinite(v)) ? v.toFixed(2) : '?';
   el('nav-box-count').textContent = n === 0 ? '— niciun box scanat' :
-    `${n} boxuri · ${S.road.boxes[0].sumKm.toFixed(2)} – ${S.road.boxes[n-1].sumKm.toFixed(2)} km`;
+    `${n} boxuri · ${fmtKm(S.road.boxes[0].sumKm)} – ${fmtKm(S.road.boxes[n-1].sumKm)} km`;
   el('btn-nav-start').disabled = n === 0;
 }
 
