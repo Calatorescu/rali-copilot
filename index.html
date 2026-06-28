@@ -65,6 +65,9 @@
 
       <!-- Setup panel -->
       <div id="rt-setup">
+        <p class="section-label">PRESETĂRI RT</p>
+        <div class="preset-row" id="preset-row"></div>
+
         <p class="section-label">PARAMETRI RT</p>
 
         <button class="btn btn-sec" id="btn-rt-scan">📷 Scanează roadbook</button>
@@ -88,7 +91,27 @@
           </div>
         </div>
 
+        <div class="rt-toggle-row">
+          <label for="rt-chg-on">Schimbare viteză în mijloc</label>
+          <span class="switch"><input type="checkbox" id="rt-chg-on"><span class="track"></span></span>
+        </div>
+
+        <div id="rt-chg-fields" class="hidden" style="display:flex; gap:10px;">
+          <div class="field-group" style="flex:1">
+            <label>La km</label>
+            <input type="number" id="rt-chg-km" value="1.00" min="0.1" max="50" step="0.01" inputmode="decimal">
+          </div>
+          <div class="field-group" style="flex:1">
+            <label>Viteză nouă (km/h)</label>
+            <input type="number" id="rt-chg-spd" value="30" min="5" max="120" step="0.1" inputmode="decimal">
+          </div>
+        </div>
+
         <div class="rt-preview" id="rt-preview"></div>
+
+        <div style="display:flex; gap:10px;">
+          <button class="btn btn-sec btn-sm" id="btn-rt-savepreset">💾 Salvează ca preset</button>
+        </div>
 
         <button class="btn btn-pri btn-lg" id="btn-rt-start">PORNEȘTE RT</button>
       </div>
@@ -105,6 +128,7 @@
           <div class="stat-row"><span>Timp ideal</span><span id="s-ideal">0:00</span></div>
           <div class="stat-row"><span>Distanță parcursă</span><span id="s-dist">0.000 km</span></div>
           <div class="stat-row"><span>Distanță rămasă</span><span id="s-rem">—</span></div>
+          <div class="stat-row hidden" id="s-phase-row"><span>Viteză țintă acum</span><span id="s-phase">— km/h</span></div>
           <div class="stat-row accent"><span>Viteză necesară</span><span id="s-reqspd">— km/h</span></div>
         </div>
 
@@ -128,6 +152,7 @@
       </div>
 
       <div class="quick-row" id="quick-row">
+        <button class="qbtn" data-quiz="1">📸 Quiz time card</button>
         <button class="qbtn" data-p="Cât timp mai am la RT curent? Cum stau?">⏱ Status RT</button>
         <button class="qbtn" data-p="Calculează bateria pentru 80 km la munte.">🔋 Baterie</button>
         <button class="qbtn" data-p="Care e formula pentru calculul devierii la RT?">📐 Formulă</button>
@@ -136,6 +161,7 @@
 
       <div class="chat-input-wrap">
         <button class="btn btn-photo" id="btn-chat-photo" title="Trimite fotografie">📷</button>
+        <button class="btn btn-mic" id="btn-chat-mic" title="Vorbește">🎤</button>
         <input type="text" id="chat-in" placeholder="Întreabă copilotul…" maxlength="300" autocomplete="off">
         <button class="btn btn-send" id="btn-send">▶</button>
       </div>
@@ -179,7 +205,70 @@
           <span id="nav-after-text" class="info-line" style="margin:0">—</span>
         </div>
 
+        <span class="section-label" style="margin:0">CORECȚIE POZIȚIE GPS</span>
+        <div class="nav-offset-row">
+          <button class="btn btn-sec" id="btn-off-m100">−100m</button>
+          <button class="btn btn-sec" id="btn-off-m10">−10m</button>
+          <button class="btn btn-sec" id="btn-off-p10">+10m</button>
+          <button class="btn btn-sec" id="btn-off-p100">+100m</button>
+        </div>
+
         <button class="btn btn-danger btn-lg" id="btn-nav-stop">■ STOP NAVIGARE</button>
+      </div>
+    </section>
+
+    <!-- ══════════════════════════════════════════
+         TAB: TOOLS
+    ══════════════════════════════════════════ -->
+    <section id="tab-tools" class="tab">
+
+      <!-- TC Departure Countdown -->
+      <div class="tool-card">
+        <span class="tool-title">⏲ PLECARE TC — COUNTDOWN</span>
+        <div class="cd-row">
+          <div class="field-group" style="flex:1">
+            <label>Ora plecare (de pe time card)</label>
+            <input type="time" id="tc-time" step="1">
+          </div>
+          <button class="btn btn-pri btn-sm" id="btn-tc-start" style="padding:12px 14px;">SET</button>
+        </div>
+        <div class="cd-display" id="tc-display">--:--</div>
+        <div style="display:flex; gap:10px;">
+          <button class="btn btn-sec" id="btn-tc-sync">⟳ Acum +1 min</button>
+          <button class="btn btn-danger" id="btn-tc-stop">STOP</button>
+        </div>
+        <p class="info-line">Alertă vocală la 60s, 30s, 10s și 5-4-3-2-1-GO. Pleci înainte de oră = 300 puncte.</p>
+      </div>
+
+      <!-- Battery Calculator -->
+      <div class="tool-card">
+        <span class="tool-title">🔋 CALCULATOR BATERIE</span>
+        <div style="display:flex; gap:10px;">
+          <div class="field-group" style="flex:1">
+            <label>Baterie acum (%)</label>
+            <input type="number" id="batt-now" value="80" min="0" max="100" step="1" inputmode="numeric">
+          </div>
+          <div class="field-group" style="flex:1">
+            <label>Km rămași</label>
+            <input type="number" id="batt-km" value="115" min="1" max="500" step="1" inputmode="numeric">
+          </div>
+        </div>
+        <div class="field-group">
+          <label>Consum (kWh/100km)</label>
+          <input type="number" id="batt-cons" value="20" min="10" max="35" step="0.5" inputmode="decimal">
+        </div>
+        <div class="batt-out" id="batt-out">Apasă Calculează.</div>
+        <button class="btn btn-pri" id="btn-batt-calc">Calculează + voce</button>
+      </div>
+
+      <!-- Penalty Tracker -->
+      <div class="tool-card">
+        <span class="tool-title">📋 PENALIZĂRI PER RT</span>
+        <div class="pen-list" id="pen-list"></div>
+        <div class="pen-total">
+          <span>TOTAL</span><span class="val" id="pen-total">0.0 sec</span>
+        </div>
+        <button class="btn btn-sec btn-sm" id="btn-pen-reset" style="align-self:flex-start;">Resetează</button>
       </div>
     </section>
 
@@ -188,6 +277,15 @@
     ══════════════════════════════════════════ -->
     <section id="tab-settings" class="tab">
       <p class="section-label">SETĂRI</p>
+
+      <div class="settings-block">
+        <p class="block-title">TEMĂ</p>
+        <div class="theme-row" id="theme-row">
+          <button class="theme-opt" data-theme="dark">🌙 Dark</button>
+          <button class="theme-opt" data-theme="light">☀️ Light</button>
+          <button class="theme-opt" data-theme="night">🟠 Noapte</button>
+        </div>
+      </div>
 
       <div class="settings-block">
         <div class="field-group">
@@ -234,7 +332,7 @@
 
       <div class="settings-block">
         <p class="block-title">DESPRE</p>
-        <p class="info-line">RALI Co-pilot v1.0 · Transilvania eCLASIC</p>
+        <p class="info-line">RALI Co-pilot v2.0 · Transilvania eCLASIC</p>
         <p class="info-line">Andreas Suciu · A.R.E.S. Championship</p>
       </div>
     </section>
@@ -257,9 +355,13 @@
         <span class="nav-ico">🗺</span>
         <span class="nav-lbl">NAV</span>
       </button>
+      <button class="nav-btn" data-tab="tools">
+        <span class="nav-ico">🧰</span>
+        <span class="nav-lbl">UTILE</span>
+      </button>
       <button class="nav-btn" data-tab="settings">
         <span class="nav-ico">⚙️</span>
-        <span class="nav-lbl">SETĂRI</span>
+        <span class="nav-lbl">SET</span>
       </button>
     </nav>
 

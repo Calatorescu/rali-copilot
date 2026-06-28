@@ -8,20 +8,37 @@ const S = {
   chrono: { running: false, startMs: null, accumulated: 0, raf: null },
   rt: {
     active: false, finishing: false, targetSpd: 40, totalDist: 2.0, type: 'auto',
-    startMs: null, distKm: 0, lastPos: null, tickId: null
+    startMs: null, distKm: 0, lastPos: null, tickId: null,
+    spd2: null, changeKm: null, chgAnnounced: false
   },
   road: {
     boxes: (() => { try { return JSON.parse(ls('rali_road') || '[]'); } catch(e) { return []; } })(),
     active: false, legDistKm: 0, lastPos: null,
     nextIdx: 0, tickId: null, announced: {}
   },
+  presets: (() => { try { return JSON.parse(ls('rali_presets') || 'null') || DEFAULT_PRESETS(); } catch(e) { return DEFAULT_PRESETS(); } })(),
+  tc: { targetMs: null, tickId: null, announced: {} },
+  pen: (() => { try { return JSON.parse(ls('rali_pen') || '{}'); } catch(e) { return {}; } })(),
   voice: { rtLastMs: 0, rtLastDev: null },
+  rec: { obj: null, listening: false },
   chat: { busy: false },
   cfg: {
     apiKey: ls('rali_key') || '',
-    model:  ls('rali_model') || 'claude-haiku-4-5-20251001'
+    model:  ls('rali_model') || 'claude-haiku-4-5-20251001',
+    theme:  ls('rali_theme') || 'dark'
   }
 };
+
+function DEFAULT_PRESETS() {
+  return [
+    { name: 'RT1', spd: 46.8, dist: 7.32, type: 'auto',     spd2: null, changeKm: null },
+    { name: 'RT2', spd: 44.8, dist: 8.89, type: 'standing', spd2: null, changeKm: null },
+    { name: 'RT3', spd: 34.6, dist: 6.26, type: 'standing', spd2: null, changeKm: null },
+    { name: 'RT4', spd: 24.3, dist: 5.74, type: 'standing', spd2: null, changeKm: null },
+    { name: 'RT5', spd: 40.0, dist: 7.49, type: 'standing', spd2: null, changeKm: null },
+    { name: 'RT6', spd: 30.0, dist: 13.0, type: 'standing', spd2: 45.0, changeKm: 3.06 }
+  ];
+}
 
 function ls(k, v) {
   if (v !== undefined) { localStorage.setItem(k, v); return v; }
@@ -154,22 +171,49 @@ function pad(n) { return n.toString().padStart(2, '0'); }
 // ══════════════════════════════════════════════════════════════
 //  RT — SETUP
 // ══════════════════════════════════════════════════════════════
+// Timp ideal pentru a parcurge `dist` km, cu schimbare opțională de viteză
+function rtIdealTime(dist, spd1, spd2, changeKm) {
+  if (spd2 && changeKm && dist > changeKm) {
+    return (changeKm * 3600) / spd1 + ((dist - changeKm) * 3600) / spd2;
+  }
+  return (dist * 3600) / spd1;
+}
+// Viteza țintă activă la distanța `dist`
+function rtPhaseSpeed(dist, spd1, spd2, changeKm) {
+  return (spd2 && changeKm && dist >= changeKm) ? spd2 : spd1;
+}
+
+function rtChgEnabled() {
+  return el('rt-chg-on').checked;
+}
+
 function rtPreview() {
   const spd = parseFloat(el('rt-spd').value) || 40;
   const dst = parseFloat(el('rt-dst').value) || 2;
-  const total = (dst * 3600) / spd;
-  const half  = (dst / 2 * 3600) / spd;
-  const per1  = (1 * 3600) / spd;
-  el('rt-preview').innerHTML =
-    `Timp ideal total: <strong>${fmtSec(total)} sec</strong>&nbsp;&nbsp;` +
-    `La 50%: ${fmtSec(half)} sec&nbsp;&nbsp;` +
-    `La 1 km: ${fmtSec(per1)} sec`;
+  const chg = rtChgEnabled();
+  const spd2 = chg ? (parseFloat(el('rt-chg-spd').value) || null) : null;
+  const ckm  = chg ? (parseFloat(el('rt-chg-km').value)  || null) : null;
+  const total = rtIdealTime(dst, spd, spd2, ckm);
+  const half  = rtIdealTime(dst / 2, spd, spd2, ckm);
+  let html = `Timp ideal total: <strong>${fmtSec(total)} sec</strong>&nbsp;&nbsp;La 50%: ${fmtSec(half)} sec`;
+  if (spd2 && ckm) {
+    const tChg = rtIdealTime(ckm, spd, spd2, ckm);
+    html += `<br>Schimbare la ${ckm.toFixed(2)} km (${fmtSec(tChg)} sec): ${spd} → ${spd2} km/h`;
+  }
+  el('rt-preview').innerHTML = html;
 }
 
 function rtStart() {
   S.rt.targetSpd = parseFloat(el('rt-spd').value) || 40;
   S.rt.totalDist = parseFloat(el('rt-dst').value) || 2;
   S.rt.type      = document.querySelector('input[name="rt-type"]:checked').value;
+  if (rtChgEnabled()) {
+    S.rt.spd2     = parseFloat(el('rt-chg-spd').value) || null;
+    S.rt.changeKm = parseFloat(el('rt-chg-km').value)  || null;
+  } else {
+    S.rt.spd2 = null; S.rt.changeKm = null;
+  }
+  S.rt.chgAnnounced = false;
   S.rt.startMs   = Date.now();
   S.rt.distKm    = 0;
   S.rt.lastPos   = S.gps.lat ? { lat: S.gps.lat, lng: S.gps.lng } : null;
@@ -178,11 +222,13 @@ function rtStart() {
   el('rt-setup').classList.add('hidden');
   el('rt-live').classList.remove('hidden');
   el('rt-badge').classList.remove('hidden');
+  el('s-phase-row').classList.toggle('hidden', !S.rt.spd2);
 
   S.rt.tickId = setInterval(rtRender, 250);
   S.voice.rtLastMs = 0; S.voice.rtLastDev = null;
   const startType = S.rt.type === 'standing' ? 'standing start' : 'start';
-  speak(`RT pornit — ${S.rt.targetSpd} km pe oră — ${startType}`);
+  const chgTxt = S.rt.spd2 ? `, schimbare la ${S.rt.changeKm} km la ${S.rt.spd2}` : '';
+  speak(`RT pornit — ${S.rt.targetSpd} km pe oră — ${startType}${chgTxt}`);
   vibrate([30]);
 }
 
@@ -220,19 +266,29 @@ function rtRender() {
   const elapsedS = (Date.now() - S.rt.startMs) / 1000;
   const dist     = S.rt.distKm;
   const spd      = S.rt.targetSpd;
+  const spd2     = S.rt.spd2;
+  const ckm      = S.rt.changeKm;
   const total    = S.rt.totalDist;
 
-  const idealS   = (dist * 3600) / spd;        // how long it should take to cover dist
-  const devS     = elapsedS - idealS;           // + = behind, - = ahead
+  const idealS   = rtIdealTime(dist, spd, spd2, ckm);   // timp ideal pt dist parcursă
+  const devS     = elapsedS - idealS;                    // + = în urmă, - = în avans
   const remaining = Math.max(0, total - dist);
   const pct      = Math.min(100, (dist / total) * 100);
+  const phaseSpd = rtPhaseSpeed(dist, spd, spd2, ckm);   // viteza țintă acum
 
   // Required speed to recover deviation on remaining segment
   let reqSpd = null;
   if (remaining > 0.001) {
-    const remIdealS = (remaining * 3600) / spd;
+    const remIdealS = rtIdealTime(total, spd, spd2, ckm) - idealS;
     const remActualS = remIdealS - devS;
     reqSpd = remActualS > 1 ? (remaining * 3600) / remActualS : null;
+  }
+
+  // Voice: anunță schimbarea de viteză la trecerea pragului
+  if (spd2 && ckm && !S.rt.chgAnnounced && dist >= ckm - 0.05) {
+    S.rt.chgAnnounced = true;
+    speak(`Schimbare viteză — ${spd2} km pe oră`);
+    vibrate([60, 40, 60]);
   }
 
   // Deviation display
@@ -253,6 +309,7 @@ function rtRender() {
   el('s-ideal').textContent    = fmtSec(idealS) + ' s';
   el('s-dist').textContent     = dist.toFixed(3) + ' km';
   el('s-rem').textContent      = remaining.toFixed(3) + ' km';
+  if (spd2) el('s-phase').textContent = phaseSpd.toFixed(1) + ' km/h';
 
   if (remaining < 0.01) {
     el('s-reqspd').textContent = 'FINISH';
@@ -599,6 +656,9 @@ function navRender() {
       txt = `Start RT în ${m} metri`;
     else if (flag === 'RT_FINISH') txt = `Finish RT în ${m} metri`;
     else if (flag === 'STOP-CFR')  txt = `ATENȚIE — cale ferată în ${m} metri — vei opri`;
+    else if (flag === 'EV')        txt = `Stație de încărcare în ${m} metri`;
+    else if (flag === 'PARKING')   txt = `Parcare în ${m} metri`;
+    if (flag === 'EV') vibrate([40, 30, 40, 30, 40]);
     speak(txt);
   } else if (distToNext <= 0.08 && !S.road.announced[key + 'n']) {
     S.road.announced[key + 'n'] = true;
@@ -608,6 +668,8 @@ function navRender() {
     else if (flag === 'RT_START_AUTO')     txt = 'START RT';
     else if (flag === 'RT_FINISH')         txt = 'FINISH RT';
     else if (flag === 'STOP-CFR')          txt = 'STOP — cale ferată';
+    else if (flag === 'EV')                txt = 'Stație de încărcare';
+    else if (flag === 'PARKING')           txt = 'Parcare';
     speak(txt);
   }
 }
@@ -735,6 +797,288 @@ document.addEventListener('visibilitychange', () => {
 });
 
 // ══════════════════════════════════════════════════════════════
+//  RT PRESETS
+// ══════════════════════════════════════════════════════════════
+function renderPresets() {
+  const row = el('preset-row');
+  row.innerHTML = '';
+  S.presets.forEach((p, i) => {
+    const chip = document.createElement('button');
+    chip.className = 'preset-chip';
+    const chgTxt = p.spd2 ? `→${p.spd2}` : '';
+    chip.innerHTML = `<span>${p.name}</span><span class="px">${p.spd}${chgTxt}·${p.dist}km</span>`;
+    chip.addEventListener('click', () => applyPreset(i));
+    chip.addEventListener('contextmenu', e => { e.preventDefault(); deletePreset(i); });
+    // long-press to delete
+    let lp; chip.addEventListener('touchstart', () => { lp = setTimeout(() => deletePreset(i), 700); }, {passive:true});
+    chip.addEventListener('touchend', () => clearTimeout(lp));
+    row.appendChild(chip);
+  });
+  const add = document.createElement('button');
+  add.className = 'preset-chip preset-add';
+  add.textContent = '+ salvează';
+  add.addEventListener('click', savePreset);
+  row.appendChild(add);
+}
+
+function applyPreset(i) {
+  const p = S.presets[i];
+  el('rt-spd').value = p.spd;
+  el('rt-dst').value = p.dist;
+  document.querySelector(`input[name="rt-type"][value="${p.type}"]`).checked = true;
+  if (p.spd2 && p.changeKm) {
+    el('rt-chg-on').checked = true;
+    el('rt-chg-fields').classList.remove('hidden');
+    el('rt-chg-spd').value = p.spd2;
+    el('rt-chg-km').value  = p.changeKm;
+  } else {
+    el('rt-chg-on').checked = false;
+    el('rt-chg-fields').classList.add('hidden');
+  }
+  rtPreview();
+  vibrate([20]);
+}
+
+function savePreset() {
+  const name = prompt('Nume preset (ex: RT1):');
+  if (!name) return;
+  const chg = rtChgEnabled();
+  S.presets.push({
+    name: name.trim().slice(0, 8),
+    spd: parseFloat(el('rt-spd').value) || 40,
+    dist: parseFloat(el('rt-dst').value) || 2,
+    type: document.querySelector('input[name="rt-type"]:checked').value,
+    spd2: chg ? (parseFloat(el('rt-chg-spd').value) || null) : null,
+    changeKm: chg ? (parseFloat(el('rt-chg-km').value) || null) : null
+  });
+  ls('rali_presets', JSON.stringify(S.presets));
+  renderPresets();
+}
+
+function deletePreset(i) {
+  if (!confirm(`Ștergi presetul "${S.presets[i].name}"?`)) return;
+  S.presets.splice(i, 1);
+  ls('rali_presets', JSON.stringify(S.presets));
+  renderPresets();
+}
+
+// ══════════════════════════════════════════════════════════════
+//  TC DEPARTURE COUNTDOWN
+// ══════════════════════════════════════════════════════════════
+function tcSet() {
+  const v = el('tc-time').value;
+  if (!v) { alert('Pune ora de plecare.'); return; }
+  const parts = v.split(':').map(Number);
+  const now = new Date();
+  const t = new Date();
+  t.setHours(parts[0], parts[1], parts[2] || 0, 0);
+  if (t.getTime() < now.getTime() - 1000) t.setDate(t.getDate() + 1); // dacă a trecut, mâine
+  S.tc.targetMs = t.getTime();
+  S.tc.announced = {};
+  clearInterval(S.tc.tickId);
+  S.tc.tickId = setInterval(tcTick, 200);
+  speak(`Countdown setat pentru ora ${parts[0]} ${pad(parts[1])}`);
+}
+
+function tcSyncPlus1() {
+  // plecare la următorul minut rotund + 1 (util când n-ai ora exactă)
+  const t = new Date();
+  t.setSeconds(0, 0);
+  t.setMinutes(t.getMinutes() + 2);
+  S.tc.targetMs = t.getTime();
+  S.tc.announced = {};
+  el('tc-time').value = `${pad(t.getHours())}:${pad(t.getMinutes())}:00`;
+  clearInterval(S.tc.tickId);
+  S.tc.tickId = setInterval(tcTick, 200);
+  vibrate([20]);
+}
+
+function tcStop() {
+  clearInterval(S.tc.tickId);
+  S.tc.targetMs = null;
+  el('tc-display').textContent = '--:--';
+  el('tc-display').className = 'cd-display';
+}
+
+function tcTick() {
+  if (!S.tc.targetMs) return;
+  const remMs = S.tc.targetMs - Date.now();
+  const rem = remMs / 1000;
+  const disp = el('tc-display');
+
+  if (rem <= 0) {
+    disp.textContent = 'GO!';
+    disp.className = 'cd-display go';
+    if (!S.tc.announced.go) { S.tc.announced.go = true; speak('Pleacă! GO!'); vibrate([200, 80, 200]); }
+    if (rem < -3) tcStop();
+    return;
+  }
+
+  const m = Math.floor(rem / 60);
+  const s = Math.floor(rem % 60);
+  disp.textContent = `${m}:${pad(s)}`;
+  disp.className = 'cd-display' + (rem <= 5 ? ' now' : rem <= 30 ? ' soon' : '');
+
+  // Anunțuri vocale
+  const sec = Math.ceil(rem);
+  const marks = { 60:'60 secunde', 30:'30 secunde', 10:'10 secunde', 5:'5', 4:'4', 3:'3', 2:'2', 1:'1' };
+  if (marks[sec] && !S.tc.announced[sec] && rem <= sec && rem > sec - 0.25) {
+    S.tc.announced[sec] = true;
+    speak(marks[sec]);
+    if (sec <= 5) vibrate([80]);
+  }
+}
+
+// ══════════════════════════════════════════════════════════════
+//  BATTERY CALCULATOR
+// ══════════════════════════════════════════════════════════════
+const BATT_KWH = 82;
+function battCalc() {
+  const now  = parseFloat(el('batt-now').value)  || 0;
+  const km   = parseFloat(el('batt-km').value)   || 0;
+  const cons = parseFloat(el('batt-cons').value) || 20;
+  const kwhNeed = km * cons / 100;
+  const pctNeed = (kwhNeed / BATT_KWH) * 100;
+  const pctEnd  = now - pctNeed;
+  const out = el('batt-out');
+
+  let cls, msg, voice;
+  if (pctEnd >= 15) {
+    cls = 'var(--green)';
+    msg = `Finish estimat la <span class="big" style="color:${cls}">${pctEnd.toFixed(0)}%</span> — OK, peste buffer-ul de 15%.`;
+    voice = `Baterie suficientă. Finish estimat la ${pctEnd.toFixed(0)} la sută.`;
+  } else if (pctEnd >= 5) {
+    cls = 'var(--yellow)';
+    msg = `Finish estimat la <span class="big" style="color:${cls}">${pctEnd.toFixed(0)}%</span> — sub buffer-ul de 15%. Condu economic, regenerare Hold.`;
+    voice = `Atenție. Finish estimat la ${pctEnd.toFixed(0)} la sută, sub buffer. Condu economic.`;
+  } else {
+    cls = 'var(--red)';
+    msg = `Finish estimat la <span class="big" style="color:${cls}">${pctEnd.toFixed(0)}%</span> — INSUFICIENT. Planifică încărcare pe traseu.`;
+    voice = `Baterie insuficientă. Finish estimat la ${pctEnd.toFixed(0)} la sută. Recomand încărcare pe traseu.`;
+  }
+  out.innerHTML = `${msg}<br><span style="color:var(--dim)">Consum estimat: ${kwhNeed.toFixed(1)} kWh (${pctNeed.toFixed(0)}% baterie) pentru ${km} km.</span>`;
+  speak(voice);
+}
+
+// ══════════════════════════════════════════════════════════════
+//  PENALTY TRACKER
+// ══════════════════════════════════════════════════════════════
+function renderPenalties() {
+  const list = el('pen-list');
+  list.innerHTML = '';
+  let total = 0;
+  for (let i = 1; i <= 6; i++) {
+    const key = 'RT' + i;
+    const val = S.pen[key] != null ? S.pen[key] : '';
+    if (val !== '') total += parseFloat(val) || 0;
+    const row = document.createElement('div');
+    row.className = 'pen-row';
+    row.innerHTML = `<span class="lbl">${key}</span>`;
+    const inp = document.createElement('input');
+    inp.type = 'number'; inp.step = '0.1'; inp.inputMode = 'decimal';
+    inp.placeholder = '—'; inp.value = val;
+    inp.addEventListener('input', () => {
+      S.pen[key] = inp.value === '' ? null : parseFloat(inp.value);
+      ls('rali_pen', JSON.stringify(S.pen));
+      updatePenTotal();
+    });
+    row.appendChild(inp);
+    const unit = document.createElement('span');
+    unit.style.cssText = 'color:var(--dim);font-size:12px;'; unit.textContent = 'sec';
+    row.appendChild(unit);
+    list.appendChild(row);
+  }
+  el('pen-total').textContent = total.toFixed(1) + ' sec';
+}
+
+function updatePenTotal() {
+  let total = 0;
+  for (let i = 1; i <= 6; i++) total += parseFloat(S.pen['RT' + i]) || 0;
+  el('pen-total').textContent = total.toFixed(1) + ' sec';
+}
+
+function resetPenalties() {
+  if (!confirm('Resetezi toate penalizările?')) return;
+  S.pen = {}; ls('rali_pen', '{}'); renderPenalties();
+}
+
+// ══════════════════════════════════════════════════════════════
+//  VOICE INPUT (Speech-to-Text)
+// ══════════════════════════════════════════════════════════════
+function micToggle() {
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR) { addMsg('bot', 'Recunoaștere vocală indisponibilă pe acest browser.'); return; }
+  if (S.rec.listening) { S.rec.obj?.stop(); return; }
+
+  const rec = new SR();
+  rec.lang = 'ro-RO'; rec.interimResults = false; rec.maxAlternatives = 1;
+  S.rec.obj = rec; S.rec.listening = true;
+  el('btn-chat-mic').classList.add('listening');
+
+  rec.onresult = e => {
+    const txt = e.results[0][0].transcript;
+    el('chat-in').value = txt;
+  };
+  rec.onerror = () => {};
+  rec.onend = () => {
+    S.rec.listening = false;
+    el('btn-chat-mic').classList.remove('listening');
+    if (el('chat-in').value.trim()) sendChat();
+  };
+  rec.start();
+  vibrate([20]);
+}
+
+// ══════════════════════════════════════════════════════════════
+//  QUIZ HELPER
+// ══════════════════════════════════════════════════════════════
+function quizHelper() {
+  if (!S.cfg.apiKey) { addMsg('bot', 'Adaugă Claude API Key în SETĂRI.'); return; }
+  openCamera(async (b64, mime) => {
+    addMsg('user', '📸 [quiz time card]');
+    addTyping();
+    S.chat.busy = true;
+    try {
+      const reply = await callClaudeVision(b64, mime,
+        'Aceasta e o întrebare quiz de pe time card-ul unui raliu. Citește întrebarea și răspunde DIRECT și SCURT cu răspunsul corect. Dacă sunt variante, spune litera + textul.',
+        300, SYSTEM);
+      removeTyping();
+      addMsg('bot', reply);
+    } catch (e) {
+      removeTyping();
+      addMsg('bot', `Eroare: ${e.message}`);
+    } finally {
+      S.chat.busy = false;
+    }
+  });
+}
+
+// ══════════════════════════════════════════════════════════════
+//  THEME
+// ══════════════════════════════════════════════════════════════
+const THEME_COLOR = { dark: '#0a0a0a', light: '#f1f1f4', night: '#000000' };
+function applyTheme(t) {
+  S.cfg.theme = t;
+  ls('rali_theme', t);
+  if (t === 'dark') document.documentElement.removeAttribute('data-theme');
+  else document.documentElement.setAttribute('data-theme', t);
+  document.querySelector('meta[name="theme-color"]')?.setAttribute('content', THEME_COLOR[t] || '#0a0a0a');
+  document.querySelectorAll('.theme-opt').forEach(b =>
+    b.classList.toggle('active', b.dataset.theme === t));
+}
+
+// ══════════════════════════════════════════════════════════════
+//  NAV OFFSET
+// ══════════════════════════════════════════════════════════════
+function navOffset(meters) {
+  S.road.legDistKm = Math.max(0, S.road.legDistKm + meters / 1000);
+  // permite re-anunțarea boxurilor după corecție
+  S.road.announced = {};
+  vibrate([15]);
+  if (S.road.active) navRender();
+}
+
+// ══════════════════════════════════════════════════════════════
 //  UTIL
 // ══════════════════════════════════════════════════════════════
 function el(id) { return document.getElementById(id); }
@@ -761,9 +1105,40 @@ function init() {
   // RT
   el('rt-spd').addEventListener('input', rtPreview);
   el('rt-dst').addEventListener('input', rtPreview);
+  el('rt-chg-spd').addEventListener('input', rtPreview);
+  el('rt-chg-km').addEventListener('input', rtPreview);
+  el('rt-chg-on').addEventListener('change', () => {
+    el('rt-chg-fields').classList.toggle('hidden', !el('rt-chg-on').checked);
+    rtPreview();
+  });
   el('btn-rt-start').addEventListener('click', rtStart);
   el('btn-rt-stop').addEventListener('click', rtStop);
+  el('btn-rt-savepreset').addEventListener('click', savePreset);
+  renderPresets();
   rtPreview();
+
+  // Tools — TC countdown
+  el('btn-tc-start').addEventListener('click', tcSet);
+  el('btn-tc-sync').addEventListener('click', tcSyncPlus1);
+  el('btn-tc-stop').addEventListener('click', tcStop);
+
+  // Tools — battery
+  el('btn-batt-calc').addEventListener('click', battCalc);
+
+  // Tools — penalties
+  renderPenalties();
+  el('btn-pen-reset').addEventListener('click', resetPenalties);
+
+  // Theme
+  applyTheme(S.cfg.theme);
+  document.querySelectorAll('.theme-opt').forEach(b =>
+    b.addEventListener('click', () => applyTheme(b.dataset.theme)));
+
+  // NAV offset
+  el('btn-off-m100').addEventListener('click', () => navOffset(-100));
+  el('btn-off-m10').addEventListener('click',  () => navOffset(-10));
+  el('btn-off-p10').addEventListener('click',  () => navOffset(10));
+  el('btn-off-p100').addEventListener('click', () => navOffset(100));
 
   // Road Nav
   el('btn-nav-scan').addEventListener('click', navScan);
@@ -778,9 +1153,11 @@ function init() {
   // Chat
   el('btn-send').addEventListener('click', sendChat);
   el('btn-chat-photo').addEventListener('click', chatPhoto);
+  el('btn-chat-mic').addEventListener('click', micToggle);
   el('chat-in').addEventListener('keydown', e => { if (e.key === 'Enter') sendChat(); });
   document.querySelectorAll('.qbtn').forEach(b => {
     b.addEventListener('click', () => {
+      if (b.dataset.quiz) { quizHelper(); return; }
       el('chat-in').value = b.dataset.p;
       // switch to copilot tab if not already
       document.querySelectorAll('.nav-btn').forEach(n => n.classList.remove('active'));
