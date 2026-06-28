@@ -142,6 +142,48 @@
     </section>
 
     <!-- ══════════════════════════════════════════
+         TAB: NAV
+    ══════════════════════════════════════════ -->
+    <section id="tab-nav" class="tab">
+
+      <!-- Scan / list panel -->
+      <div id="nav-setup">
+        <div class="nav-header-row">
+          <p class="section-label" style="margin:0">ROADBOOK</p>
+          <span id="nav-box-count" class="info-line" style="margin:0; font-size:12px;">—</span>
+          <button class="btn btn-danger btn-sm" id="btn-nav-clear">✕</button>
+        </div>
+
+        <button class="btn btn-sec" id="btn-nav-scan">📷 Adaugă pagină roadbook</button>
+        <p id="nav-scan-status" class="scan-status hidden"></p>
+
+        <button class="btn btn-pri btn-lg" id="btn-nav-start" disabled>▶ START NAVIGARE</button>
+      </div>
+
+      <!-- Active navigation -->
+      <div id="nav-active" class="hidden">
+        <div class="nav-pos-row">
+          <span class="section-label" style="margin:0">POZIȚIE LEG</span>
+          <span id="nav-pos-km" class="nav-pos-val">0.000 km</span>
+        </div>
+
+        <div class="nav-card-main">
+          <div class="nav-dist"  id="nav-dist-next">—</div>
+          <div class="nav-dir"   id="nav-dir-next">?</div>
+          <div class="nav-comment" id="nav-comment-next">—</div>
+          <div class="nav-boxnum"  id="nav-boxnum-next">—</div>
+        </div>
+
+        <div class="nav-card-after" id="nav-card-after">
+          <span class="section-label" style="margin:0; font-size:10px">URMĂTOR</span>
+          <span id="nav-after-text" class="info-line" style="margin:0">—</span>
+        </div>
+
+        <button class="btn btn-danger btn-lg" id="btn-nav-stop">■ STOP NAVIGARE</button>
+      </div>
+    </section>
+
+    <!-- ══════════════════════════════════════════
          TAB: SETĂRI
     ══════════════════════════════════════════ -->
     <section id="tab-settings" class="tab">
@@ -203,7 +245,11 @@
       </button>
       <button class="nav-btn" data-tab="copilot">
         <span class="nav-ico">🎙</span>
-        <span class="nav-lbl">COPILOT</span>
+        <span class="nav-lbl">AI</span>
+      </button>
+      <button class="nav-btn" data-tab="nav">
+        <span class="nav-ico">🗺</span>
+        <span class="nav-lbl">NAV</span>
       </button>
       <button class="nav-btn" data-tab="settings">
         <span class="nav-ico">⚙️</span>

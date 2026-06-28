@@ -10,6 +10,12 @@ const S = {
     active: false, targetSpd: 40, totalDist: 2.0, type: 'auto',
     startMs: null, distKm: 0, lastPos: null, tickId: null
   },
+  road: {
+    boxes: JSON.parse(ls('rali_road') || '[]'),
+    active: false, legDistKm: 0, lastPos: null,
+    nextIdx: 0, tickId: null, announced: {}
+  },
+  voice: { rtLastMs: 0, rtLastDev: null },
   chat: { busy: false },
   cfg: {
     apiKey: ls('rali_key') || '',
@@ -42,7 +48,8 @@ function gpsOk(pos) {
   S.gps.lng      = c.longitude;
   gpsDot('active');
   renderSpeed();
-  if (S.rt.active) rtGpsTick(pos);
+  if (S.rt.active)   rtGpsTick(pos);
+  if (S.road.active) navGpsTick(pos);
 }
 
 let _prevPos = null, _prevT = null;
@@ -173,6 +180,9 @@ function rtStart() {
   el('rt-badge').classList.remove('hidden');
 
   S.rt.tickId = setInterval(rtRender, 250);
+  S.voice.rtLastMs = 0; S.voice.rtLastDev = null;
+  const startType = S.rt.type === 'standing' ? 'standing start' : 'start';
+  speak(`RT pornit — ${S.rt.targetSpd} km pe oră — ${startType}`);
   vibrate([30]);
 }
 
@@ -258,8 +268,24 @@ function rtRender() {
   el('prog-fill').style.width  = pct + '%';
   el('prog-pct').textContent   = Math.round(pct) + '%';
 
+  // Voice speed feedback (max 1x la 15s, doar dacă deviere > 3s)
+  const nowMs = Date.now();
+  if (elapsedS > 8 && nowMs - S.voice.rtLastMs > 15000) {
+    const prevDev = S.voice.rtLastDev;
+    if (absD > 3 && (prevDev === null || Math.abs(devS - prevDev) > 1.5)) {
+      const dir = devS > 0 ? 'în urmă' : 'în avans';
+      const action = devS > 0
+        ? (absD > 15 ? 'URGENT, mult mai repede' : absD > 7 ? 'mai repede' : 'ușor mai repede')
+        : (absD > 12 ? 'mult mai lent' : 'ușor mai lent');
+      const spdStr = reqSpd ? `, du-te la ${Math.round(reqSpd)} km pe oră` : '';
+      speakIfIdle(`${Math.round(absD)} secunde ${dir} — ${action}${spdStr}`);
+      S.voice.rtLastMs = nowMs; S.voice.rtLastDev = devS;
+    }
+  }
+
   // Auto-stop when done
   if (pct >= 100 && dist >= total - 0.01) {
+    speak('Finish RT.');
     setTimeout(() => { if (S.rt.active) rtStop(); }, 1500);
   }
 }
@@ -282,11 +308,11 @@ function openCamera(onData) {
   inp.click();
 }
 
-async function callClaudeVision(b64, mime, textPrompt, maxTok, sysPrompt) {
+async function callClaudeVision(b64, mime, textPrompt, maxTok, sysPrompt, modelOverride) {
   const key = S.cfg.apiKey;
   if (!key) throw new Error('Adaugă API Key în SETĂRI.');
   const body = {
-    model: S.cfg.model,
+    model: modelOverride || S.cfg.model,
     max_tokens: maxTok || 300,
     messages: [{
       role: 'user',
@@ -385,6 +411,197 @@ async function chatPhoto() {
       el('btn-chat-photo').disabled = false;
     }
   });
+}
+
+// ══════════════════════════════════════════════════════════════
+//  SPEECH (Web Speech API — fără API calls)
+// ══════════════════════════════════════════════════════════════
+const DIR_ARROW = {
+  'ÎNAINTE':'↑', 'STÂNGA':'←', 'DREAPTA':'→',
+  'STÂNGA-T':'↰', 'DREAPTA-T':'↱',
+  'GIRATORIU-1':'①', 'GIRATORIU-2':'②', 'GIRATORIU-3':'③', 'GIRATORIU-4':'④',
+  'STOP-CFR':'⛔', 'TC':'🏁', 'RT_START_AUTO':'⚡', 'RT_START_STANDING':'⚡❄',
+  'RT_FINISH':'🏳', 'PARKING':'🅿', 'EV':'🔌'
+};
+const DIR_VOICE = {
+  'ÎNAINTE':'înainte', 'STÂNGA':'stânga', 'DREAPTA':'dreapta',
+  'STÂNGA-T':'stânga la T', 'DREAPTA-T':'dreapta la T',
+  'GIRATORIU-1':'prima ieșire', 'GIRATORIU-2':'a doua ieșire',
+  'GIRATORIU-3':'a treia ieșire', 'GIRATORIU-4':'a patra ieșire',
+  'STOP-CFR':'STOP cale ferată'
+};
+
+function speak(text) {
+  if (!window.speechSynthesis) return;
+  window.speechSynthesis.cancel();
+  const u = new SpeechSynthesisUtterance(text);
+  u.lang = 'ro-RO'; u.rate = 1.1; u.volume = 1.0;
+  window.speechSynthesis.speak(u);
+}
+
+function speakIfIdle(text) {
+  if (!window.speechSynthesis || window.speechSynthesis.speaking) return;
+  speak(text);
+}
+
+// ══════════════════════════════════════════════════════════════
+//  ROAD NAV — scan roadbook pages + GPS navigation + voice
+// ══════════════════════════════════════════════════════════════
+const NAV_SCAN_PROMPT = `Ești copilot de raliu. Extrage TOATE boxurile vizibile pe această pagină de roadbook în format JSON array.
+
+COLOANE (stânga→dreapta): Număr box | Sum km (bold) | Sum mile (ignoră) | Section km (bold) | Section mile (ignoră) | Diagrama tulip | Dist to target (ignoră) | Comment text
+
+DIAGRAMA TULIP — interpretează vizual direcția:
+"ÎNAINTE"=drept înainte, "STÂNGA"=viraj simplu stânga, "DREAPTA"=viraj simplu dreapta,
+"STÂNGA-T"=T-junction viraj stânga, "DREAPTA-T"=T-junction viraj dreapta,
+"GIRATORIU-1"/"GIRATORIU-2"/"GIRATORIU-3"/"GIRATORIU-4"=ieșirea 1/2/3/4 din sens giratoriu,
+"STOP-CFR"=trecere cale ferată cu oprire
+
+ICOANE DEASUPRA DIAGRAMEI → câmpul "flag":
+steag+ceas (fără fulg de nea)="RT_START_AUTO" | steag+ceas+fulg de nea="RT_START_STANDING"
+dreptunghi+steag="RT_FINISH" | ceas+steag mare="TC" | P mare="PARKING" | fulger/priză="EV"
+Waypoint normal fără icoane speciale: flag=null
+
+Format de returnare — DOAR JSON array valid, fără alt text:
+[{"num":67,"sumKm":19.72,"sectionKm":2.31,"dir":"STÂNGA-T","comment":"Receptie Bar / DJ 582B","flag":"RT_START_AUTO"},...]
+
+Toate boxurile de pe pagină, în ordine crescătoare a numărului.`;
+
+async function navScan() {
+  if (!S.cfg.apiKey) { alert('Adaugă Claude API Key în SETĂRI.'); return; }
+  openCamera(async (b64, mime) => {
+    const btn = el('btn-nav-scan');
+    const sta = el('nav-scan-status');
+    btn.disabled = true; btn.textContent = '⏳ Scanez...';
+    sta.className = 'scan-status'; sta.style.color = 'var(--dim)'; sta.textContent = '';
+    try {
+      const raw = await callClaudeVision(b64, mime, NAV_SCAN_PROMPT, 1000, null, 'claude-sonnet-4-6');
+      const match = raw.match(/\[[\s\S]*\]/);
+      if (!match) throw new Error('Format neașteptat');
+      const boxes = JSON.parse(match[0]);
+      if (!Array.isArray(boxes) || !boxes.length) throw new Error('Niciun box identificat');
+
+      const map = new Map(S.road.boxes.map(b => [`${b.num}_${Math.round(b.sumKm*100)}`, b]));
+      boxes.forEach(b => map.set(`${b.num}_${Math.round(b.sumKm*100)}`, b));
+      S.road.boxes = Array.from(map.values()).sort((a, b) => a.sumKm - b.sumKm);
+      ls('rali_road', JSON.stringify(S.road.boxes));
+      navUpdateList();
+
+      sta.textContent = `✓ ${boxes.length} boxuri adăugate — total ${S.road.boxes.length}`;
+      sta.style.color = 'var(--green)';
+    } catch (e) {
+      sta.textContent = `✗ ${e.message}`; sta.style.color = 'var(--red)';
+    } finally {
+      btn.disabled = false; btn.textContent = '📷 Adaugă pagină roadbook';
+    }
+  });
+}
+
+function navUpdateList() {
+  const n = S.road.boxes.length;
+  el('nav-box-count').textContent = n === 0 ? '— niciun box scanat' :
+    `${n} boxuri · ${S.road.boxes[0].sumKm.toFixed(2)} – ${S.road.boxes[n-1].sumKm.toFixed(2)} km`;
+  el('btn-nav-start').disabled = n === 0;
+}
+
+function navClear() {
+  if (!confirm('Ștergi toate boxurile scanate?')) return;
+  S.road.boxes = []; ls('rali_road', '[]'); navUpdateList();
+}
+
+function navStart() {
+  if (!S.road.boxes.length) return;
+  S.road.active = true; S.road.legDistKm = 0; S.road.nextIdx = 0; S.road.announced = {};
+  S.road.lastPos = S.gps.lat ? { lat: S.gps.lat, lng: S.gps.lng } : null;
+  el('nav-setup').classList.add('hidden');
+  el('nav-active').classList.remove('hidden');
+  S.road.tickId = setInterval(navRender, 500);
+  speak('Navigare pornită.');
+}
+
+function navStop() {
+  S.road.active = false; clearInterval(S.road.tickId);
+  window.speechSynthesis?.cancel();
+  el('nav-active').classList.add('hidden');
+  el('nav-setup').classList.remove('hidden');
+}
+
+function navGpsTick(pos) {
+  const acc = pos.coords.accuracy;
+  if (acc && acc > 60) return;
+  const cur = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+  if (S.road.lastPos) {
+    const d = haversine(S.road.lastPos.lat, S.road.lastPos.lng, cur.lat, cur.lng);
+    if (d < 0.5) S.road.legDistKm += d;
+  }
+  S.road.lastPos = cur;
+}
+
+function navRender() {
+  if (!S.road.active) return;
+  const dist = S.road.legDistKm;
+  el('nav-pos-km').textContent = dist.toFixed(3) + ' km';
+
+  // Advance past already-passed boxes
+  while (S.road.nextIdx < S.road.boxes.length &&
+         dist > S.road.boxes[S.road.nextIdx].sumKm + 0.08) {
+    S.road.nextIdx++;
+  }
+
+  const boxes = S.road.boxes;
+  const ni = S.road.nextIdx;
+
+  if (ni >= boxes.length) {
+    el('nav-dir-next').textContent = 'FINISH LEG'; el('nav-dist-next').textContent = '—';
+    el('nav-comment-next').textContent = ''; el('nav-boxnum-next').textContent = '';
+    el('nav-after-text').textContent = '—'; return;
+  }
+
+  const next = boxes[ni];
+  const distToNext = Math.max(0, next.sumKm - dist);
+  const arrow  = DIR_ARROW[next.dir]  || next.dir  || '?';
+  const fArrow = DIR_ARROW[next.flag] || '';
+
+  el('nav-dist-next').textContent    = distToNext < 0.1 ?
+    `${Math.round(distToNext * 1000)} m` : `${distToNext.toFixed(2)} km`;
+  el('nav-dir-next').textContent     = arrow + (fArrow ? ' ' + fArrow : '');
+  el('nav-comment-next').textContent = next.comment || '';
+  el('nav-boxnum-next').textContent  = `Box ${next.num}`;
+
+  if (ni + 1 < boxes.length) {
+    const af = boxes[ni + 1];
+    el('nav-after-text').textContent =
+      `Box ${af.num} · ${(af.sectionKm||0).toFixed(2)} km · ${DIR_ARROW[af.dir]||af.dir||'?'}` +
+      (af.flag ? ' '+DIR_ARROW[af.flag] : '') + (af.comment ? ' · '+af.comment : '');
+  } else {
+    el('nav-after-text').textContent = '— finish leg —';
+  }
+
+  // Voice announcements
+  const key = `${next.num}_${Math.round(next.sumKm * 100)}`;
+  const voice = DIR_VOICE[next.dir] || next.dir || 'manevra';
+  const flag  = next.flag;
+
+  if (distToNext <= 0.35 && !S.road.announced[key + 'w']) {
+    S.road.announced[key + 'w'] = true;
+    const m = Math.round(distToNext * 1000);
+    let txt = `Pregătire — ${voice} în ${m} metri`;
+    if (flag === 'TC')   txt = `Time Control în ${m} metri — pregătește time card`;
+    else if (flag === 'RT_START_AUTO' || flag === 'RT_START_STANDING')
+      txt = `Start RT în ${m} metri`;
+    else if (flag === 'RT_FINISH') txt = `Finish RT în ${m} metri`;
+    else if (flag === 'STOP-CFR')  txt = `ATENȚIE — cale ferată în ${m} metri — vei opri`;
+    speak(txt);
+  } else if (distToNext <= 0.08 && !S.road.announced[key + 'n']) {
+    S.road.announced[key + 'n'] = true;
+    let txt = voice;
+    if (flag === 'TC')   txt = 'Time Control — oprește și ștampilează';
+    else if (flag === 'RT_START_STANDING') txt = 'START RT — standing start';
+    else if (flag === 'RT_START_AUTO')     txt = 'START RT';
+    else if (flag === 'RT_FINISH')         txt = 'FINISH RT';
+    else if (flag === 'STOP-CFR')          txt = 'STOP — cale ferată';
+    speak(txt, true);
+  }
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -539,6 +756,13 @@ function init() {
   el('btn-rt-start').addEventListener('click', rtStart);
   el('btn-rt-stop').addEventListener('click', rtStop);
   rtPreview();
+
+  // Road Nav
+  el('btn-nav-scan').addEventListener('click', navScan);
+  el('btn-nav-clear').addEventListener('click', navClear);
+  el('btn-nav-start').addEventListener('click', navStart);
+  el('btn-nav-stop').addEventListener('click', navStop);
+  navUpdateList();
 
   // RT Scan
   el('btn-rt-scan').addEventListener('click', rtScan);
