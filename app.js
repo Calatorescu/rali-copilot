@@ -7,11 +7,11 @@ const S = {
   gps: { watchId: null, speed: 0, accuracy: null, altitude: null, heading: null, lat: null, lng: null },
   chrono: { running: false, startMs: null, accumulated: 0, raf: null },
   rt: {
-    active: false, targetSpd: 40, totalDist: 2.0, type: 'auto',
+    active: false, finishing: false, targetSpd: 40, totalDist: 2.0, type: 'auto',
     startMs: null, distKm: 0, lastPos: null, tickId: null
   },
   road: {
-    boxes: JSON.parse(ls('rali_road') || '[]'),
+    boxes: (() => { try { return JSON.parse(ls('rali_road') || '[]'); } catch(e) { return []; } })(),
     active: false, legDistKm: 0, lastPos: null,
     nextIdx: 0, tickId: null, announced: {}
   },
@@ -187,7 +187,7 @@ function rtStart() {
 }
 
 function rtStop() {
-  S.rt.active = false;
+  S.rt.active = false; S.rt.finishing = false;
   clearInterval(S.rt.tickId);
   el('rt-live').classList.add('hidden');
   el('rt-setup').classList.remove('hidden');
@@ -245,8 +245,8 @@ function rtRender() {
   el('dev-num').className = `dev-num ${cls}`;
   el('dev-box').className = `dev-box ${cls}`;
 
-  // Alert vibrations at thresholds
-  if (absD > 15 && Math.floor(elapsedS) % 10 === 0) vibrate([100]);
+  // Alert vibrations at thresholds (gate: max 1x per second window)
+  if (absD > 15 && Math.floor(elapsedS) % 10 === 0 && (elapsedS % 10) < 0.3) vibrate([100]);
 
   // Stats
   el('s-elapsed').textContent  = fmtSec(elapsedS) + ' s';
@@ -283,10 +283,11 @@ function rtRender() {
     }
   }
 
-  // Auto-stop when done
-  if (pct >= 100 && dist >= total - 0.01) {
+  // Auto-stop when done (guard against repeat calls every 250ms)
+  if (pct >= 100 && dist >= total - 0.01 && !S.rt.finishing) {
+    S.rt.finishing = true;
     speak('Finish RT.');
-    setTimeout(() => { if (S.rt.active) rtStop(); }, 1500);
+    setTimeout(() => { if (S.rt.active) { S.rt.finishing = false; rtStop(); } }, 1500);
   }
 }
 
@@ -298,13 +299,16 @@ function openCamera(onData) {
   inp.type = 'file';
   inp.accept = 'image/*';
   inp.capture = 'environment';
+  inp.style.cssText = 'position:fixed;top:-9999px;opacity:0;';
   inp.onchange = () => {
+    document.body.removeChild(inp);
     const file = inp.files[0];
     if (!file) return;
     const reader = new FileReader();
     reader.onload = () => onData(reader.result.split(',')[1], file.type);
     reader.readAsDataURL(file);
   };
+  document.body.appendChild(inp);
   inp.click();
 }
 
@@ -436,7 +440,8 @@ function speak(text) {
   window.speechSynthesis.cancel();
   const u = new SpeechSynthesisUtterance(text);
   u.lang = 'ro-RO'; u.rate = 1.1; u.volume = 1.0;
-  window.speechSynthesis.speak(u);
+  // 50ms delay: Android Chrome drops speak() called immediately after cancel()
+  setTimeout(() => window.speechSynthesis.speak(u), 50);
 }
 
 function speakIfIdle(text) {
@@ -511,8 +516,11 @@ function navClear() {
 
 function navStart() {
   if (!S.road.boxes.length) return;
-  S.road.active = true; S.road.legDistKm = 0; S.road.nextIdx = 0; S.road.announced = {};
+  S.road.active = true; S.road.legDistKm = 0; S.road.announced = {};
   S.road.lastPos = S.gps.lat ? { lat: S.gps.lat, lng: S.gps.lng } : null;
+  // Skip boxes within 80m to avoid voice spam at start
+  const firstIdx = S.road.boxes.findIndex(b => b.sumKm > 0.08);
+  S.road.nextIdx = firstIdx === -1 ? 0 : firstIdx;
   el('nav-setup').classList.add('hidden');
   el('nav-active').classList.remove('hidden');
   S.road.tickId = setInterval(navRender, 500);
@@ -571,7 +579,7 @@ function navRender() {
   if (ni + 1 < boxes.length) {
     const af = boxes[ni + 1];
     el('nav-after-text').textContent =
-      `Box ${af.num} · ${(af.sectionKm||0).toFixed(2)} km · ${DIR_ARROW[af.dir]||af.dir||'?'}` +
+      `Box ${af.num} · ${af.sectionKm != null ? af.sectionKm.toFixed(2) + ' km' : '?'} · ${DIR_ARROW[af.dir]||af.dir||'?'}` +
       (af.flag ? ' '+DIR_ARROW[af.flag] : '') + (af.comment ? ' · '+af.comment : '');
   } else {
     el('nav-after-text').textContent = '— finish leg —';
@@ -600,7 +608,7 @@ function navRender() {
     else if (flag === 'RT_START_AUTO')     txt = 'START RT';
     else if (flag === 'RT_FINISH')         txt = 'FINISH RT';
     else if (flag === 'STOP-CFR')          txt = 'STOP — cale ferată';
-    speak(txt, true);
+    speak(txt);
   }
 }
 
