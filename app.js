@@ -1187,7 +1187,7 @@ function init() {
   // Chrono
   el('btn-chrono-toggle').addEventListener('click', chronoToggle);
   el('btn-chrono-reset').addEventListener('click', chronoReset);
-  el('btn-gps-retry').addEventListener('click', gpsRetry);
+  el('btn-gps-retry')?.addEventListener('click', gpsRetry);
 
   // RT
   el('rt-spd').addEventListener('input', rtPreview);
