@@ -1,6 +1,29 @@
 'use strict';
 
 // ══════════════════════════════════════════════════════════════
+//  BUILD + DIAGNOSTIC GLOBAL DE ERORI
+//  Orice eroare JS necapturată e afișată pe ecran (cu numărul versiunii),
+//  ca să putem diagnostica pe telefon fără consolă de developer.
+// ══════════════════════════════════════════════════════════════
+const BUILD = 'v8';
+function showFatal(msg) {
+  let b = document.getElementById('fatal-banner');
+  if (!b) {
+    b = document.createElement('div');
+    b.id = 'fatal-banner';
+    b.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:99999;' +
+      'background:#ff3b30;color:#fff;font:12px/1.4 sans-serif;padding:8px;' +
+      'white-space:pre-wrap;word-break:break-word;';
+    (document.body || document.documentElement).appendChild(b);
+  }
+  b.textContent = 'BUILD ' + BUILD + ' • EROARE: ' + msg;
+}
+window.addEventListener('error', e =>
+  showFatal((e.message || 'eroare') + '  @' + String(e.filename || '').split('/').pop() + ':' + e.lineno));
+window.addEventListener('unhandledrejection', e =>
+  showFatal('promise: ' + (e.reason && e.reason.message ? e.reason.message : e.reason)));
+
+// ══════════════════════════════════════════════════════════════
 //  STATE
 // ══════════════════════════════════════════════════════════════
 const S = {
@@ -1192,6 +1215,22 @@ function vibrate(pattern) { navigator.vibrate?.(pattern); }
 //  INIT
 // ══════════════════════════════════════════════════════════════
 function init() {
+  // Legările de UI sunt grupate într-un try: dacă vreun element lipsește
+  // (ex. HTML vechi din cache), nu mai blocăm pornirea GPS-ului de mai jos.
+  try { bindUI(); } catch (err) { showFatal('init/bindUI: ' + err.message); }
+
+  // Critice — rulează indiferent de erorile de mai sus:
+  const bt = document.getElementById('build-tag');
+  if (bt) bt.textContent = BUILD;
+  try { acquireWakeLock(); } catch (_) {}
+  try { gpsInit(); } catch (err) { showFatal('gpsInit: ' + err.message); }
+
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('./sw.js').catch(console.warn);
+  }
+}
+
+function bindUI() {
   // Tab switching
   document.querySelectorAll('.nav-btn').forEach(btn => {
     btn.addEventListener('click', () => {
@@ -1304,15 +1343,6 @@ function init() {
     S.cfg.model = el('model-sel').value;
     ls('rali_model', S.cfg.model);
   });
-
-  // Wake lock + GPS
-  acquireWakeLock();
-  gpsInit();
-
-  // Service worker
-  if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.register('./sw.js').catch(console.warn);
-  }
 }
 
 document.addEventListener('DOMContentLoaded', init);
