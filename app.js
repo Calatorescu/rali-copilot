@@ -803,6 +803,21 @@ function init() {
     setTimeout(() => { s.textContent = ''; }, 2500);
   });
 
+  el('btn-test-voice').addEventListener('click', () => {
+    const sta = el('voice-status');
+    if (!window.speechSynthesis) {
+      sta.textContent = '✗ speechSynthesis indisponibil pe acest browser';
+      sta.style.color = 'var(--red)'; return;
+    }
+    const voices = window.speechSynthesis.getVoices();
+    const roVoice = voices.find(v => v.lang.startsWith('ro'));
+    sta.style.color = roVoice ? 'var(--green)' : 'var(--yellow)';
+    sta.textContent = roVoice
+      ? `✓ Voce română găsită: ${roVoice.name}`
+      : `⚠ Voce română indisponibilă — folosesc vocea implicită (${voices[0]?.name || '?'})`;
+    speak('Test voce copilot raliu. Stânga în 300 metri. Finish RT.');
+  });
+
   el('model-sel').addEventListener('change', () => {
     S.cfg.model = el('model-sel').value;
     ls('rali_model', S.cfg.model);
