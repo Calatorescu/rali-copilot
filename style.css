@@ -165,18 +165,31 @@ html, body { height: 100%; overflow: hidden; background: var(--bg); color: var(-
 
 #rt-live { display: flex; flex-direction: column; gap: 12px; }
 
-.dev-box   { background: var(--surf); border-radius: 20px; padding: 20px;
-             text-align: center; border: 2px solid var(--border); }
-.dev-num   { font-size: 88px; font-weight: 800; line-height: 1;
+.dev-box   { background: var(--surf); border-radius: 20px; padding: 28px 20px;
+             text-align: center; border: 3px solid var(--border);
+             transition: background .25s, border-color .25s; }
+.dev-num   { font-size: 104px; font-weight: 800; line-height: 1;
              font-variant-numeric: tabular-nums; transition: color .3s; }
-.dev-lbl   { font-size: 16px; color: var(--dim); margin-top: 2px; }
+.dev-lbl   { font-size: 17px; margin-top: 4px; font-weight: 600; }
 
+/* Pacing colorat: umple caseta cu culoarea de stare, citibil dintr-o privire la viteză.
+   Umplerea folosește un inset box-shadow translucid ca să meargă pe toate temele. */
 .dev-num.ok   { color: var(--green); }
 .dev-num.warn { color: var(--yellow); }
 .dev-num.bad  { color: var(--red); }
-.dev-box.ok   { border-color: var(--green); }
-.dev-box.warn { border-color: var(--yellow); }
-.dev-box.bad  { border-color: var(--red); }
+.dev-box.ok   { border-color: var(--green);  box-shadow: inset 0 0 0 100vmax rgba(0,210,106,.16); }
+.dev-box.warn { border-color: var(--yellow); box-shadow: inset 0 0 0 100vmax rgba(255,214,10,.18); }
+.dev-box.bad  { border-color: var(--red);    box-shadow: inset 0 0 0 100vmax rgba(255,59,48,.20); }
+.dev-box.ok   .dev-lbl { color: var(--green); }
+.dev-box.warn .dev-lbl { color: var(--yellow); }
+.dev-box.bad  .dev-lbl { color: var(--red); }
+
+/* Editor segmente de medie */
+.seg-row { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
+.seg-row input { flex: 1; min-width: 0; padding: 12px; border-radius: 10px;
+                 background: var(--surf2); border: 1px solid var(--border); color: var(--text);
+                 font-size: 15px; }
+.seg-row .seg-del { flex: 0 0 auto; padding: 12px 14px; }
 
 .stats-card { background: var(--surf); border-radius: 14px; overflow: hidden; }
 .stat-row   { display: flex; justify-content: space-between; align-items: center;

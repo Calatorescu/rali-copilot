@@ -5,7 +5,7 @@
 //  Orice eroare JS necapturată e afișată pe ecran (cu numărul versiunii),
 //  ca să putem diagnostica pe telefon fără consolă de developer.
 // ══════════════════════════════════════════════════════════════
-const BUILD = 'v9';
+const BUILD = 'v11';
 function showFatal(msg) {
   let b = document.getElementById('fatal-banner');
   if (!b) {
@@ -32,7 +32,7 @@ const S = {
   rt: {
     active: false, finishing: false, targetSpd: 40, totalDist: 2.0, type: 'auto',
     startMs: null, distKm: 0, lastPos: null, tickId: null,
-    spd2: null, changeKm: null, chgAnnounced: false
+    segments: [{ from: 0, speed: 40 }], distFactor: 1, voiceThresh: 3, segAnnounced: {}
   },
   road: {
     boxes: (() => { try { return JSON.parse(ls('rali_road') || '[]'); } catch(e) { return []; } })(),
@@ -42,7 +42,7 @@ const S = {
   presets: (() => { try { return JSON.parse(ls('rali_presets') || 'null') || DEFAULT_PRESETS(); } catch(e) { return DEFAULT_PRESETS(); } })(),
   tc: { targetMs: null, tickId: null, announced: {} },
   pen: (() => { try { return JSON.parse(ls('rali_pen') || '{}'); } catch(e) { return {}; } })(),
-  voice: { rtLastMs: 0, rtLastDev: null },
+  voice: { rtLastMs: 0, rtLastDev: null, paceOut: false },
   rec: { obj: null, listening: false, cancelled: false },
   chat: { busy: false },
   cfg: {
@@ -276,65 +276,110 @@ function fmtSecU(s) {
 }
 
 // ══════════════════════════════════════════════════════════════
-//  RT — SETUP
+//  RT — SETUP (model pe segmente de medie)
 // ══════════════════════════════════════════════════════════════
-// Timp ideal pentru a parcurge `dist` km, cu schimbare opțională de viteză
-function rtIdealTime(dist, spd1, spd2, changeKm) {
-  if (spd2 && changeKm && dist > changeKm) {
-    return (changeKm * 3600) / spd1 + ((dist - changeKm) * 3600) / spd2;
-  }
-  return (dist * 3600) / spd1;
-}
-// Viteza țintă activă la distanța `dist`
-function rtPhaseSpeed(dist, spd1, spd2, changeKm) {
-  return (spd2 && changeKm && dist >= changeKm) ? spd2 : spd1;
+// Un RT e o listă de segmente { from: km_start, speed: km/h }, primul de la 0.
+// Vechiul model (o viteză, eventual o schimbare la mijloc) e doar cazul cu 1-2 segmente.
+
+// Citește segmentele din UI: viteza de bază (rt-spd) + rândurile de schimbări (#rt-segs).
+function rtReadSegments() {
+  const base = parseFloat(el('rt-spd').value) || 40;
+  const segs = [{ from: 0, speed: base }];
+  el('rt-segs').querySelectorAll('.seg-row').forEach(row => {
+    const km = parseFloat(row.querySelector('.seg-km').value);
+    const sp = parseFloat(row.querySelector('.seg-spd').value);
+    if (km > 0 && sp > 0) segs.push({ from: km, speed: sp });
+  });
+  segs.sort((a, b) => a.from - b.from);
+  return segs;
 }
 
-function rtChgEnabled() {
-  return el('rt-chg-on').checked;
+// Timp ideal (secunde) pentru a parcurge `dist` km pe segmentele date.
+function segIdealTime(dist, segs) {
+  let t = 0;
+  for (let i = 0; i < segs.length; i++) {
+    const from = segs[i].from;
+    const to = (i + 1 < segs.length) ? segs[i + 1].from : Infinity;
+    if (dist <= from) break;
+    t += (Math.min(dist, to) - from) * 3600 / segs[i].speed;
+  }
+  return t;
+}
+
+// Viteza țintă activă la distanța `dist`.
+function segPhaseSpeed(dist, segs) {
+  let s = segs[0].speed;
+  for (const seg of segs) if (dist >= seg.from - 1e-9) s = seg.speed;
+  return s;
+}
+
+// Adaugă un rând de schimbare de medie în editor.
+function rtAddSegRow(km, spd) {
+  const row = document.createElement('div');
+  row.className = 'seg-row';
+  row.innerHTML =
+    '<input type="number" class="seg-km"  placeholder="la km" min="0.01" step="0.01" inputmode="decimal">' +
+    '<input type="number" class="seg-spd" placeholder="km/h"  min="1"    step="0.1"  inputmode="decimal">' +
+    '<button class="btn btn-danger btn-sm seg-del" type="button">✕</button>';
+  if (km  != null) row.querySelector('.seg-km').value  = km;
+  if (spd != null) row.querySelector('.seg-spd').value = spd;
+  row.querySelector('.seg-km').addEventListener('input', rtPreview);
+  row.querySelector('.seg-spd').addEventListener('input', rtPreview);
+  row.querySelector('.seg-del').addEventListener('click', () => { row.remove(); rtPreview(); });
+  el('rt-segs').appendChild(row);
+  rtPreview();
+}
+
+// Calibrare odometru: din ce-a arătat app-ul vs distanța reală a secțiunii etalon.
+function rtCalibrate() {
+  const measured = parseFloat(prompt('Câți km a ARĂTAT aplicația pe secțiunea de probă?'));
+  if (!measured || measured <= 0) return;
+  const real = parseFloat(prompt('Câți km are REAL secțiunea (din roadbook)?'));
+  if (!real || real <= 0) return;
+  const corr = (real / measured - 1) * 100;
+  el('rt-distcorr').value = corr.toFixed(1);
+  ls('rali_distcorr', corr.toFixed(1));
+  alert(`Corecție distanță setată: ${corr >= 0 ? '+' : ''}${corr.toFixed(1)}%`);
 }
 
 function rtPreview() {
-  const spd = parseFloat(el('rt-spd').value) || 40;
-  const dst = parseFloat(el('rt-dst').value) || 2;
-  const chg = rtChgEnabled();
-  const spd2 = chg ? (parseFloat(el('rt-chg-spd').value) || null) : null;
-  const ckm  = chg ? (parseFloat(el('rt-chg-km').value)  || null) : null;
-  const total = rtIdealTime(dst, spd, spd2, ckm);
-  const half  = rtIdealTime(dst / 2, spd, spd2, ckm);
+  const dst  = parseFloat(el('rt-dst').value) || 2;
+  const segs = rtReadSegments();
+  const total = segIdealTime(dst, segs);
+  const half  = segIdealTime(dst / 2, segs);
   let html = `Timp ideal total: <strong>${fmtSecU(total)}</strong>&nbsp;&nbsp;La 50%: ${fmtSecU(half)}`;
-  if (spd2 && ckm) {
-    const tChg = rtIdealTime(ckm, spd, spd2, ckm);
-    html += `<br>Schimbare la ${ckm.toFixed(2)} km (${fmtSecU(tChg)}): ${spd} → ${spd2} km/h`;
+  if (segs.length > 1) {
+    html += '<br>' + segs.slice(1).map(s => `↻ ${s.from.toFixed(2)} km → ${s.speed} km/h`).join(' &nbsp;·&nbsp; ');
   }
   el('rt-preview').innerHTML = html;
 }
 
 function rtStart() {
-  S.rt.targetSpd = parseFloat(el('rt-spd').value) || 40;
   S.rt.totalDist = parseFloat(el('rt-dst').value) || 2;
   S.rt.type      = document.querySelector('input[name="rt-type"]:checked').value;
-  if (rtChgEnabled()) {
-    S.rt.spd2     = parseFloat(el('rt-chg-spd').value) || null;
-    S.rt.changeKm = parseFloat(el('rt-chg-km').value)  || null;
-  } else {
-    S.rt.spd2 = null; S.rt.changeKm = null;
-  }
-  S.rt.chgAnnounced = false;
+  S.rt.segments  = rtReadSegments();
+  S.rt.targetSpd = S.rt.segments[0].speed;
+  S.rt.distFactor = 1 + ((parseFloat(el('rt-distcorr').value) || 0) / 100);
+  ls('rali_distcorr', String(parseFloat(el('rt-distcorr').value) || 0));
+  S.rt.voiceThresh = Math.max(1, parseFloat(el('rt-voicethr').value) || 3);
+  ls('rali_voicethr', String(S.rt.voiceThresh));
+  S.rt.segAnnounced = {};
   S.rt.startMs   = Date.now();
   S.rt.distKm    = 0;
   S.rt.lastPos   = S.gps.lat ? { lat: S.gps.lat, lng: S.gps.lng } : null;
   S.rt.active    = true;
+  S.rt.finishing = false;
 
   el('rt-setup').classList.add('hidden');
   el('rt-live').classList.remove('hidden');
   el('rt-badge').classList.remove('hidden');
-  el('s-phase-row').classList.toggle('hidden', !S.rt.spd2);
+  el('s-phase-row').classList.toggle('hidden', S.rt.segments.length <= 1);
 
   S.rt.tickId = setInterval(rtRender, 250);
-  S.voice.rtLastMs = 0; S.voice.rtLastDev = null;
+  S.voice.rtLastMs = 0; S.voice.rtLastDev = null; S.voice.paceOut = false;
   const startType = S.rt.type === 'standing' ? 'standing start' : 'start';
-  const chgTxt = S.rt.spd2 ? `, schimbare la ${S.rt.changeKm} km la ${S.rt.spd2}` : '';
+  const nChg = S.rt.segments.length - 1;
+  const chgTxt = nChg > 0 ? `, cu ${nChg} ${nChg === 1 ? 'schimbare' : 'schimbări'} de medie` : '';
   speak(`RT pornit — ${S.rt.targetSpd} km pe oră — ${startType}${chgTxt}`);
   vibrate([30]);
 }
@@ -359,7 +404,7 @@ function rtGpsTick(pos) {
   const cur = { lat: pos.coords.latitude, lng: pos.coords.longitude };
   if (S.rt.lastPos) {
     const d = haversine(S.rt.lastPos.lat, S.rt.lastPos.lng, cur.lat, cur.lng);
-    if (d < 0.5) S.rt.distKm += d; // sanity cap per tick
+    if (d < 0.5) S.rt.distKm += d * (S.rt.distFactor || 1); // calibrare + sanity cap
   }
   S.rt.lastPos = cur;
 }
@@ -370,39 +415,40 @@ function rtGpsTick(pos) {
 function rtRender() {
   if (!S.rt.active) return;
 
+  const segs     = S.rt.segments;
   const elapsedS = (Date.now() - S.rt.startMs) / 1000;
   const dist     = S.rt.distKm;
-  const spd      = S.rt.targetSpd;
-  const spd2     = S.rt.spd2;
-  const ckm      = S.rt.changeKm;
   const total    = S.rt.totalDist;
 
-  const idealS   = rtIdealTime(dist, spd, spd2, ckm);   // timp ideal pt dist parcursă
+  const idealS   = segIdealTime(dist, segs);             // timp ideal pt dist parcursă
   const devS     = elapsedS - idealS;                    // + = în urmă, - = în avans
   const remaining = Math.max(0, total - dist);
   const pct      = Math.min(100, (dist / total) * 100);
-  const phaseSpd = rtPhaseSpeed(dist, spd, spd2, ckm);   // viteza țintă acum
+  const phaseSpd = segPhaseSpeed(dist, segs);            // viteza țintă acum
 
   // Required speed to recover deviation on remaining segment
   let reqSpd = null;
   if (remaining > 0.001) {
-    const remIdealS = rtIdealTime(total, spd, spd2, ckm) - idealS;
+    const remIdealS = segIdealTime(total, segs) - idealS;
     const remActualS = remIdealS - devS;
     reqSpd = remActualS > 1 ? (remaining * 3600) / remActualS : null;
   }
 
-  // Voice: anunță schimbarea de viteză la trecerea pragului
-  if (spd2 && ckm && !S.rt.chgAnnounced && dist >= ckm - 0.05) {
-    S.rt.chgAnnounced = true;
-    speak(`Schimbare viteză — ${spd2} km pe oră`);
-    vibrate([60, 40, 60]);
+  // Voice: anunță fiecare schimbare de medie la trecerea pragului ei
+  for (let i = 1; i < segs.length; i++) {
+    if (!S.rt.segAnnounced[i] && dist >= segs[i].from - 0.05) {
+      S.rt.segAnnounced[i] = true;
+      speak(`Schimbare viteză — ${segs[i].speed} km pe oră`);
+      vibrate([60, 40, 60]);
+    }
   }
 
   // Deviation display
   const absD = Math.abs(devS);
   const sign = devS >= 0 ? '+' : '−';
+  const arrow = devS >= 0 ? '▲' : '▼';   // ▲ = în urmă (mai repede), ▼ = în avans (mai lent)
   el('dev-num').textContent = sign + absD.toFixed(1);
-  el('dev-lbl').textContent = devS >= 0 ? 'secunde în urmă' : 'secunde în avans';
+  el('dev-lbl').textContent = devS >= 0 ? `${arrow} secunde în urmă` : `${arrow} secunde în avans`;
 
   const cls = absD <= 5 ? 'ok' : absD <= 15 ? 'warn' : 'bad';
   el('dev-num').className = `dev-num ${cls}`;
@@ -416,7 +462,7 @@ function rtRender() {
   el('s-ideal').textContent    = fmtSec(idealS) + ' s';
   el('s-dist').textContent     = dist.toFixed(3) + ' km';
   el('s-rem').textContent      = remaining.toFixed(3) + ' km';
-  if (spd2) el('s-phase').textContent = phaseSpd.toFixed(1) + ' km/h';
+  if (segs.length > 1) el('s-phase').textContent = phaseSpd.toFixed(1) + ' km/h';
 
   if (remaining < 0.01) {
     el('s-reqspd').textContent = 'FINISH';
@@ -432,18 +478,25 @@ function rtRender() {
   el('prog-fill').style.width  = pct + '%';
   el('prog-pct').textContent   = Math.round(pct) + '%';
 
-  // Voice speed feedback (max 1x la 15s, doar dacă deviere > 3s)
+  // Voce de pace: anunță la trecerea pragului (imediat), apoi repetă la ~8s cât ești
+  // în afara pragului; când revii sub prag, confirmă „în pace". Pragul e reglabil.
   const nowMs = Date.now();
-  if (elapsedS > 8 && nowMs - S.voice.rtLastMs > 15000) {
-    const prevDev = S.voice.rtLastDev;
-    if (absD > 3 && (prevDev === null || Math.abs(devS - prevDev) > 1.5)) {
-      const dir = devS > 0 ? 'în urmă' : 'în avans';
-      const action = devS > 0
-        ? (absD > 15 ? 'URGENT, mult mai repede' : absD > 7 ? 'mai repede' : 'ușor mai repede')
-        : (absD > 12 ? 'mult mai lent' : 'ușor mai lent');
-      const spdStr = reqSpd ? `, du-te la ${Math.round(reqSpd)} km pe oră` : '';
-      speakIfIdle(`${Math.round(absD)} secunde ${dir} — ${action}${spdStr}`);
-      S.voice.rtLastMs = nowMs; S.voice.rtLastDev = devS;
+  const thr = S.rt.voiceThresh || 3;
+  if (elapsedS > 5) {
+    if (absD > thr) {
+      const justCrossed = !S.voice.paceOut;
+      if (justCrossed || nowMs - S.voice.rtLastMs > 8000) {
+        const dir = devS > 0 ? 'în urmă' : 'în avans';
+        const action = devS > 0
+          ? (absD > 15 ? 'mult mai repede' : absD > 7 ? 'mai repede' : 'ușor mai repede')
+          : (absD > 15 ? 'mult mai lent'   : absD > 7 ? 'mai lent'   : 'ușor mai lent');
+        const spdStr = reqSpd ? `, ${Math.round(reqSpd)} km pe oră` : '';
+        speakIfIdle(`${Math.round(absD)} secunde ${dir}, ${action}${spdStr}`);
+        S.voice.rtLastMs = nowMs; S.voice.paceOut = true;
+      }
+    } else if (S.voice.paceOut) {
+      S.voice.paceOut = false; S.voice.rtLastMs = nowMs;
+      speakIfIdle('În pace.');
     }
   }
 
@@ -523,12 +576,13 @@ async function rtScan() {
       const raw = await callClaudeVision(b64, mime,
         `Ești copilotul de raliu. Analizează roadbook-ul din fotografie și extrage parametrii RT (Regularity Test).
 Returnează DOAR JSON valid, fără alt text:
-{"speed": 40.0, "distance": 5.74, "start": "standing", "note": "RT 4"}
-- speed = viteza medie impusă în km/h (număr zecimal)
+{"speed": 40.0, "distance": 5.74, "start": "standing", "changes": [{"km": 3.06, "speed": 45.0}], "note": "RT 4"}
+- speed = viteza medie impusă inițială în km/h (număr zecimal)
 - distance = distanța totală RT în km (număr zecimal)
 - start = "standing" (start din loc, simbol cu fulg/snowflake) sau "auto" (start din mers)
+- changes = lista schimbărilor de medie pe parcurs: la ce km se schimbă și noua viteză. [] dacă viteza e constantă.
 - note = identificator scurt (ex: "RT 4", "TR 1")
-Dacă nu identifici un parametru cu siguranță, pune null.`, 200);
+Dacă nu identifici un parametru cu siguranță, pune null (sau [] pentru changes).`, 300);
 
       const match = raw.match(/\{[\s\S]*?\}/);
       if (!match) throw new Error('Format neașteptat');
@@ -538,6 +592,10 @@ Dacă nu identifici un parametru cu siguranță, pune null.`, 200);
       if (d.distance != null) el('rt-dst').value = d.distance;
       if (d.start === 'standing') document.querySelector('input[name="rt-type"][value="standing"]').checked = true;
       if (d.start === 'auto')     document.querySelector('input[name="rt-type"][value="auto"]').checked     = true;
+      el('rt-segs').innerHTML = '';
+      (Array.isArray(d.changes) ? d.changes : []).forEach(c => {
+        if (c && c.km > 0 && c.speed > 0) rtAddSegRow(c.km, c.speed);
+      });
       rtPreview();
 
       const spd = d.speed    != null ? `${d.speed} km/h` : '? km/h';
@@ -915,7 +973,8 @@ function renderPresets() {
   S.presets.forEach((p, i) => {
     const chip = document.createElement('button');
     chip.className = 'preset-chip';
-    const chgTxt = p.spd2 ? `→${p.spd2}` : '';
+    const nChg = p.changes ? p.changes.length : (p.spd2 ? 1 : 0);
+    const chgTxt = nChg ? `+${nChg}` : '';
     const nameSpan = document.createElement('span');
     nameSpan.textContent = p.name;                       // textContent: fără injecție HTML
     const pxSpan = document.createElement('span');
@@ -949,15 +1008,10 @@ function applyPreset(i) {
   el('rt-spd').value = p.spd;
   el('rt-dst').value = p.dist;
   document.querySelector(`input[name="rt-type"][value="${p.type}"]`).checked = true;
-  if (p.spd2 && p.changeKm) {
-    el('rt-chg-on').checked = true;
-    el('rt-chg-fields').classList.remove('hidden');
-    el('rt-chg-spd').value = p.spd2;
-    el('rt-chg-km').value  = p.changeKm;
-  } else {
-    el('rt-chg-on').checked = false;
-    el('rt-chg-fields').classList.add('hidden');
-  }
+  // Schimbările pot veni din formatul nou (changes[]) sau cel vechi (spd2/changeKm).
+  el('rt-segs').innerHTML = '';
+  const changes = p.changes || (p.spd2 && p.changeKm ? [{ km: p.changeKm, speed: p.spd2 }] : []);
+  changes.forEach(c => rtAddSegRow(c.km, c.speed));
   rtPreview();
   vibrate([20]);
 }
@@ -965,14 +1019,13 @@ function applyPreset(i) {
 function savePreset() {
   const name = prompt('Nume preset (ex: RT1):');
   if (!name) return;
-  const chg = rtChgEnabled();
+  const segs = rtReadSegments();
   S.presets.push({
     name: name.trim().slice(0, 8),
-    spd: parseFloat(el('rt-spd').value) || 40,
+    spd: segs[0].speed,
     dist: parseFloat(el('rt-dst').value) || 2,
     type: document.querySelector('input[name="rt-type"]:checked').value,
-    spd2: chg ? (parseFloat(el('rt-chg-spd').value) || null) : null,
-    changeKm: chg ? (parseFloat(el('rt-chg-km').value) || null) : null
+    changes: segs.slice(1).map(s => ({ km: s.from, speed: s.speed }))
   });
   ls('rali_presets', JSON.stringify(S.presets));
   renderPresets();
@@ -1252,12 +1305,10 @@ function bindUI() {
   // RT
   el('rt-spd').addEventListener('input', rtPreview);
   el('rt-dst').addEventListener('input', rtPreview);
-  el('rt-chg-spd').addEventListener('input', rtPreview);
-  el('rt-chg-km').addEventListener('input', rtPreview);
-  el('rt-chg-on').addEventListener('change', () => {
-    el('rt-chg-fields').classList.toggle('hidden', !el('rt-chg-on').checked);
-    rtPreview();
-  });
+  el('rt-distcorr').value = ls('rali_distcorr') || '0';
+  el('rt-voicethr').value = ls('rali_voicethr') || '3';
+  el('btn-rt-calib').addEventListener('click', rtCalibrate);
+  el('btn-rt-addseg').addEventListener('click', () => rtAddSegRow());
   el('btn-rt-start').addEventListener('click', rtStart);
   el('btn-rt-stop').addEventListener('click', rtStop);
   el('btn-rt-savepreset').addEventListener('click', savePreset);
