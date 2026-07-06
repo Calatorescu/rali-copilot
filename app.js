@@ -5,7 +5,7 @@
 //  Orice eroare JS necapturată e afișată pe ecran (cu numărul versiunii),
 //  ca să putem diagnostica pe telefon fără consolă de developer.
 // ══════════════════════════════════════════════════════════════
-const BUILD = 'v14';
+const BUILD = 'v15';
 function showFatal(msg) {
   let b = document.getElementById('fatal-banner');
   if (!b) {
@@ -1488,6 +1488,58 @@ function navOffset(meters) {
 }
 
 // ══════════════════════════════════════════════════════════════
+//  NAV RE-SYNC — „✓ Am trecut de box"
+//  Copilotul apasă exact când mașina trece de boxul afișat: odometrul
+//  se fixează la sumKm-ul boxului, ștergând tot driftul GPS acumulat.
+// ══════════════════════════════════════════════════════════════
+function navBoxPassed() {
+  if (!S.road.active || !S.road.boxes.length) return;
+  const boxes = S.road.boxes;
+  const dist  = S.road.legDistKm;
+
+  // Candidați: boxul „next" și cel dinaintea lui (dacă apeși puțin după ce
+  // afișajul a avansat deja). Îl alegem pe cel mai apropiat în km de poziția curentă.
+  const cand = [];
+  if (S.road.nextIdx - 1 >= 0) cand.push(S.road.nextIdx - 1);
+  if (S.road.nextIdx < boxes.length) cand.push(S.road.nextIdx);
+  const valid = cand.filter(i => typeof boxes[i].sumKm === 'number' && isFinite(boxes[i].sumKm));
+  if (!valid.length) return;
+  const idx = valid.reduce((a, b) =>
+    Math.abs(boxes[a].sumKm - dist) <= Math.abs(boxes[b].sumKm - dist) ? a : b);
+  const box = boxes[idx];
+  const deltaM = Math.round((box.sumKm - dist) * 1000);
+
+  // Snap: de aici înainte, „în X metri" e din nou exact roadbook-ul.
+  S.road.legDistKm = box.sumKm;
+  S.road.nextIdx = idx + 1;
+  // Re-permite anunțurile pentru boxurile care urmează; cel confirmat rămâne „spus".
+  S.road.announced = {};
+  const key = `${box.num}_${Math.round(box.sumKm * 100)}`;
+  for (let t = 0; t < NAV_TIERS.length; t++) S.road.announced[key + '_t' + t] = true;
+
+  // Verificare de coerență: corecție mare = posibil traseu greșit sau box confirmat greșit.
+  const sta = el('nav-sync-status');
+  const absM = Math.abs(deltaM);
+  const sign = deltaM >= 0 ? '+' : '−';
+  if (absM > 200) {
+    sta.textContent = `⚠ Diferență mare: ${sign}${absM} m față de roadbook — verificați poziția!`;
+    sta.classList.add('warn');
+    speak(`Atenție, diferență de ${absM} de metri față de roadbook. Verificați poziția.`, 1);
+    vibrate([200, 80, 200]);
+  } else {
+    sta.textContent = `✓ Sincronizat la Box ${box.num} (corecție ${sign}${absM} m)`;
+    sta.classList.remove('warn');
+    vibrate([30]);
+  }
+  sta.classList.remove('hidden');
+  clearTimeout(S.road.syncMsgId);
+  S.road.syncMsgId = setTimeout(() => sta.classList.add('hidden'), 6000);
+
+  navRender();
+  navPersistSession(true);
+}
+
+// ══════════════════════════════════════════════════════════════
 //  UTIL
 // ══════════════════════════════════════════════════════════════
 function el(id) { return document.getElementById(id); }
@@ -1782,6 +1834,7 @@ function bindUI() {
     b.addEventListener('click', () => applyTheme(b.dataset.theme)));
 
   // NAV offset
+  el('btn-nav-passed').addEventListener('click', navBoxPassed);
   el('btn-off-m100').addEventListener('click', () => navOffset(-100));
   el('btn-off-m10').addEventListener('click',  () => navOffset(-10));
   el('btn-off-p10').addEventListener('click',  () => navOffset(10));
