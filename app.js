@@ -5,7 +5,7 @@
 //  Orice eroare JS necapturată e afișată pe ecran (cu numărul versiunii),
 //  ca să putem diagnostica pe telefon fără consolă de developer.
 // ══════════════════════════════════════════════════════════════
-const BUILD = 'v13';
+const BUILD = 'v14';
 function showFatal(msg) {
   let b = document.getElementById('fatal-banner');
   if (!b) {
@@ -719,6 +719,67 @@ const DIR_VOICE = {
   'STOP-CFR':'STOP cale ferată'
 };
 
+// ── Turn-by-turn: tiere de anunț (aproape → departe). Se alege intervalul cel mai
+//    strâns pe care l-ai atins; boxurile dense sar automat tierele îndepărtate. ──
+const NAV_TIERS = [
+  { d: 0.035, now: true },  // ~35 m — execută manevra
+  { d: 0.15 },              // 150 m
+  { d: 0.30 },              // 300 m
+];
+
+// Rotunjește distanța pentru voce (sună natural: „300", nu „283").
+function navRoundDist(km) {
+  const m = Math.round(km * 1000);
+  return m >= 100 ? Math.round(m / 50) * 50 : Math.round(m / 10) * 10;
+}
+
+// Distanța cu gramatică RO corectă: „300 de metri" (≥20), „10 metri" (<20).
+function navDistPhrase(km) {
+  const m = navRoundDist(km);
+  return m + (m >= 20 ? ' de metri' : ' metri');
+}
+
+// Reperul din box (prima parte a comentariului, curățat) — ex. „biserică", „semafor".
+// Scoate un „la " din față ca să nu iasă „la la biserică".
+function navLandmark(box) {
+  let c = (box.comment || '').split('/')[0].trim().replace(/^la\s+/i, '');
+  return c.length > 42 ? c.slice(0, 42) : c;
+}
+
+// Manevra ca text vocal. `now` = varianta imperativă la momentul execuției.
+function navManeuver(box, now) {
+  switch (box.dir) {
+    case 'ÎNAINTE':   return 'drept înainte';
+    case 'STÂNGA':    return now ? 'stânga acum' : 'la stânga';
+    case 'DREAPTA':   return now ? 'dreapta acum' : 'la dreapta';
+    case 'STÂNGA-T':  return now ? 'stânga acum, la T' : 'la stânga, la T';
+    case 'DREAPTA-T': return now ? 'dreapta acum, la T' : 'la dreapta, la T';
+  }
+  if (/^GIRATORIU-/.test(box.dir || ''))
+    return 'sens giratoriu, ' + (DIR_VOICE[box.dir] || '') + (now ? ', acum' : '');
+  return DIR_VOICE[box.dir] || box.dir || 'manevră';
+}
+
+// Textul complet turn-by-turn pentru un box. Flag-urile speciale (TC / RT / CFR / EV / P)
+// au prioritate; altfel manevră + reper. `isNow` = tierul de execuție.
+function navTurnText(box, distKm, isNow) {
+  const dp = navDistPhrase(distKm);
+  switch (box.flag) {
+    case 'TC': return isNow ? 'Time Control — oprește și ștampilează'
+      : `Time Control în ${dp} — pregătește time card`;
+    case 'RT_START_STANDING': return isNow ? 'START RT — standing start' : `Start RT în ${dp}`;
+    case 'RT_START_AUTO':     return isNow ? 'START RT' : `Start RT în ${dp}`;
+    case 'RT_FINISH':         return isNow ? 'FINISH RT' : `Finish RT în ${dp}`;
+    case 'STOP-CFR':          return isNow ? 'STOP — cale ferată' : `ATENȚIE — cale ferată în ${dp} — vei opri`;
+    case 'EV':                return isNow ? 'Stație de încărcare' : `Stație de încărcare în ${dp}`;
+    case 'PARKING':           return isNow ? 'Parcare' : `Parcare în ${dp}`;
+  }
+  const man = navManeuver(box, isNow);
+  if (isNow) return man;
+  const lm = navLandmark(box);
+  return `În ${dp}${lm ? ', la ' + lm : ''}, ${man}`;
+}
+
 // Coadă de voce cu priorități: un anunț important nu mai e tăiat de unul minor.
 // prio: 3 = critic (alertă RT, schimbare medie, countdown TC, finish),
 //       2 = navigație (implicit), 1 = confirmări (pornit, setat, test).
@@ -980,35 +1041,20 @@ function navRender() {
     el('nav-after-text').textContent = '— finish leg —';
   }
 
-  // Voice announcements
+  // ── Turn-by-turn vocal ──
+  // Alege tierul cel mai strâns atins (35m/150m/300m); marchează-l pe el + cele mai
+  // îndepărtate ca spuse, ca boxurile apropiate să nu declanșeze anunțuri „în 300m" greșite.
   const key = `${next.num}_${Math.round(next.sumKm * 100)}`;
-  const voice = DIR_VOICE[next.dir] || next.dir || 'manevra';
-  const flag  = next.flag;
-
-  if (distToNext <= 0.35 && !S.road.announced[key + 'w']) {
-    S.road.announced[key + 'w'] = true;
-    const m = Math.round(distToNext * 1000);
-    let txt = `Pregătire — ${voice} în ${m} metri`;
-    if (flag === 'TC')   txt = `Time Control în ${m} metri — pregătește time card`;
-    else if (flag === 'RT_START_AUTO' || flag === 'RT_START_STANDING')
-      txt = `Start RT în ${m} metri`;
-    else if (flag === 'RT_FINISH') txt = `Finish RT în ${m} metri`;
-    else if (flag === 'STOP-CFR')  txt = `ATENȚIE — cale ferată în ${m} metri — vei opri`;
-    else if (flag === 'EV')        txt = `Stație de încărcare în ${m} metri`;
-    else if (flag === 'PARKING')   txt = `Parcare în ${m} metri`;
-    if (flag === 'EV') vibrate([40, 30, 40, 30, 40]);
-    speak(txt);
-  } else if (distToNext <= 0.08 && !S.road.announced[key + 'n']) {
-    S.road.announced[key + 'n'] = true;
-    let txt = voice;
-    if (flag === 'TC')   txt = 'Time Control — oprește și ștampilează';
-    else if (flag === 'RT_START_STANDING') txt = 'START RT — standing start';
-    else if (flag === 'RT_START_AUTO')     txt = 'START RT';
-    else if (flag === 'RT_FINISH')         txt = 'FINISH RT';
-    else if (flag === 'STOP-CFR')          txt = 'STOP — cale ferată';
-    else if (flag === 'EV')                txt = 'Stație de încărcare';
-    else if (flag === 'PARKING')           txt = 'Parcare';
-    speak(txt);
+  let chosen = -1;
+  for (let i = 0; i < NAV_TIERS.length; i++) {
+    if (distToNext <= NAV_TIERS[i].d) { chosen = i; break; }
+  }
+  if (chosen >= 0 && !S.road.announced[key + '_t' + chosen]) {
+    for (let j = chosen; j < NAV_TIERS.length; j++) S.road.announced[key + '_t' + j] = true;
+    const isNow = !!NAV_TIERS[chosen].now;
+    speak(navTurnText(next, distToNext, isNow));
+    if (next.flag === 'EV') vibrate([40, 30, 40, 30, 40]);
+    else if (next.flag === 'STOP-CFR' && isNow) vibrate([200, 80, 200]);
   }
 }
 
