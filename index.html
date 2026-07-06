@@ -118,6 +118,9 @@
 
         <div class="rt-preview" id="rt-preview"></div>
 
+        <button class="btn btn-sec btn-sm" id="btn-rt-table" type="button">📊 Tabel timpi ideali</button>
+        <div class="rt-table hidden" id="rt-table"></div>
+
         <div style="display:flex; gap:10px;">
           <button class="btn btn-sec btn-sm" id="btn-rt-savepreset">💾 Salvează ca preset</button>
         </div>
@@ -262,9 +265,15 @@
             <input type="number" id="batt-km" value="115" min="1" max="500" step="1" inputmode="numeric">
           </div>
         </div>
-        <div class="field-group">
-          <label>Consum (kWh/100km)</label>
-          <input type="number" id="batt-cons" value="20" min="10" max="35" step="0.5" inputmode="decimal">
+        <div style="display:flex; gap:10px;">
+          <div class="field-group" style="flex:1">
+            <label>Consum (kWh/100km)</label>
+            <input type="number" id="batt-cons" value="20" min="10" max="35" step="0.5" inputmode="decimal">
+          </div>
+          <div class="field-group" style="flex:1">
+            <label>Temp. exterioară (°C)</label>
+            <input type="number" id="batt-temp" placeholder="opțional" min="-30" max="45" step="1" inputmode="numeric">
+          </div>
         </div>
         <div class="batt-out" id="batt-out">Apasă Calculează.</div>
         <button class="btn btn-pri" id="btn-batt-calc">Calculează + voce</button>
@@ -333,6 +342,15 @@
       </div>
 
       <div id="set-status" class="set-status"></div>
+
+      <div class="settings-block">
+        <p class="block-title">DATE / BACKUP</p>
+        <div style="display:flex; gap:10px;">
+          <button class="btn btn-sec" id="btn-export" style="flex:1">⬇ Export</button>
+          <button class="btn btn-sec" id="btn-import" style="flex:1">⬆ Import</button>
+        </div>
+        <p class="info-line">Salvează presetări, roadbook și setări într-un fișier JSON (fără cheia API). Importul înlocuiește datele și reîncarcă aplicația.</p>
+      </div>
 
       <div class="settings-block">
         <p class="block-title">TEST VOCE</p>

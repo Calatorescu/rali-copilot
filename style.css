@@ -337,3 +337,17 @@ html, body { height: 100%; overflow: hidden; background: var(--bg); color: var(-
              color: var(--text); font-size: 13px; font-weight: 700; padding: 12px 6px;
              cursor: pointer; text-align: center; }
 .theme-opt.active { border-color: var(--pri); color: var(--pri); }
+
+/* ── RT speed table (tabel timpi ideali intermediari) ── */
+.rt-table { margin-top: 4px; max-height: 240px; overflow-y: auto; -webkit-overflow-scrolling: touch;
+            border: 1px solid var(--border); border-radius: 10px; }
+.rt-table.hidden { display: none; }
+.speed-table { width: 100%; border-collapse: collapse; font-size: 14px; }
+.speed-table th { position: sticky; top: 0; background: var(--surf2); color: var(--dim);
+                  font-size: 11px; letter-spacing: 1px; text-transform: uppercase;
+                  padding: 8px 10px; text-align: right; }
+.speed-table th:first-child { text-align: left; }
+.speed-table td { padding: 9px 10px; text-align: right; border-top: 1px solid var(--border);
+                  color: var(--text); font-variant-numeric: tabular-nums; }
+.speed-table td:first-child { text-align: left; color: var(--dim); }
+.speed-table tr:last-child td { font-weight: 700; border-top: 2px solid var(--border); }

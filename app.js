@@ -5,7 +5,7 @@
 //  Orice eroare JS necapturată e afișată pe ecran (cu numărul versiunii),
 //  ca să putem diagnostica pe telefon fără consolă de developer.
 // ══════════════════════════════════════════════════════════════
-const BUILD = 'v11';
+const BUILD = 'v12';
 function showFatal(msg) {
   let b = document.getElementById('fatal-banner');
   if (!b) {
@@ -283,7 +283,8 @@ function fmtSecU(s) {
 
 // Citește segmentele din UI: viteza de bază (rt-spd) + rândurile de schimbări (#rt-segs).
 function rtReadSegments() {
-  const base = parseFloat(el('rt-spd').value) || 40;
+  // Math.max(1, …): o viteză 0/negativă/goală ar da timp ideal 0/negativ (deviere coruptă).
+  const base = Math.max(1, parseFloat(el('rt-spd').value) || 40);
   const segs = [{ from: 0, speed: base }];
   el('rt-segs').querySelectorAll('.seg-row').forEach(row => {
     const km = parseFloat(row.querySelector('.seg-km').value);
@@ -352,6 +353,8 @@ function rtPreview() {
     html += '<br>' + segs.slice(1).map(s => `↻ ${s.from.toFixed(2)} km → ${s.speed} km/h`).join(' &nbsp;·&nbsp; ');
   }
   el('rt-preview').innerHTML = html;
+  const tbl = el('rt-table');
+  if (tbl && !tbl.classList.contains('hidden')) rtRenderTable(); // ține tabelul sincron
 }
 
 function rtStart() {
@@ -367,6 +370,7 @@ function rtStart() {
   S.rt.startMs   = Date.now();
   S.rt.distKm    = 0;
   S.rt.lastPos   = S.gps.lat ? { lat: S.gps.lat, lng: S.gps.lng } : null;
+  S.rt.lastT     = null;
   S.rt.active    = true;
   S.rt.finishing = false;
 
@@ -380,33 +384,78 @@ function rtStart() {
   const startType = S.rt.type === 'standing' ? 'standing start' : 'start';
   const nChg = S.rt.segments.length - 1;
   const chgTxt = nChg > 0 ? `, cu ${nChg} ${nChg === 1 ? 'schimbare' : 'schimbări'} de medie` : '';
-  speak(`RT pornit — ${S.rt.targetSpd} km pe oră — ${startType}${chgTxt}`);
+  speak(`RT pornit — ${S.rt.targetSpd} km pe oră — ${startType}${chgTxt}`, 1);
   vibrate([30]);
+  rtPersistSession(true);
 }
 
-function rtStop() {
+// auto=true => oprire automată la finish (nu propune calibrare, distanța ≈ oficialul).
+function rtStop(auto) {
+  const measured = S.rt.distKm;
+  const official = S.rt.totalDist;
+  const wasActive = S.rt.active;
   S.rt.active = false; S.rt.finishing = false;
   clearInterval(S.rt.tickId);
+  rtClearSession();
+  voiceFlush();
   el('rt-live').classList.add('hidden');
   el('rt-setup').classList.remove('hidden');
   el('rt-badge').classList.add('hidden');
   vibrate([50, 50, 50]);
+  // Auto-calibrare: la STOP manual, compară ce-a măsurat app-ul cu distanța oficială.
+  if (!auto && wasActive && measured > 0.1 && official > 0.1) rtOfferCalibration(measured, official);
+}
+
+// Propune un nou factor de corecție din discrepanța măsurat vs oficial la finalul RT.
+function rtOfferCalibration(measured, official) {
+  const err = (official / measured - 1) * 100;
+  if (Math.abs(err) < 0.8) return; // sub prag — nu deranjăm
+  const curFactor = S.rt.distFactor || 1;         // măsuratul include deja acest factor
+  let newCorr = (curFactor * (official / measured) - 1) * 100;
+  newCorr = Math.max(-15, Math.min(15, newCorr)); // clamp ca în câmpul UI
+  if (confirm(`RT terminat.\nApp-ul a măsurat ${measured.toFixed(3)} km, oficial ${official.toFixed(3)} km (${err>=0?'+':''}${err.toFixed(1)}%).\n\nActualizezi corecția de distanță la ${newCorr>=0?'+':''}${newCorr.toFixed(1)}% pentru RT-urile următoare?`)) {
+    el('rt-distcorr').value = newCorr.toFixed(1);
+    ls('rali_distcorr', newCorr.toFixed(1));
+  }
 }
 
 // ══════════════════════════════════════════════════════════════
-//  RT — GPS TICK
+//  RT / NAV — GPS DISTANCE (hibrid: viteză GPS + haversine fallback)
 // ══════════════════════════════════════════════════════════════
+// Distanța incrementală (km) dintre două fix-uri, cu:
+//  • integrarea vitezei GPS (c.speed × dt) când viteza e disponibilă — stabilă la mers,
+//    fără driftul de zgomot al integrării poziție-cu-poziție;
+//  • haversine ca rezervă când viteza lipsește (cu plafon de sanity < 0.5 km);
+//  • gardă de jitter: ignoră mișcarea când ești practic oprit (viteză < 2 km/h) sau
+//    când saltul de poziție e sub ~4 m fără viteză validă (tremur GPS staționar).
+// `state` are { lastPos, lastT }. Actualizează starea și întoarce km-ul de adăugat.
+function gpsDistKm(state, pos) {
+  const c = pos.coords;
+  const cur = { lat: c.latitude, lng: c.longitude };
+  const t = pos.timestamp;
+  let inc = 0;
+  if (state.lastPos && state.lastT != null) {
+    const dt = (t - state.lastT) / 1000;                        // secunde
+    const hav = haversine(state.lastPos.lat, state.lastPos.lng, cur.lat, cur.lng); // km
+    const spd = c.speed;                                        // m/s sau null
+    const spdOk = spd != null && isFinite(spd) && spd >= 0;
+    const spdKmh = spdOk ? spd * 3.6 : null;
+    const stationary = spdOk ? (spdKmh < 2) : (hav < 0.004);    // ~2 km/h  /  ~4 m
+    if (!stationary && dt > 0 && dt < 10) {
+      if (spdOk)          inc = (spd * dt) / 1000;              // integrare viteză
+      else if (hav < 0.5) inc = hav;                           // rezervă haversine
+    }
+  }
+  state.lastPos = cur;
+  state.lastT = t;
+  return inc;
+}
+
 function rtGpsTick(pos) {
   if (!S.rt.active) return;
   const acc = pos.coords.accuracy;
   if (acc && acc > 60) return; // skip noisy fix
-
-  const cur = { lat: pos.coords.latitude, lng: pos.coords.longitude };
-  if (S.rt.lastPos) {
-    const d = haversine(S.rt.lastPos.lat, S.rt.lastPos.lng, cur.lat, cur.lng);
-    if (d < 0.5) S.rt.distKm += d * (S.rt.distFactor || 1); // calibrare + sanity cap
-  }
-  S.rt.lastPos = cur;
+  S.rt.distKm += gpsDistKm(S.rt, pos) * (S.rt.distFactor || 1); // + calibrare
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -438,7 +487,7 @@ function rtRender() {
   for (let i = 1; i < segs.length; i++) {
     if (!S.rt.segAnnounced[i] && dist >= segs[i].from - 0.05) {
       S.rt.segAnnounced[i] = true;
-      speak(`Schimbare viteză — ${segs[i].speed} km pe oră`);
+      speak(`Schimbare viteză — ${segs[i].speed} km pe oră`, 3);
       vibrate([60, 40, 60]);
     }
   }
@@ -491,20 +540,23 @@ function rtRender() {
           ? (absD > 15 ? 'mult mai repede' : absD > 7 ? 'mai repede' : 'ușor mai repede')
           : (absD > 15 ? 'mult mai lent'   : absD > 7 ? 'mai lent'   : 'ușor mai lent');
         const spdStr = reqSpd ? `, ${Math.round(reqSpd)} km pe oră` : '';
-        speakIfIdle(`${Math.round(absD)} secunde ${dir}, ${action}${spdStr}`);
+        speakIfIdle(`${Math.round(absD)} secunde ${dir}, ${action}${spdStr}`, 3);
         S.voice.rtLastMs = nowMs; S.voice.paceOut = true;
       }
     } else if (S.voice.paceOut) {
       S.voice.paceOut = false; S.voice.rtLastMs = nowMs;
-      speakIfIdle('În pace.');
+      speakIfIdle('În pace.', 1);
     }
   }
+
+  // Persistă sesiunea RT (throttle ~1/sec) pentru reluare după reload / OS-kill
+  rtPersistSession();
 
   // Auto-stop when done (guard against repeat calls every 250ms)
   if (pct >= 100 && dist >= total - 0.01 && !S.rt.finishing) {
     S.rt.finishing = true;
-    speak('Finish RT.');
-    setTimeout(() => { if (S.rt.active) { S.rt.finishing = false; rtStop(); } }, 1500);
+    speak('Finish RT.', 3);
+    setTimeout(() => { if (S.rt.active) { S.rt.finishing = false; rtStop(true); } }, 1500);
   }
 }
 
@@ -657,18 +709,47 @@ const DIR_VOICE = {
   'STOP-CFR':'STOP cale ferată'
 };
 
-function speak(text) {
-  if (!window.speechSynthesis) return;
-  window.speechSynthesis.cancel();
-  const u = new SpeechSynthesisUtterance(text);
+// Coadă de voce cu priorități: un anunț important nu mai e tăiat de unul minor.
+// prio: 3 = critic (alertă RT, schimbare medie, countdown TC, finish),
+//       2 = navigație (implicit), 1 = confirmări (pornit, setat, test).
+// Un anunț cu prioritate strict mai mare întrerupe anunțul curent; altfel se pune la coadă.
+const _voiceQ = [];
+let _voiceCur = null;
+
+function _voiceNext() {
+  if (_voiceCur || !_voiceQ.length || !window.speechSynthesis) return;
+  let idx = 0;
+  for (let i = 1; i < _voiceQ.length; i++) if (_voiceQ[i].prio > _voiceQ[idx].prio) idx = i;
+  _voiceCur = _voiceQ.splice(idx, 1)[0];
+  const mine = _voiceCur;
+  const u = new SpeechSynthesisUtterance(mine.text);
   u.lang = 'ro-RO'; u.rate = 1.1; u.volume = 1.0;
-  // 50ms delay: Android Chrome drops speak() called immediately after cancel()
-  setTimeout(() => window.speechSynthesis.speak(u), 50);
+  u.onend = u.onerror = () => { if (_voiceCur === mine) { _voiceCur = null; _voiceNext(); } };
+  // 60ms delay: Android Chrome drops speak() called imediat după cancel()
+  setTimeout(() => { if (_voiceCur === mine) window.speechSynthesis.speak(u); }, 60);
 }
 
-function speakIfIdle(text) {
-  if (!window.speechSynthesis || window.speechSynthesis.speaking) return;
-  speak(text);
+function speak(text, prio = 2) {
+  if (!window.speechSynthesis || !text) return;
+  if (_voiceCur && prio > _voiceCur.prio) {   // întrerupe doar ce e mai puțin important
+    _voiceCur = null;
+    window.speechSynthesis.cancel();
+  }
+  _voiceQ.push({ text, prio });
+  _voiceNext();
+}
+
+function speakIfIdle(text, prio = 2) {
+  if (!window.speechSynthesis) return;
+  if (_voiceCur || _voiceQ.length || window.speechSynthesis.speaking) return;
+  speak(text, prio);
+}
+
+// Golește coada și oprește vocea (la STOP RT / STOP navigare).
+function voiceFlush() {
+  _voiceQ.length = 0;
+  _voiceCur = null;
+  window.speechSynthesis?.cancel();
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -743,18 +824,21 @@ function navStart() {
   if (!S.road.boxes.length) return;
   S.road.active = true; S.road.legDistKm = 0; S.road.announced = {};
   S.road.lastPos = S.gps.lat ? { lat: S.gps.lat, lng: S.gps.lng } : null;
+  S.road.lastT = null;
   // Skip boxes within 80m to avoid voice spam at start
   const firstIdx = S.road.boxes.findIndex(b => b.sumKm > 0.08);
   S.road.nextIdx = firstIdx === -1 ? 0 : firstIdx;
   el('nav-setup').classList.add('hidden');
   el('nav-active').classList.remove('hidden');
   S.road.tickId = setInterval(navRender, 500);
-  speak('Navigare pornită.');
+  speak('Navigare pornită.', 1);
+  navPersistSession(true);
 }
 
 function navStop() {
   S.road.active = false; clearInterval(S.road.tickId);
-  window.speechSynthesis?.cancel();
+  navClearSession();
+  voiceFlush();
   el('nav-active').classList.add('hidden');
   el('nav-setup').classList.remove('hidden');
 }
@@ -762,18 +846,14 @@ function navStop() {
 function navGpsTick(pos) {
   const acc = pos.coords.accuracy;
   if (acc && acc > 60) return;
-  const cur = { lat: pos.coords.latitude, lng: pos.coords.longitude };
-  if (S.road.lastPos) {
-    const d = haversine(S.road.lastPos.lat, S.road.lastPos.lng, cur.lat, cur.lng);
-    if (d < 0.5) S.road.legDistKm += d;
-  }
-  S.road.lastPos = cur;
+  S.road.legDistKm += gpsDistKm(S.road, pos); // aceeași măsurare hibridă ca la RT
 }
 
 function navRender() {
   if (!S.road.active) return;
   const dist = S.road.legDistKm;
   el('nav-pos-km').textContent = dist.toFixed(3) + ' km';
+  navPersistSession(); // throttle ~1/sec, pentru reluare după reload / OS-kill
 
   // Advance past already-passed boxes
   while (S.road.nextIdx < S.road.boxes.length &&
@@ -856,9 +936,12 @@ Răspunde în română, SCURT (max 3 rânduri). Direcțiile cu MAJUSCULE. Calcul
 function rtContext() {
   if (!S.rt.active) return '';
   const el_ = (Date.now() - S.rt.startMs) / 1000;
-  const idealS = (S.rt.distKm * 3600) / S.rt.targetSpd;
+  // Timp ideal pe segmente — identic cu afișajul RT (segIdealTime), nu formula plată.
+  // Altfel copilotul AI primea o deviere greșită la RT-urile cu schimbare de medie.
+  const idealS = segIdealTime(S.rt.distKm, S.rt.segments);
   const dev = el_ - idealS;
-  return `[RT activ: ${S.rt.targetSpd} km/h țintă, deviere ${dev>=0?'+':''}${dev.toFixed(1)}s, `+
+  const phaseSpd = segPhaseSpeed(S.rt.distKm, S.rt.segments);
+  return `[RT activ: ${phaseSpd} km/h țintă acum (start ${S.rt.targetSpd}), deviere ${dev>=0?'+':''}${dev.toFixed(1)}s, `+
          `distanță ${S.rt.distKm.toFixed(3)}/${S.rt.totalDist} km, viteză GPS ${Math.round(S.gps.speed)} km/h]`;
 }
 
@@ -1053,7 +1136,7 @@ function tcSet() {
   S.tc.announced = {};
   clearInterval(S.tc.tickId);
   S.tc.tickId = setInterval(tcTick, 200);
-  speak(`Countdown setat pentru ora ${parts[0]} ${pad(parts[1])}`);
+  speak(`Countdown setat pentru ora ${parts[0]} ${pad(parts[1])}`, 1);
 }
 
 function tcSyncPlus1() {
@@ -1086,7 +1169,7 @@ function tcTick() {
   if (rem <= 0) {
     disp.textContent = 'GO!';
     disp.className = 'cd-display go';
-    if (!S.tc.announced.go) { S.tc.announced.go = true; speak('Pleacă! GO!'); vibrate([200, 80, 200]); }
+    if (!S.tc.announced.go) { S.tc.announced.go = true; speak('Pleacă! GO!', 3); vibrate([200, 80, 200]); }
     if (rem < -3) tcStop();
     return;
   }
@@ -1101,7 +1184,7 @@ function tcTick() {
   const marks = { 60:'60 secunde', 30:'30 secunde', 10:'10 secunde', 5:'5', 4:'4', 3:'3', 2:'2', 1:'1' };
   if (marks[sec] && !S.tc.announced[sec] && rem <= sec && rem > sec - 0.25) {
     S.tc.announced[sec] = true;
-    speak(marks[sec]);
+    speak(marks[sec], 3);
     if (sec <= 5) vibrate([80]);
   }
 }
@@ -1114,7 +1197,14 @@ function battCalc() {
   const now  = parseFloat(el('batt-now').value)  || 0;
   const km   = parseFloat(el('batt-km').value)   || 0;
   const cons = parseFloat(el('batt-cons').value) || 20;
-  const kwhNeed = km * cons / 100;
+  // Ajustare la frig: sub 10°C autonomia scade (~+15% consum), sub 0°C mai mult (~+30%).
+  const temp = parseFloat(el('batt-temp')?.value);
+  let consEff = cons, tempNote = '';
+  if (!isNaN(temp)) {
+    const mult = temp < 0 ? 1.30 : temp < 10 ? 1.15 : 1.0;
+    if (mult > 1) { consEff = cons * mult; tempNote = ` · ajustat ${temp}°C (+${Math.round((mult - 1) * 100)}%)`; }
+  }
+  const kwhNeed = km * consEff / 100;
   const pctNeed = (kwhNeed / BATT_KWH) * 100;
   const pctEnd  = now - pctNeed;
   const out = el('batt-out');
@@ -1133,8 +1223,8 @@ function battCalc() {
     msg = `Finish estimat la <span class="big" style="color:${cls}">${pctEnd.toFixed(0)}%</span> — INSUFICIENT. Planifică încărcare pe traseu.`;
     voice = `Baterie insuficientă. Finish estimat la ${pctEnd.toFixed(0)} la sută. Recomand încărcare pe traseu.`;
   }
-  out.innerHTML = `${msg}<br><span style="color:var(--dim)">Consum estimat: ${kwhNeed.toFixed(1)} kWh (${pctNeed.toFixed(0)}% baterie) pentru ${km} km.</span>`;
-  speak(voice);
+  out.innerHTML = `${msg}<br><span style="color:var(--dim)">Consum estimat: ${kwhNeed.toFixed(1)} kWh (${pctNeed.toFixed(0)}% baterie) pentru ${km} km${tempNote}.</span>`;
+  speak(voice, 1);
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -1267,6 +1357,223 @@ function navOffset(meters) {
 function el(id) { return document.getElementById(id); }
 function vibrate(pattern) { navigator.vibrate?.(pattern); }
 
+// Comută tab-ul activ (folosit de reluarea sesiunii).
+function activateTab(name) {
+  document.querySelectorAll('.nav-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === name));
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  el('tab-' + name)?.classList.add('active');
+}
+
+// ══════════════════════════════════════════════════════════════
+//  CRASH-RECOVERY — persistă RT/NAV în curs, oferă reluare la pornire
+// ══════════════════════════════════════════════════════════════
+const SESSION_MAXAGE = 3 * 3600 * 1000; // 3h — peste asta, considerăm sesiunea abandonată
+let _rtPersistMs = 0, _navPersistMs = 0;
+
+function rtPersistSession(force) {
+  if (!S.rt.active) return;
+  const now = Date.now();
+  if (!force && now - _rtPersistMs < 1000) return; // throttle ~1/sec
+  _rtPersistMs = now;
+  try {
+    ls('rali_rt_session', JSON.stringify({
+      active: true, startMs: S.rt.startMs, distKm: S.rt.distKm,
+      segments: S.rt.segments, totalDist: S.rt.totalDist, targetSpd: S.rt.targetSpd,
+      type: S.rt.type, distFactor: S.rt.distFactor, voiceThresh: S.rt.voiceThresh,
+      savedAt: now
+    }));
+  } catch (e) {}
+}
+function rtClearSession() { try { localStorage.removeItem('rali_rt_session'); } catch (e) {} }
+
+function navPersistSession(force) {
+  if (!S.road.active) return;
+  const now = Date.now();
+  if (!force && now - _navPersistMs < 1000) return;
+  _navPersistMs = now;
+  try {
+    ls('rali_nav_session', JSON.stringify({
+      active: true, legDistKm: S.road.legDistKm, nextIdx: S.road.nextIdx, savedAt: now
+    }));
+  } catch (e) {}
+}
+function navClearSession() { try { localStorage.removeItem('rali_nav_session'); } catch (e) {} }
+
+function resumeRt(r) {
+  S.rt.segments   = Array.isArray(r.segments) && r.segments.length ? r.segments : [{ from: 0, speed: r.targetSpd || 40 }];
+  S.rt.totalDist  = r.totalDist || 2;
+  S.rt.targetSpd  = r.targetSpd || S.rt.segments[0].speed;
+  S.rt.type       = r.type || 'auto';
+  S.rt.distFactor = r.distFactor || 1;
+  S.rt.voiceThresh = r.voiceThresh || 3;
+  S.rt.startMs    = r.startMs;              // timpul curge mai departe (corect pentru cursă)
+  S.rt.distKm     = r.distKm || 0;
+  S.rt.segAnnounced = {};
+  S.rt.lastPos = null; S.rt.lastT = null;
+  S.rt.active = true; S.rt.finishing = false;
+  el('rt-setup').classList.add('hidden');
+  el('rt-live').classList.remove('hidden');
+  el('rt-badge').classList.remove('hidden');
+  el('s-phase-row').classList.toggle('hidden', S.rt.segments.length <= 1);
+  clearInterval(S.rt.tickId);
+  S.rt.tickId = setInterval(rtRender, 250);
+  S.voice.rtLastMs = 0; S.voice.rtLastDev = null; S.voice.paceOut = false;
+  activateTab('rt');
+  speak('RT reluat.', 1);
+}
+
+function resumeNav(r) {
+  if (!S.road.boxes.length) return;         // fără roadbook nu avem ce relua
+  S.road.active = true;
+  S.road.legDistKm = r.legDistKm || 0;
+  S.road.nextIdx = r.nextIdx || 0;
+  S.road.announced = {};
+  S.road.lastPos = null; S.road.lastT = null;
+  el('nav-setup').classList.add('hidden');
+  el('nav-active').classList.remove('hidden');
+  clearInterval(S.road.tickId);
+  S.road.tickId = setInterval(navRender, 500);
+  activateTab('nav');
+  speak('Navigare reluată.', 1);
+}
+
+// Banner discret de reluare (fără să blocheze pornirea GPS-ului ca un confirm()).
+function showResumeBanner(rtS, navS) {
+  const bar = document.createElement('div');
+  bar.id = 'resume-banner';
+  bar.style.cssText = 'position:fixed;left:8px;right:8px;top:8px;z-index:9000;' +
+    'background:#1c1c1e;color:#fff;border:1px solid #ff9f0a;border-radius:12px;' +
+    'padding:10px 12px;font:13px/1.4 sans-serif;box-shadow:0 6px 24px rgba(0,0,0,.5);';
+  const msg = document.createElement('div');
+  const parts = [];
+  if (rtS)  parts.push(`RT în curs (${(rtS.distKm || 0).toFixed(2)} km)`);
+  if (navS) parts.push(`Navigare în curs (${(navS.legDistKm || 0).toFixed(2)} km)`);
+  msg.textContent = '↩ Reiei sesiunea? ' + parts.join(' + ');
+  msg.style.marginBottom = '8px';
+  bar.appendChild(msg);
+  const btnRow = document.createElement('div');
+  btnRow.style.cssText = 'display:flex;gap:8px;';
+  const mkBtn = (label, bg, fn) => {
+    const b = document.createElement('button');
+    b.textContent = label;
+    b.style.cssText = `flex:1;padding:10px;border:0;border-radius:8px;font-weight:700;` +
+      `background:${bg};color:#fff;`;
+    b.addEventListener('click', fn);
+    return b;
+  };
+  const dismiss = () => bar.remove();
+  btnRow.appendChild(mkBtn('Reia', '#ff9f0a', () => {
+    if (rtS)  resumeRt(rtS);
+    if (navS) resumeNav(navS);
+    dismiss();
+  }));
+  btnRow.appendChild(mkBtn('Renunță', '#3a3a3c', () => {
+    rtClearSession(); navClearSession(); dismiss();
+  }));
+  bar.appendChild(btnRow);
+  (document.body || document.documentElement).appendChild(bar);
+}
+
+function checkResumeSessions() {
+  let rtS = null, navS = null;
+  try { rtS  = JSON.parse(ls('rali_rt_session')  || 'null'); } catch (e) {}
+  try { navS = JSON.parse(ls('rali_nav_session') || 'null'); } catch (e) {}
+  const rtOk  = rtS  && rtS.active  && (Date.now() - rtS.savedAt)  < SESSION_MAXAGE;
+  const navOk = navS && navS.active && (Date.now() - navS.savedAt) < SESSION_MAXAGE;
+  if (!rtOk)  rtClearSession();
+  if (!navOk) navClearSession();
+  if (rtOk || navOk) showResumeBanner(rtOk ? rtS : null, navOk ? navS : null);
+}
+
+// ══════════════════════════════════════════════════════════════
+//  RT — TABEL TIMPI IDEALI INTERMEDIARI (speed table, ca la Blunik)
+// ══════════════════════════════════════════════════════════════
+function rtRenderTable() {
+  const cont = el('rt-table');
+  if (!cont) return;
+  const dst  = parseFloat(el('rt-dst').value) || 2;
+  const segs = rtReadSegments();
+  const step = dst > 12 ? 1 : 0.5;               // păstrează tabelul scurt la RT lungi
+  cont.innerHTML = '';
+  const table = document.createElement('table');
+  table.className = 'speed-table';
+  const head = document.createElement('tr');
+  ['km', 'timp ideal', 'țintă'].forEach(h => {
+    const th = document.createElement('th'); th.textContent = h; head.appendChild(th);
+  });
+  table.appendChild(head);
+  const marks = [];
+  for (let d = step; d < dst - 1e-9; d += step) marks.push(+d.toFixed(3));
+  marks.push(+dst.toFixed(3));                    // rândul final = distanța totală
+  marks.forEach(d => {
+    const tr = document.createElement('tr');
+    const c1 = document.createElement('td'); c1.textContent = d.toFixed(2);
+    const c2 = document.createElement('td'); c2.textContent = fmtSec(segIdealTime(d, segs));
+    const c3 = document.createElement('td'); c3.textContent = segPhaseSpeed(d, segs).toFixed(0);
+    tr.append(c1, c2, c3);
+    table.appendChild(tr);
+  });
+  cont.appendChild(table);
+}
+
+function rtToggleTable() {
+  const cont = el('rt-table');
+  if (!cont) return;
+  const show = cont.classList.contains('hidden');
+  cont.classList.toggle('hidden', !show);
+  if (show) rtRenderTable();
+  el('btn-rt-table').textContent = show ? '📊 Ascunde tabelul' : '📊 Tabel timpi ideali';
+}
+
+// ══════════════════════════════════════════════════════════════
+//  EXPORT / IMPORT — backup presetări + roadbook + config (FĂRĂ cheia API)
+// ══════════════════════════════════════════════════════════════
+const EXPORT_KEYS = ['rali_presets', 'rali_road', 'rali_pen', 'rali_distcorr',
+                     'rali_voicethr', 'rali_model', 'rali_theme', 'rali_batt_temp'];
+
+function exportData() {
+  const data = {};
+  EXPORT_KEYS.forEach(k => { const v = ls(k); if (v != null) data[k] = v; });
+  const json = JSON.stringify({ _app: 'RALI', _ver: BUILD, _at: new Date().toISOString(), data }, null, 2);
+  try {
+    const blob = new Blob([json], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = `rali-backup-${new Date().toISOString().slice(0, 10)}.json`;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  } catch (e) {}
+  navigator.clipboard?.writeText(json).catch(() => {});
+  const s = el('set-status');
+  if (s) { s.textContent = 'Backup exportat ✓ (fără cheia API)'; setTimeout(() => { s.textContent = ''; }, 3000); }
+}
+
+function importData() {
+  const inp = document.createElement('input');
+  inp.type = 'file'; inp.accept = 'application/json,.json';
+  inp.onchange = () => {
+    const f = inp.files[0]; if (!f) return;
+    const r = new FileReader();
+    r.onload = () => {
+      const s = el('set-status');
+      try {
+        const obj = JSON.parse(r.result);
+        const data = obj && obj.data ? obj.data : obj;
+        let n = 0;
+        EXPORT_KEYS.forEach(k => {
+          if (data[k] != null) { ls(k, typeof data[k] === 'string' ? data[k] : JSON.stringify(data[k])); n++; }
+        });
+        if (s) s.textContent = `Import reușit ✓ (${n} chei) — reîncarc…`;
+        setTimeout(() => location.reload(), 1200);
+      } catch (e) {
+        if (s) s.textContent = '✗ Fișier invalid: ' + e.message;
+      }
+    };
+    r.readAsText(f);
+  };
+  inp.click();
+}
+
 // ══════════════════════════════════════════════════════════════
 //  INIT
 // ══════════════════════════════════════════════════════════════
@@ -1280,6 +1587,7 @@ function init() {
   if (bt) bt.textContent = BUILD;
   try { acquireWakeLock(); } catch (_) {}
   try { gpsInit(); } catch (err) { showFatal('gpsInit: ' + err.message); }
+  try { checkResumeSessions(); } catch (err) { console.warn('resume:', err); }
 
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('./sw.js').catch(console.warn);
@@ -1310,8 +1618,9 @@ function bindUI() {
   el('btn-rt-calib').addEventListener('click', rtCalibrate);
   el('btn-rt-addseg').addEventListener('click', () => rtAddSegRow());
   el('btn-rt-start').addEventListener('click', rtStart);
-  el('btn-rt-stop').addEventListener('click', rtStop);
+  el('btn-rt-stop').addEventListener('click', () => rtStop()); // fără arg => nu e auto-finish
   el('btn-rt-savepreset').addEventListener('click', savePreset);
+  el('btn-rt-table')?.addEventListener('click', rtToggleTable);
   renderPresets();
   rtPreview();
 
@@ -1322,6 +1631,10 @@ function bindUI() {
 
   // Tools — battery
   el('btn-batt-calc').addEventListener('click', battCalc);
+  if (el('batt-temp')) {
+    el('batt-temp').value = ls('rali_batt_temp') || '';
+    el('batt-temp').addEventListener('input', () => ls('rali_batt_temp', el('batt-temp').value));
+  }
 
   // Tools — penalties
   renderPenalties();
@@ -1390,13 +1703,17 @@ function bindUI() {
     sta.textContent = roVoice
       ? `✓ Voce română găsită: ${roVoice.name}`
       : `⚠ Voce română indisponibilă — folosesc vocea implicită (${voices[0]?.name || '?'})`;
-    speak('Test voce copilot raliu. Stânga în 300 metri. Finish RT.');
+    speak('Test voce copilot raliu. Stânga în 300 metri. Finish RT.', 1);
   });
 
   el('model-sel').addEventListener('change', () => {
     S.cfg.model = el('model-sel').value;
     ls('rali_model', S.cfg.model);
   });
+
+  // Backup / restore date (fără cheia API)
+  el('btn-export')?.addEventListener('click', exportData);
+  el('btn-import')?.addEventListener('click', importData);
 }
 
 document.addEventListener('DOMContentLoaded', init);
