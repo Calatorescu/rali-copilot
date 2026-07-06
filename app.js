@@ -5,7 +5,7 @@
 //  Orice eroare JS necapturată e afișată pe ecran (cu numărul versiunii),
 //  ca să putem diagnostica pe telefon fără consolă de developer.
 // ══════════════════════════════════════════════════════════════
-const BUILD = 'v12';
+const BUILD = 'v13';
 function showFatal(msg) {
   let b = document.getElementById('fatal-banner');
   if (!b) {
@@ -563,19 +563,29 @@ function rtRender() {
 // ══════════════════════════════════════════════════════════════
 //  VISION — camera + Claude multimodal
 // ══════════════════════════════════════════════════════════════
-function openCamera(onData) {
+// onData: single mode → onData(b64, mime); multiple mode → onData([{b64, mime}, ...])
+function openCamera(onData, multiple) {
   const inp = document.createElement('input');
   inp.type = 'file';
   inp.accept = 'image/*';
-  inp.capture = 'environment';
+  // multiple: selecție din galerie (mai multe pagini deodată, fără capture forțat pe cameră)
+  if (multiple) inp.multiple = true;
+  else inp.capture = 'environment';
   inp.style.cssText = 'position:fixed;top:-9999px;opacity:0;';
   inp.onchange = () => {
     document.body.removeChild(inp);
-    const file = inp.files[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => onData(reader.result.split(',')[1], file.type);
-    reader.readAsDataURL(file);
+    const files = Array.from(inp.files || []);
+    if (!files.length) return;
+    const readOne = f => new Promise(resolve => {
+      const r = new FileReader();
+      r.onload = () => resolve({ b64: r.result.split(',')[1], mime: f.type });
+      r.readAsDataURL(f);
+    });
+    if (multiple) {
+      Promise.all(files.map(readOne)).then(onData);
+    } else {
+      readOne(files[0]).then(({ b64, mime }) => onData(b64, mime));
+    }
   };
   document.body.appendChild(inp);
   inp.click();
@@ -775,26 +785,41 @@ Format de returnare — DOAR JSON array valid, fără alt text:
 
 Toate boxurile de pe pagină, în ordine crescătoare a numărului.`;
 
+// Scanează o singură imagine de roadbook, întoarce array-ul de boxuri extras.
+async function navScanImage(b64, mime) {
+  const raw = await callClaudeVision(b64, mime, NAV_SCAN_PROMPT, 1000, null, 'claude-sonnet-4-6');
+  const match = raw.match(/\[[\s\S]*\]/);
+  if (!match) throw new Error('Format neașteptat');
+  const boxes = JSON.parse(match[0]);
+  if (!Array.isArray(boxes) || !boxes.length) throw new Error('Niciun box identificat');
+  return boxes;
+}
+
+// Îmbină boxuri noi peste cele existente (dedup pe num+sumKm), sortează pe km cumulativ.
+// sumKm poate lipsi (null) → îl trimitem la coadă la sortare, nu blocăm.
+function navMergeBoxes(boxes) {
+  const key = b => `${b.num}_${Math.round((b.sumKm ?? -1) * 100)}`;
+  const map = new Map(S.road.boxes.map(b => [key(b), b]));
+  boxes.forEach(b => map.set(key(b), b));
+  S.road.boxes = Array.from(map.values())
+    .sort((a, b) => (a.sumKm ?? 1e9) - (b.sumKm ?? 1e9));
+  ls('rali_road', JSON.stringify(S.road.boxes));
+}
+
+// O singură pagină, cu camera.
 async function navScan() {
   if (!S.cfg.apiKey) { alert('Adaugă Claude API Key în SETĂRI.'); return; }
   openCamera(async (b64, mime) => {
     const btn = el('btn-nav-scan');
     const sta = el('nav-scan-status');
     btn.disabled = true; btn.textContent = '⏳ Scanez...';
+    sta.classList.remove('hidden');
     sta.className = 'scan-status'; sta.style.color = 'var(--dim)'; sta.textContent = '';
     try {
-      const raw = await callClaudeVision(b64, mime, NAV_SCAN_PROMPT, 1000, null, 'claude-sonnet-4-6');
-      const match = raw.match(/\[[\s\S]*\]/);
-      if (!match) throw new Error('Format neașteptat');
-      const boxes = JSON.parse(match[0]);
-      if (!Array.isArray(boxes) || !boxes.length) throw new Error('Niciun box identificat');
-
-      const map = new Map(S.road.boxes.map(b => [`${b.num}_${Math.round(b.sumKm*100)}`, b]));
-      boxes.forEach(b => map.set(`${b.num}_${Math.round(b.sumKm*100)}`, b));
-      S.road.boxes = Array.from(map.values()).sort((a, b) => a.sumKm - b.sumKm);
-      ls('rali_road', JSON.stringify(S.road.boxes));
+      const boxes = await navScanImage(b64, mime);
+      navMergeBoxes(boxes);
       navUpdateList();
-
+      navStageConfirm(1);
       sta.textContent = `✓ ${boxes.length} boxuri adăugate — total ${S.road.boxes.length}`;
       sta.style.color = 'var(--green)';
     } catch (e) {
@@ -803,6 +828,69 @@ async function navScan() {
       btn.disabled = false; btn.textContent = '📷 Adaugă pagină roadbook';
     }
   });
+}
+
+// Mai multe pagini deodată (o etapă pe mai multe foi) — selecție din galerie.
+async function navScanMulti() {
+  if (!S.cfg.apiKey) { alert('Adaugă Claude API Key în SETĂRI.'); return; }
+  openCamera(async (images) => {
+    if (!images || !images.length) return;
+    const btn = el('btn-nav-scan-multi');
+    const btn1 = el('btn-nav-scan');
+    const sta = el('nav-scan-status');
+    btn.disabled = true; btn1.disabled = true;
+    sta.classList.remove('hidden');
+    sta.className = 'scan-status'; sta.style.color = 'var(--dim)';
+    let added = 0, failed = 0;
+    // Secvențial (nu în paralel) — feedback pe pagini + evită rate-limit.
+    for (let i = 0; i < images.length; i++) {
+      sta.textContent = `⏳ Scanez pagina ${i + 1}/${images.length}...`;
+      try {
+        const boxes = await navScanImage(images[i].b64, images[i].mime);
+        navMergeBoxes(boxes);
+        added += boxes.length;
+        navUpdateList();
+      } catch (e) { failed++; }
+    }
+    navStageConfirm(images.length);
+    sta.textContent = `✓ ${images.length} pagini procesate` +
+      (failed ? ` (${failed} eșuate)` : '') + ` — ${added} boxuri, total ${S.road.boxes.length}`;
+    sta.style.color = failed ? 'var(--yellow)' : 'var(--green)';
+    btn.disabled = false; btn1.disabled = false;
+    btn.textContent = '🖼️ Adaugă mai multe pagini';
+  }, true);
+}
+
+// Confirmă că a înțeles etapa: de la Box X la Box Y, câte pagini, și verifică continuitatea numerotării.
+function navStageConfirm(pageCount) {
+  const box = el('nav-stage-confirm');
+  if (!box) return;
+  const boxes = S.road.boxes;
+  if (!boxes.length) { box.classList.add('hidden'); return; }
+  const nums = boxes.map(b => b.num).filter(n => typeof n === 'number').sort((a, b) => a - b);
+  const first = boxes[0], last = boxes[boxes.length - 1];
+  const fmtKm = v => (typeof v === 'number' && isFinite(v)) ? v.toFixed(2) : '?';
+  // toate valorile interpolate sunt numerice (num/km/pagini) — fără text din AI, deci innerHTML e sigur
+  let html = `<strong>Etapă înțeleasă:</strong> de la <b>Box ${nums.length ? nums[0] : '?'}</b> ` +
+    `la <b>Box ${nums.length ? nums[nums.length - 1] : '?'}</b> · ` +
+    `${boxes.length} boxuri · ${fmtKm(first.sumKm)}–${fmtKm(last.sumKm)} km`;
+  if (pageCount) html += ` · ${pageCount} ${pageCount === 1 ? 'pagină' : 'pagini'}`;
+  // continuitate: lipsesc numere de box între min și max?
+  const missing = [];
+  if (nums.length) {
+    const present = new Set(nums);
+    for (let k = nums[0]; k <= nums[nums.length - 1]; k++) if (!present.has(k)) missing.push(k);
+  }
+  if (missing.length) {
+    box.className = 'stage-confirm warn';
+    const show = missing.slice(0, 15).join(', ') + (missing.length > 15 ? '…' : '');
+    html += `<br>⚠️ Par să lipsească ${missing.length} box${missing.length > 1 ? 'uri' : ''}: ${show}. Mai scanează paginile lipsă.`;
+  } else {
+    box.className = 'stage-confirm ok';
+    html += `<br>✓ Numerotare continuă, fără goluri.`;
+  }
+  box.innerHTML = html;
+  box.classList.remove('hidden');
 }
 
 function navUpdateList() {
@@ -818,6 +906,8 @@ function navUpdateList() {
 function navClear() {
   if (!confirm('Ștergi toate boxurile scanate?')) return;
   S.road.boxes = []; ls('rali_road', '[]'); navUpdateList();
+  navStageConfirm();
+  const sta = el('nav-scan-status'); if (sta) sta.classList.add('hidden');
 }
 
 function navStart() {
@@ -1656,7 +1746,9 @@ function bindUI() {
   el('btn-nav-clear').addEventListener('click', navClear);
   el('btn-nav-start').addEventListener('click', navStart);
   el('btn-nav-stop').addEventListener('click', navStop);
+  el('btn-nav-scan-multi').addEventListener('click', navScanMulti);
   navUpdateList();
+  navStageConfirm();
 
   // RT Scan
   el('btn-rt-scan').addEventListener('click', rtScan);

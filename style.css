@@ -273,6 +273,13 @@ html, body { height: 100%; overflow: hidden; background: var(--bg); color: var(-
 
 .set-status  { text-align: center; font-size: 13px; color: var(--green); min-height: 18px; }
 .scan-status { font-size: 13px; line-height: 1.4; padding: 4px 2px; }
+.stage-confirm { font-size: 14px; line-height: 1.45; padding: 10px 12px; border-radius: 11px;
+  border: 1px solid var(--border); background: var(--surf); margin: 6px 0; }
+.stage-confirm b, .stage-confirm strong { color: var(--text); font-weight: 800; }
+.stage-confirm.ok   { border-color: var(--green); }
+.stage-confirm.ok strong { color: var(--green); }
+.stage-confirm.warn { border-color: var(--yellow); }
+.stage-confirm.warn strong { color: var(--yellow); }
 
 /* ── RT PRESETS ── */
 .preset-row { display: flex; gap: 8px; overflow-x: auto; scrollbar-width: none; padding-bottom: 2px; }
