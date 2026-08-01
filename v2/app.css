@@ -49,7 +49,13 @@ input { background: var(--bg); border: 1px solid var(--border); border-radius: 1
 #cp-rt { background: var(--surf); border-radius: 16px; padding: 12px 0 10px; margin-bottom: 10px; text-align: center; }
 .cp-dev { font-size: 92px; font-weight: 800; line-height: 1; font-variant-numeric: tabular-nums; }
 .cp-dev.ok { color: var(--ok); } .cp-dev.warn { color: var(--warn); } .cp-dev.bad { color: var(--bad); }
-.cp-target { font-size: 30px; font-weight: 800; margin-top: 8px; font-variant-numeric: tabular-nums; }
+.cp-target { font-size: 30px; font-weight: 800; font-variant-numeric: tabular-nums; }
+.rt-cols { display: flex; margin-top: 10px; }
+.rt-col { flex: 1; text-align: center; }
+.rt-col + .rt-col { border-left: 1px solid var(--border); }
+.rt-col .lbl { margin-top: 2px; }
+#cp-rem.aproape { color: var(--warn); }
+#cp-rem.final { color: var(--bad); }
 
 #cp-nav { background: var(--surf); border-radius: 16px; padding: 14px; text-align: center; margin-bottom: 10px; }
 #cp-nav.compact .nx-dir { font-size: 44px; } #cp-nav.compact .nx-dist { font-size: 22px; }

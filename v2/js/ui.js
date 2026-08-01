@@ -31,6 +31,13 @@ export function makeUi() {
           ? 'FINISH — NU OPRI LÂNGĂ TABELĂ'
           : (dev >= 0 ? 'SECUNDE ÎN URMĂ' : 'SECUNDE ÎN AVANS');
         $('cp-target').textContent = `${Math.round(M.speedKmh)} / ${M.rt.def.kmh}`;
+        // Cât mai e din probă — a doua cifră după deviere, cerută de Andreas: fără ea
+        // nu știi dacă mai ai loc să recuperezi sau trebuie să te resemnezi.
+        const remKm = Math.max(0, M.rt.def.distKm - M.rt.distKm);
+        const remEl = $('cp-rem');
+        remEl.textContent = remKm >= 1 ? remKm.toFixed(2) + ' km'
+                          : Math.round(remKm * 1000) + ' m';
+        remEl.className = 'cp-target' + (remKm <= 0.2 ? ' final' : remKm <= 0.5 ? ' aproape' : '');
       } else {
         rtEl.classList.add('hidden'); navEl.classList.remove('compact');
       }

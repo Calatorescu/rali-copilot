@@ -35,7 +35,9 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
     ghost: !!opts.ghost,
     _ann: {}, _staged: false, _warnedRt: {}, _lastBank: 0,
     _turnAcc: 0, _lastHdg: null, _lastHdgT: 0, _quietMs: 0, _lastSnapT: 0,
-    _lastToneT: 0, _extSpeedKmh: null, _extSpeedT: 0
+    _lastToneT: 0, _extSpeedKmh: null, _extSpeedT: 0,
+    // auto-calibrarea odometrului (vezi calibreaza)
+    calFactor: 1, _rawSinceAnchor: 0, _anchorKm: 0, _calN: 0, _calOficial: 0, _calMasurat: 0
   };
   const odo = makeOdometer();
 
@@ -102,12 +104,16 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
         M.routeKm += incM / 1000;
       }
     } else {
-      M.routeKm += incM / 1000;
-      turnDetect(fix);   // fără geometrie, virajele rămân reperele de resincronizare
+      // Fără geometrie (cazul REAL de la Sibiu: roadbook-ul vine cu o oră înainte de
+      // start, deci recunoaștere nu există), poziția vine din odometru — corectat cu
+      // factorul învățat din roadbook, vezi calibrează().
+      M.routeKm += (incM / 1000) * M.calFactor;
+      M._rawSinceAnchor += incM / 1000;
+      turnDetect(fix);   // virajele rămân reperele de resincronizare
     }
 
     if (M.rt) {
-      M.rt.distKm += incM / 1000;
+      M.rt.distKm += (incM / 1000) * M.calFactor;
       rtTick();
     }
     // STAGED e tot „legătură" din punctul de vedere al tick-ului: fără el aici,
@@ -308,7 +314,9 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
   function snapToBox(i, how) {
     const b = plan.boxes[i];
     const before = M.routeKm;
-    M.routeKm = b.sumKm + 0.02;
+    const target = b.sumKm + 0.02;
+    calibreaza(target);                  // ÎNAINTE de a rescrie poziția
+    M.routeKm = target;
     if (plan.anchorMap) M.traceM = plan.anchorMap.traceM(M.routeKm);
     M.nextBoxIdx = i + 1;
     const deltaKm = M.routeKm - before;
@@ -317,6 +325,39 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
     log('sync', { how, boxNum: b.num, deltaM: Math.round(deltaKm * 1000) });
     tone('tick');
     ui.render(M, plan);
+  }
+
+  // ── AUTO-CALIBRAREA ODOMETRULUI ──────────────────────────────────────────
+  // Roadbook-ul e o riglă: între două boxuri confirmate fizic, distanța OFICIALĂ e
+  // adevărul, iar ce a măsurat GPS-ul e măsurătoarea. Raportul dintre ele e eroarea
+  // sistematică a odometrului — și se poate corecta pentru tot restul zilei.
+  // La Sibiu asta e cea mai importantă apărare pe care o avem: fără recunoaștere,
+  // 2% eroare pe o probă de 2 km înseamnă 40 m, adică o probă pornită greșit.
+  // Prudent: doar pe segmente lungi, doar corecții mici, învățare lentă.
+  function calibreaza(targetKm) {
+    const masurat = M._rawSinceAnchor;
+    const oficial = targetKm - M._anchorKm;
+    M._rawSinceAnchor = 0;
+    M._anchorKm = targetKm;
+    if (masurat < 0.5 || oficial < 0.5) return;   // segment scurt = zgomot, nu semnal
+    const nou = oficial / masurat;
+    if (nou < 0.85 || nou > 1.15) {        // în afara plajei = snap greșit, nu odometru
+      log('cal_refuzat', { raport: r3(nou), masurat: r3(masurat), oficial: r3(oficial) });
+      return;
+    }
+    // Raport ACUMULAT: total oficial / total măsurat. Se ponderează singur după lungimea
+    // segmentelor (un segment de 2,6 km cântărește cât trebuie față de unul de 0,6) și
+    // converge la valoarea adevărată. Prima variantă amesteca ponderat și COMPUNEA
+    // factorul — la 4% eroare reală ajungea la 5,8%. Prins de test, nu pe drum.
+    M._calOficial += oficial;
+    M._calMasurat += masurat;
+    M.calFactor = Math.max(0.9, Math.min(1.1, M._calOficial / M._calMasurat));
+    M._calN++;
+    const proc = (M.calFactor - 1) * 100;
+    log('calibrare', { factor: r3(M.calFactor), procent: r3(proc), dinMasuratori: M._calN,
+                       segmentOficial: r3(oficial), segmentMasurat: r3(masurat) });
+    if (Math.abs(proc) >= 0.8 && M._calN <= 3)
+      say(`Odometru calibrat: ${proc > 0 ? 'plus' : 'minus'} ${Math.abs(proc).toFixed(1)} la sută.`, 2, 'cal');
   }
 
   function turnDetect(fix) {
@@ -390,6 +431,8 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
     start() {
       M.state = 'LIAISON';
       odo.reset();
+      M.calFactor = 1; M._rawSinceAnchor = 0; M._anchorKm = 0;
+      M._calN = 0; M._calOficial = 0; M._calMasurat = 0;
       const faraViteza = plan.rts.filter(r => r.kmh == null).length;
       say(plan.rts.length
         ? (faraViteza ? `Pornit. ${plan.rts.length} probe, ${faraViteza} fără viteză.`
@@ -437,3 +480,4 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
 }
 
 function r2(x) { return Math.round(x * 100) / 100; }
+function r3(x) { return Math.round(x * 1000) / 1000; }
