@@ -114,7 +114,13 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
     // plecarea de pe linia standing n-ar mai porni proba niciodată (prins de teste).
     if (M.state === 'LIAISON' || M.state === 'STAGED') liaisonTick();
     tcTick();
-    if (clock.mono() % 5000 < 600) log('pos', { routeKm: r2(M.routeKm), kmh: Math.round(M.speedKmh) });
+    // Jurnalul poziției: o dată la 5 s de timp REAL. Testul cu fereastra pe modulo
+    // („mono % 5000 < 600") scria de zeci de ori pe secundă când fixurile veneau rapid —
+    // fiecare scriere e o tranzacție IndexedDB, iar telefonul s-a blocat.
+    if (!M._lastPosLog || clock.mono() - M._lastPosLog >= 5000) {
+      M._lastPosLog = clock.mono();
+      log('pos', { routeKm: r2(M.routeKm), kmh: Math.round(M.speedKmh) });
+    }
     ui.render(M, plan);
   }
 

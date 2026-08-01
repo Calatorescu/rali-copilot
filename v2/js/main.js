@@ -166,25 +166,48 @@ async function reconStop() {
 // ── repetiția-fantomă: aceeași mașină, sursă sintetică ──────────────────────
 function rehearse() {
   if (!plan.rts.length || plan.rts.some(r => r.kmh == null)) { alert('Probele au nevoie de viteze.'); return; }
+  const minute = Math.round((plan.totalKm / 45) * 60);
+  if (!confirm(`Repetiție în timp REAL: ~${minute} minute, exact ritmul cursei.\n` +
+               `Poți opri oricând cu STOP ZIUA. Pornim?`)) return;
   stopGps();
-  const synthClock = clock;   // în repetiție timpul curge real — auzi exact ritmul cursei
-  const mach = makeMachine({ plan, clock: synthClock, voice, store, ui, driver, opts: { ghost: true } });
+  // Mașină SEPARATĂ pentru repetiție: cea de cursă nu se atinge. La final se revine
+  // la ea prin rebuildPlan() — altfel un START ZIUA de după repetiție ar fi pornit
+  // pe mașina-fantomă, cu starea ei.
+  const mach = makeMachine({ plan, clock, voice, store, ui, driver, opts: { ghost: true } });
   const speedPlan = cumM => {
     const km = plan.anchorMap ? plan.anchorMap.officialKm(cumM) : cumM / 1000;
     const rt = plan.rts.find(r => km >= r.startKm - 0.05 && km <= r.finishKm + 0.05);
     return rt ? rt.kmh : 45;
   };
+  const gata = async () => {
+    voice.say('Repetiție încheiată.', 2);
+    stopGps();
+    await rebuildPlan();     // înapoi la mașina de cursă, curată
+    showScreen('prep');
+  };
   gps = makeSyntheticGps({
     trace: plan.trace || { pts: [], totalM: plan.totalKm * 1000 },
-    speedPlan, stepMs: 1000, t0: Date.now(),
+    speedPlan, stepMs: 1000, delayMs: 1000,   // RITM REAL — fără asta inundă vocea și jurnalul
+    t0: Date.now(),
     onFix: f => mach.onFix(f),
-    onDone: () => { voice.say('Repetiție încheiată.', 2); stopGps(); }
+    onDone: gata
   });
-  mach.start();
-  machine = mach;
-  gps.start();
-  showScreen('run');
+  // Ordinea contează: dacă pornirea sursei crapă, NU rămânem cu mașina-fantomă în loc
+  // de cea de cursă (așa arăta „aplicația s-a blocat" la testul din 2026-08-01).
+  try {
+    gps.start();
+    mach.start();
+    machine = mach;
+    _rehearsing = true;
+    showScreen('run');
+  } catch (e) {
+    stopGps();
+    voice.say('Repetiția n-a putut porni.', 2);
+    alert('Repetiția n-a putut porni: ' + (e && e.message ? e.message : e));
+    rebuildPlan();
+  }
 }
+let _rehearsing = false;
 
 // ── scanări ─────────────────────────────────────────────────────────────────
 function pickImages(multiple, cb) {
@@ -283,7 +306,15 @@ function showScreen(name) {
 
 function bind() {
   $('btn-start').addEventListener('click', startDay);
-  $('btn-stop').addEventListener('click', () => { machine.stop(); stopGps(); showScreen('prep'); });
+  $('btn-stop').addEventListener('click', async () => {
+    machine.stop(); stopGps(); showScreen('prep');
+    if (_rehearsing) {              // repetiție oprită din mers: înapoi la mașina de cursă
+      _rehearsing = false;
+      await rebuildPlan();
+      return;                       // repetiția nu se raportează ca zi
+    }
+    if (sync) sync.pushNow('day_stop');
+  });
   $('btn-atbox').addEventListener('click', () => {
     const n = prompt('La ce box ești?'); if (n != null) machine.atBox(parseInt(n, 10));
   });

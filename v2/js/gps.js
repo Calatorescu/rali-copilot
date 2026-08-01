@@ -9,6 +9,12 @@
 //                fantomă și testele folosesc exact același drum de cod ca și cursa).
 // Fix normalizat: { lat, lng, tMs, speedMs|null, headingDeg|null, accM|null }
 
+// setTimeout apelat ca METODĂ a altui obiect ({ set: setTimeout }) aruncă
+// „Illegal invocation" în browser, pentru că `this` nu mai e window — în Node merge,
+// deci testele nu prind niciodată defectul. A blocat repetiția-fantomă pe telefon
+// (2026-08-01): prima frază se auzea, apoi start() crăpa. Se apelează prin funcții.
+const DEFAULT_TIMER = { set: (fn, d) => setTimeout(fn, d), clear: id => clearTimeout(id) };
+
 export function makeLiveGps({ onFix, onLost, onBack }) {
   let watchId = null, lastFixMs = 0, lostFlag = false, wdId = null;
 
@@ -54,7 +60,7 @@ export function makeLiveGps({ onFix, onLost, onBack }) {
 }
 
 // Redă fix-uri înregistrate (jurnal type:'fix'), la viteza `rate` (10 = de 10× mai repede).
-export function makeReplayGps(fixes, { onFix, rate = 1, timer = { set: setTimeout, clear: clearTimeout } }) {
+export function makeReplayGps(fixes, { onFix, rate = 1, timer = DEFAULT_TIMER }) {
   let i = 0, tid = null, stopped = false;
   function next() {
     if (stopped || i >= fixes.length) return;
@@ -69,8 +75,15 @@ export function makeReplayGps(fixes, { onFix, rate = 1, timer = { set: setTimeou
 // Mașina virtuală: primește un plan de viteze pe kilometrul de traseu și produce
 // fix-uri sintetice de-a lungul urmei (sau pe o linie dreaptă dacă nu există urmă).
 // speedPlan(cumM) → km/h dorit în punctul respectiv.
+// delayMs: cât se așteaptă ÎNTRE fixuri în timp real.
+//   0  = cât de repede poate (teste: o zi întreagă în milisecunde);
+//   1000 (= stepMs) = ritm real, pentru repetiția-fantomă din telefon.
+// Implicit 0, ca testele să rămână instantanee — dar orice folosire în aplicație
+// TREBUIE să dea ritm real, altfel inundă coada de voce și jurnalul (blocat telefonul
+// la prima repetiție, 2026-08-01).
 export function makeSyntheticGps({ trace = null, speedPlan, stepMs = 1000, onFix, onDone,
-                                   timer = { set: setTimeout, clear: clearTimeout }, t0 = 0 }) {
+                                   timer = DEFAULT_TIMER, t0 = 0,
+                                   delayMs = 0 }) {
   let cumM = 0, t = t0, tid = null, stopped = false;
   function posAt(m) {
     if (!trace || !trace.pts || trace.pts.length < 2) {
@@ -94,7 +107,7 @@ export function makeSyntheticGps({ trace = null, speedPlan, stepMs = 1000, onFix
     onFix({ lat: p.lat, lng: p.lng, tMs: t, speedMs: ms, headingDeg: null, accM: 8 });
     const end = trace && trace.totalM ? cumM >= trace.totalM + 50 : false;
     if (end) { onDone && onDone(); return; }
-    tid = timer.set(tick, 0 /* simulare: cât de repede poate */);
+    tid = timer.set(tick, delayMs);
   }
   return {
     start() { tick(); return true; },
