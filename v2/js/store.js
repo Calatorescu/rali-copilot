@@ -83,11 +83,12 @@ export function makeMemStore() {
 
 // ── export / preluare ──────────────────────────────────────────────────────
 export async function exportDay(store) {
-  const [journal, plan, speeds, recon] = await Promise.all([
-    store.journalAll(), store.get('plan_raw'), store.get('rt_speeds'), store.get('recon')
+  const [journal, plan, speeds, recon, tcs] = await Promise.all([
+    store.journalAll(), store.get('plan_raw'), store.get('rt_speeds'),
+    store.get('recon'), store.get('tc_schedule')
   ]);
   return { _app: 'RALI2', _ver: 1, at: Date.now(), journal, plan_raw: plan || null,
-           rt_speeds: speeds || null, recon: recon || null };
+           rt_speeds: speeds || null, recon: recon || null, tc_schedule: tcs || null };
 }
 
 export async function importDay(store, dump) {
@@ -100,6 +101,7 @@ export async function importDay(store, dump) {
   if (dump.plan_raw) await store.put('plan_raw', dump.plan_raw);
   if (dump.rt_speeds) await store.put('rt_speeds', dump.rt_speeds);
   if (dump.recon) await store.put('recon', dump.recon);
+  if (dump.tc_schedule) await store.put('tc_schedule', dump.tc_schedule);
 }
 
 // Starea de cursă reconstruită din jurnal — inima preluării pe alt telefon:

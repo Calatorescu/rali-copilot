@@ -85,14 +85,19 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
     if (plan.trace && plan.anchorMap) {
       // prima prindere pe urmă: căutare pe TOATĂ urma (poți porni de oriunde —
       // preluare, repornire la mijloc de leg); după aceea, fereastra monotonă
-      const proj = M.traceM == null
+      // După o suspendare lungă (cameră, ecran stins) mașina poate fi cu mult peste
+      // fereastra monotonă — la al 5-lea fix fără proiecție, căutăm pe TOATĂ urma.
+      const fullScan = M.traceM == null || M._projMiss >= 5;
+      const proj = fullScan
         ? projectOnTrace(plan.trace, fix.lat, fix.lng, 0, { backM: 1e9, fwdM: 1e9 })
         : projectOnTrace(plan.trace, fix.lat, fix.lng, M.traceM);
       if (proj) {
+        M._projMiss = 0;
         M.traceM = proj.cumM;
         M.routeKm = plan.anchorMap.officialKm(proj.cumM);
       } else {
         // în afara coridorului: mergem pe odometru până revine proiecția
+        M._projMiss = (M._projMiss || 0) + 1;
         if (M.traceM != null) M.traceM += incM;
         M.routeKm += incM / 1000;
       }
@@ -361,6 +366,14 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
       ui.render(M, plan);
     },
     extSpeed(kmh) { M._extSpeedKmh = kmh; M._extSpeedT = clock.mono(); },   // priza BLE
+    // După suspendare (ecran stins, cameră): performance.now poate să fi stat pe loc,
+    // dar ceasul raliului nu — cronometrul probei se re-ancorează pe el.
+    reanchor() {
+      if (M.rt && M.rt.t0Rally != null) {
+        M.rt.t0Mono = clock.mono() - (clock.rally() - M.rt.t0Rally);
+      }
+      M._projMiss = 5;   // primul fix după revenire face full-scan pe urmă
+    },
     resume(st) {  // preluarea de pe alt telefon / după repornire
       M.routeKm = st.routeKm; M.rtIdx = st.rtIdx; M.results = {};
       if (plan.anchorMap) M.traceM = plan.anchorMap.traceM(st.routeKm);   // proiecția se re-prinde aici

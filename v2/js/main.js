@@ -34,8 +34,17 @@ async function init() {
   await rebuildPlan();
   bind();
   try { navigator.wakeLock && await navigator.wakeLock.request('screen'); } catch (e) { $('cp-wake').classList.remove('hidden'); }
+  // gestul utilizatorului deblochează des cererea refuzată — reîncercăm la primul tap
+  document.addEventListener('click', async () => {
+    try { await navigator.wakeLock.request('screen'); $('cp-wake').classList.add('hidden'); } catch (e) {}
+  }, { once: true });
   document.addEventListener('visibilitychange', async () => {
-    if (document.visibilityState === 'visible') { try { await navigator.wakeLock.request('screen'); } catch (e) {} }
+    if (document.visibilityState === 'visible') {
+      try { await navigator.wakeLock.request('screen'); } catch (e) {}
+      // suspendarea putea opri performance.now — cronometrul probei se re-ancorează
+      // pe ceasul raliului, iar proiecția face full-scan la primul fix
+      if (machine) machine.reanchor();
+    }
   });
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js').catch(() => {});
 }
@@ -48,6 +57,9 @@ async function rebuildPlan() {
   const recon = await store.get('recon');
   plan = buildPlan(boxesRaw, speeds, recon || null);
   machine = makeMachine({ plan, clock, voice, store, ui, driver });
+  // programul TC scanat ieri nu se pierde la repornire — se reîncarcă din stocare
+  const tcs = await store.get('tc_schedule');
+  if (tcs && tcs.length) machine.setTcSchedule(tcs);
   renderPrep();
   ui.render(machine.M, plan);
 }
@@ -321,6 +333,32 @@ function bind() {
       charUuid: $('ble-chr').value.trim() || undefined
     });
   });
+  // eficiența — formula Sibiu (art. 6.3.2), cu bateria din setări
+  const battInp = $('set-batt');
+  battInp.value = localStorage.getItem('r2_batt') || '82';
+  battInp.addEventListener('change', () => localStorage.setItem('r2_batt', battInp.value));
+  let effMult = 1;
+  const effCalc = () => {
+    const cons = parseFloat(String($('eff-cons').value).replace(',', '.'));
+    const km = parseFloat(String($('eff-km').value).replace(',', '.'));
+    const batt = parseFloat(battInp.value) || 82;
+    if (!isFinite(cons) || !isFinite(km)) { $('eff-out').textContent = 'Alege ziua, pune consumul și km-ii.'; return; }
+    const pts = km - effMult * cons + batt;
+    $('eff-out').textContent = `${km} − ${effMult > 1 ? effMult + '×' : ''}${cons} + ${batt} = ` +
+      `${pts.toFixed(1)} → ${pts >= 0 ? 'BONUS ' + pts.toFixed(1) + ' puncte' : Math.abs(pts).toFixed(1) + ' puncte ÎN PLUS'}.` +
+      ` 1 Wh/km = ${effMult} punct${effMult > 1 ? 'e' : ''}.`;
+  };
+  const selDay = (m, kmDefault) => {
+    effMult = m;
+    $('eff-d1').classList.toggle('pri', m === 1); $('eff-d2').classList.toggle('pri', m === 2);
+    if (!$('eff-km').value) $('eff-km').value = kmDefault;
+    effCalc();
+  };
+  $('eff-d1').addEventListener('click', () => selDay(1, '173.1'));
+  $('eff-d2').addEventListener('click', () => selDay(2, '264.79'));
+  $('eff-cons').addEventListener('change', effCalc);
+  $('eff-km').addEventListener('change', effCalc);
+
   window.addEventListener('beforeunload', async () => {
     await store.put('driver_model', driver.toJSON());
   });

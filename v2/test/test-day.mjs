@@ -186,6 +186,27 @@ console.log('═══ Preluarea pe al doilea telefon (failover) ═══');
      m3.M.results.RT2 != null && m3.M.results.RT2 < 4, String(m3.M.results.RT2));
 }
 
+console.log('═══ Suspendare: salt peste fereastra monotonă → full-scan ═══');
+{
+  const w = makeWorld();
+  const p = buildPlan(BOXES, {}, recon);
+  const mm2 = makeMachine({ ...w, plan: p });
+  mm2.start();
+  drive(w, mm2, recon, 0, 800, 40);
+  ok('poziția înainte de suspendare ~0.8 km', Math.abs(mm2.M.routeKm - 0.8) < 0.05,
+     String(mm2.M.routeKm));
+  // ecran stins: mașina apare brusc la 2.6 km (peste fereastra de +900 m)
+  w.tick(120000);
+  mm2.reanchor();
+  const f = posAt(recon.trace, 2600);
+  for (let i = 0; i < 3; i++) {
+    w.tick(1000);
+    mm2.onFix({ lat: f.lat, lng: f.lng, tMs: w.wall(), speedMs: 11, headingDeg: null, accM: 10 });
+  }
+  ok('proiecția s-a re-prins prin full-scan (~2.6 km)', Math.abs(mm2.M.routeKm - 2.6) < 0.06,
+     String(mm2.M.routeKm));
+}
+
 console.log('═══ Modul umbră (recunoaștere fără voce) ═══');
 {
   const w = makeWorld();

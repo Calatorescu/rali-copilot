@@ -52,6 +52,19 @@
     <button class="btn pri big" id="btn-start">▶ START ZIUA</button>
 
     <div class="card">
+      <p class="lbl">EFICIENȚĂ (punctele se scad din penalizări)</p>
+      <div class="row">
+        <button class="btn sec" id="eff-d1">Ziua 1 · ×1</button>
+        <button class="btn sec" id="eff-d2">Ziua 2 · ×2</button>
+      </div>
+      <div class="row">
+        <input type="number" id="eff-cons" placeholder="Wh/km de pe bord" inputmode="numeric">
+        <input type="number" id="eff-km" placeholder="km zi" inputmode="decimal">
+      </div>
+      <p id="eff-out" class="line dim">Alege ziua, pune consumul.</p>
+    </div>
+
+    <div class="card">
       <p class="lbl">JURNAL / AL DOILEA TELEFON</p>
       <div class="row">
         <button class="btn sec" id="btn-export">⬇ Export zi</button>
@@ -114,6 +127,10 @@
     <div class="card">
       <p class="lbl">CEAS OFICIAL − TELEFON (secunde)</p>
       <input type="number" id="set-clockoff" step="0.5" inputmode="decimal">
+    </div>
+    <div class="card">
+      <p class="lbl">BATERIA MAȘINII (kWh) — pentru punctele de eficiență</p>
+      <input type="number" id="set-batt" step="1" inputmode="numeric">
     </div>
     <div class="card">
       <p class="lbl">VITEZĂ DIN MAȘINĂ (BLE, EXPERIMENTAL)</p>
