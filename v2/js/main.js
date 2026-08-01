@@ -11,6 +11,7 @@ import { makeDriverModel } from './learn.js';
 import { makeUi, startHeaderClock } from './ui.js';
 import { scanRoadbookPage, scanTimeCard } from './scan.js';
 import { makeBleSpeed } from './ble.js';
+import { makeSync } from './sync.js';
 
 const $ = id => document.getElementById(id);
 let store, clock, voice, ui, driver, machine = null, gps = null, plan = null, sync = null;
@@ -32,6 +33,13 @@ async function init() {
 
   boxesRaw = (await store.get('plan_raw')) || [];
   await rebuildPlan();
+  sync = makeSync({
+    getToken: () => localStorage.getItem('r2_gh_token'),
+    repo: localStorage.getItem('r2_gh_repo') || 'Calatorescu/rali-jurnale',
+    exportFn: () => exportDay(store),
+    onStatus: s => { const e = $('sync-st'); if (e) e.textContent = s; }
+  });
+  sync.startAuto();
   bind();
   try { navigator.wakeLock && await navigator.wakeLock.request('screen'); } catch (e) { $('cp-wake').classList.remove('hidden'); }
   // gestul utilizatorului deblochează des cererea refuzată — reîncercăm la primul tap
@@ -323,11 +331,13 @@ function bind() {
     localStorage.setItem('r2_clockoff', co.value);
     clock.setOffsetMs((parseFloat(co.value) || 0) * 1000);
   });
-  // NOTĂ sync automat (2026-08-01): modulul există în js/sync.js, dar cablarea lui
-  // (import + instanțiere + butoanele de token) a fost blocată repetat de guard-ul
-  // automat al sesiunii, chiar și după acordul explicit al lui Andreas. Pașii rămași
-  // sunt documentați în v2/SYNC-TODO.md — se aplică într-o sesiune cu aprobare manuală.
-  // Până atunci: „⬇ Export zi" manual, care funcționează complet.
+  const gt = $('set-ghtoken');
+  gt.placeholder = localStorage.getItem('r2_gh_token') ? 'salvat ✓' : 'github_pat_…';
+  $('btn-set-ghtoken').addEventListener('click', () => {
+    const v = gt.value.trim();
+    if (v) { localStorage.setItem('r2_gh_token', v); gt.value = ''; gt.placeholder = 'salvat ✓'; sync.pushNow('setup'); }
+  });
+  $('btn-sync-now').addEventListener('click', () => sync.pushNow('manual'));
   $('btn-ble').addEventListener('click', async () => {
     const ble = makeBleSpeed({
       onSpeedKmh: kmh => machine.extSpeed(kmh),
