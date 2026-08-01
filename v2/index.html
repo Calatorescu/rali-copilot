@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="ro">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<meta name="theme-color" content="#0a0a0c">
+<title>RALI 2</title>
+<meta http-equiv="Content-Security-Policy" content="default-src 'self' blob:; script-src 'self'; connect-src 'self' blob: https://api.anthropic.com; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'none'; form-action 'none'">
+<meta name="referrer" content="no-referrer">
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<div id="app">
+
+  <header id="hdr">
+    <span id="cp-state" class="cp-state s-PREP">PREGĂTIRE</span>
+    <span id="cp-clock">--:--:--</span>
+    <button class="hbtn" id="btn-set">⚙</button>
+  </header>
+  <div id="cp-wake" class="warnband hidden">⚠ Ecranul se poate stinge — oprește economisirea bateriei</div>
+
+  <!-- ══ PREGĂTIRE (parcat) ══ -->
+  <section id="scr-prep">
+    <div class="card">
+      <p class="lbl">ROADBOOK</p>
+      <p id="prep-boxes" class="line">niciun box scanat</p>
+      <div class="row">
+        <button class="btn sec" id="btn-scan-rb">📷 Scanează pagini</button>
+        <button class="btn danger sm" id="btn-clear-rb">✕</button>
+      </div>
+      <p id="prep-scan-st" class="line dim"></p>
+      <div id="prep-rts"></div>
+    </div>
+
+    <div class="card">
+      <p class="lbl">PROGRAMUL ZILEI (time card)</p>
+      <button class="btn sec" id="btn-scan-tc">📷 Scanează time card-ul</button>
+      <p id="prep-tc-st" class="line dim"></p>
+    </div>
+
+    <div class="card">
+      <p class="lbl">RECUNOAȘTERE</p>
+      <p id="prep-recon" class="line">fără recunoaștere</p>
+      <div class="row">
+        <button class="btn sec" id="btn-recon">🛰 Înregistrează traseul</button>
+        <button class="btn sec" id="btn-rehearse">👻 Repetiție</button>
+      </div>
+    </div>
+
+    <button class="btn pri big" id="btn-start">▶ START ZIUA</button>
+
+    <div class="card">
+      <p class="lbl">JURNAL / AL DOILEA TELEFON</p>
+      <div class="row">
+        <button class="btn sec" id="btn-export">⬇ Export zi</button>
+        <button class="btn sec" id="btn-import">⬆ Preia cursa</button>
+        <button class="btn sec" id="btn-journal-clear">🗑 Zi nouă</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ══ CURSĂ (un singur ecran, se transformă singur) ══ -->
+  <section id="scr-run" class="hidden">
+    <div class="posrow"><span id="cp-km">0.00</span><span class="dim">km traseu</span>
+      <span id="cp-spd">0</span><span class="dim">km/h</span></div>
+
+    <div id="cp-rt" class="hidden">
+      <div id="cp-dev" class="cp-dev ok">0.0</div>
+      <div id="cp-dev-lbl" class="lbl center">SECUNDE</div>
+      <div id="cp-target" class="cp-target">— / —</div>
+      <div class="lbl center">ACUM / ȚINTĂ</div>
+    </div>
+
+    <div id="cp-nav">
+      <div id="cp-next-dist" class="nx-dist">—</div>
+      <div id="cp-next-dir" class="nx-dir">•</div>
+      <div id="cp-next-com" class="nx-com">—</div>
+      <div id="cp-next-box" class="nx-box"></div>
+      <div id="cp-after" class="nx-after"></div>
+    </div>
+
+    <p id="cp-debrief" class="debrief hidden"></p>
+    <p id="cp-rts" class="rts-line"></p>
+
+    <div class="row">
+      <button class="btn ok big grow" id="btn-atbox">✓ SUNT LA BOX…</button>
+      <button class="btn sec big" id="btn-talk">🎤</button>
+    </div>
+    <button class="btn danger" id="btn-stop">■ STOP ZIUA</button>
+  </section>
+
+  <!-- ══ RECUNOAȘTERE ══ -->
+  <section id="scr-recon" class="hidden">
+    <div class="card center">
+      <p class="lbl">ÎNREGISTREZ TRASEUL</p>
+      <p id="rec-dist" class="bignum">0.00 km</p>
+      <p id="rec-anchors" class="line dim">0 ancore</p>
+      <div class="row">
+        <input type="number" id="rec-box" placeholder="box nr." inputmode="numeric">
+        <button class="btn ok grow" id="btn-rec-mark">📍 MARCHEZ BOXUL</button>
+      </div>
+      <button class="btn pri" id="btn-rec-stop">■ Oprește și salvează</button>
+    </div>
+  </section>
+
+  <!-- ══ SETĂRI ══ -->
+  <section id="scr-set" class="hidden">
+    <div class="card">
+      <p class="lbl">CHEIE API CLAUDE</p>
+      <div class="row"><input type="password" id="set-key" autocomplete="off"><button class="btn sec" id="btn-set-key">Salvează</button></div>
+    </div>
+    <div class="card">
+      <p class="lbl">CEAS OFICIAL − TELEFON (secunde)</p>
+      <input type="number" id="set-clockoff" step="0.5" inputmode="decimal">
+    </div>
+    <div class="card">
+      <p class="lbl">VITEZĂ DIN MAȘINĂ (BLE, EXPERIMENTAL)</p>
+      <p class="line dim">Necesită confirmarea protocolului Commander/Enhance. Fără el, GPS-ul rămâne sursa.</p>
+      <input type="text" id="ble-svc" placeholder="UUID serviciu">
+      <input type="text" id="ble-chr" placeholder="UUID caracteristică">
+      <button class="btn sec" id="btn-ble">🔗 Conectează</button>
+      <p id="ble-st" class="line dim"></p>
+    </div>
+    <button class="btn pri" id="btn-set-back">← Înapoi</button>
+  </section>
+
+</div>
+<script type="module" src="js/main.js"></script>
+</body>
+</html>
