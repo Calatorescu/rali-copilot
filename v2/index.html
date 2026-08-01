@@ -133,9 +133,13 @@
       <input type="number" id="set-batt" step="1" inputmode="numeric">
     </div>
     <div class="card">
-      <p class="lbl">VITEZĂ DIN MAȘINĂ (BLE, EXPERIMENTAL)</p>
-      <p class="line dim">Necesită confirmarea protocolului Commander/Enhance. Fără el, GPS-ul rămâne sursa.</p>
-      <input type="text" id="ble-svc" placeholder="UUID serviciu">
+      <p class="lbl">VITEZĂ DIN MAȘINĂ (EXPERIMENTAL)</p>
+      <p class="line dim">Cercetat 01.08.2026: Commander-ul S3XY expune datele pe WiFi local
+      (rețeaua S3XY_OBD, protocol Panda, UDP 1338) — un browser NU poate citi UDP, deci
+      calea directă din PWA nu există azi. Soluția viitoare: o punte mică pe telefon
+      (UDP→WebSocket). Până atunci, GPS + geometria din recunoaștere rămân sursa —
+      și sunt suficiente. Priza BLE de mai jos rămâne pentru alte dispozitive.</p>
+      <input type="text" id="ble-svc" placeholder="UUID serviciu BLE">
       <input type="text" id="ble-chr" placeholder="UUID caracteristică">
       <button class="btn sec" id="btn-ble">🔗 Conectează</button>
       <p id="ble-st" class="line dim"></p>
