@@ -11,7 +11,7 @@
 // de cod. Kilometrul de traseu vine din proiecția pe urmă când există recunoaștere,
 // altfel din odometrul fuzionat; „AM TRECUT DE BOX" (buton sau voce) rămâne suveran.
 
-import { makeOdometer, projectOnTrace, angDiff } from './geo.js';
+import { makeOdometer, projectOnTrace, angDiff, haversineM } from './geo.js';
 import { idealTimeS, deviationS, recoverySpeed, speedAt, bankingAdvice } from './pace.js';
 import { TURN_DIRS } from './route.js';
 import { secRo, distRo } from './voice.js';
@@ -37,7 +37,10 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
     _turnAcc: 0, _lastHdg: null, _lastHdgT: 0, _quietMs: 0, _lastSnapT: 0,
     _lastToneT: 0, _extSpeedKmh: null, _extSpeedT: 0,
     // auto-calibrarea odometrului (vezi calibreaza)
-    calFactor: 1, _rawSinceAnchor: 0, _anchorKm: 0, _calN: 0, _calOficial: 0, _calMasurat: 0
+    calFactor: 1, _rawSinceAnchor: 0, _calAnchorKm: 0, _calN: 0, _calOficial: 0, _calMasurat: 0,
+    _anchorKm: 0,
+    // poziția absolută: ancora geografică + cât s-a curbat drumul de la ea
+    _anchorPos: null, _lastPos: null, _curveDeg: 0, _curveHdg: null
   };
   const odo = makeOdometer();
 
@@ -79,6 +82,21 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
 
   // ── poziția ───────────────────────────────────────────────────────────────
   function onFix(fix) {
+    M._lastPos = { lat: fix.lat, lng: fix.lng };
+    // Prima ancoră geografică = primul fix după START. La start() poziția încă nu e
+    // cunoscută (n-a venit niciun fix), deci se pune aici — altfel poziția absolută
+    // n-ar avea niciodată de unde pleca și corecția n-ar porni deloc.
+    if (!M._anchorPos && M.state !== 'PREP') {
+      M._lastPos = { lat: fix.lat, lng: fix.lng };
+      ancoreazaGeo(M.routeKm);
+      M._calAnchorKm = M.routeKm; M._rawSinceAnchor = 0;
+    }
+    // cât s-a curbat drumul de la ultima ancoră (sumă de valori ABSOLUTE: și un „S"
+    // care revine la aceeași direcție e tot drum mai lung decât linia dreaptă)
+    if (fix.headingDeg != null && M.speedKmh > 8) {
+      if (M._curveHdg != null) M._curveDeg += Math.abs(angDiff(fix.headingDeg, M._curveHdg));
+      M._curveHdg = fix.headingDeg;
+    }
     const extFresh = M._extSpeedKmh != null && clock.mono() - M._extSpeedT < 3000;
     M.speedKmh = extFresh ? M._extSpeedKmh
       : (fix.speedMs != null ? fix.speedMs * 3.6 : M.speedKmh);
@@ -109,11 +127,15 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
       // factorul învățat din roadbook, vezi calibrează().
       M.routeKm += (incM / 1000) * M.calFactor;
       M._rawSinceAnchor += incM / 1000;
-      turnDetect(fix);   // virajele rămân reperele de resincronizare
+      pozitieAbsoluta(fix);   // vezi mai jos — GPS-ul nu e doar odometru
+      turnDetect(fix);        // virajele rămân reperele de resincronizare
     }
 
     if (M.rt) {
-      M.rt.distKm += (incM / 1000) * M.calFactor;
+      // Distanța din probă se DERIVĂ din poziția pe traseu, nu se adună separat.
+      // Altfel proba și-ar duce propriul odometru, cu propriile erori, exact acolo
+      // unde precizia decide puncte — iar corecțiile de poziție n-ar ajunge la ea.
+      M.rt.distKm = Math.max(0, M.routeKm - M.rt.def.startKm);
       rtTick();
     }
     // STAGED e tot „legătură" din punctul de vedere al tick-ului: fără el aici,
@@ -223,10 +245,16 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
   function rtStart(rt, overshootKm) {
     M.state = 'RT_RUN'; M._staged = false;
     M.rt = { def: rt, t0Mono: clock.mono(), t0Rally: clock.rally(), distKm: 0, log: [], frozen: null };
+    // Retro-datarea CEASULUI la linie: GPS-ul bate la ~1 s, deci trecerea se observă
+    // cu câțiva metri întârziere. Distanța nu se mai atinge — se derivă din routeKm.
     if (overshootKm > 0.001 && M.speedKmh > 10) {
-      const backMs = (overshootKm * 1000 / (M.speedKmh / 3.6)) * 1000;
-      M.rt.t0Mono -= backMs; M.rt.distKm = overshootKm;   // retro-datare la linie
+      M.rt.t0Mono -= (overshootKm * 1000 / (M.speedKmh / 3.6)) * 1000;
     }
+    // Linia de start devine ancoră GEOGRAFICĂ: pe probă, unde precizia decide puncte,
+    // poziția pleacă de aproape de zero eroare. Dar NU e ancoră de calibrare — linia e
+    // o poziție DEDUSĂ (din odometru), nu un box confirmat fizic. Dacă am reseta și
+    // rigla aici, am măsura odometrul cu o riglă tăiată chiar de el.
+    ancoreazaGeo(rt.startKm);
     say(`Start. Ține ${rt.kmh}.`, 3, 'race');
     tone('ok');
     log('rt_start', { rtIdx: M.rtIdx, name: rt.name, kmh: rt.kmh });
@@ -320,11 +348,41 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
     if (plan.anchorMap) M.traceM = plan.anchorMap.traceM(M.routeKm);
     M.nextBoxIdx = i + 1;
     const deltaKm = M.routeKm - before;
-    if (M.rt && Math.abs(deltaKm) < 0.5) M.rt.distKm = Math.max(0, M.rt.distKm + deltaKm);
+    // rt.distKm nu se mai corectează aici: se derivă din routeKm la fiecare fix.
     driver.turnDone(b.num, clock.wall());
     log('sync', { how, boxNum: b.num, deltaM: Math.round(deltaKm * 1000) });
     tone('tick');
     ui.render(M, plan);
+  }
+
+  // ── POZIȚIA ABSOLUTĂ — GPS-ul nu e doar odometru ─────────────────────────
+  // Observația lui Andreas (2026-08-01): dacă știm distanțele exacte între boxuri ȘI
+  // avem poziție GPS, de ce am lăsa eroarea să se adune? Are dreptate. Odometrul
+  // ADUNĂ (deci adună și erorile); linia dreaptă de la ultima ancoră până la poziția
+  // de acum NU se acumulează — greșește cu precizia GPS-ului, atât, oricât ai merge.
+  //
+  // Cele două surse se completează exact unde cealaltă e slabă:
+  //  • pe drum cu viraje → virajele sunt ancore dese, odometrul n-apucă să driftze;
+  //  • pe drum drept     → odometrul driftează liber, dar drumul E linia dreaptă,
+  //                        deci poziția absolută e practic exactă.
+  // Și, întotdeauna: drumul real ≥ linia dreaptă, deci avem o PODEA garantată.
+  function pozitieAbsoluta(fix) {
+    if (!M._anchorPos) return;
+    if (fix.accM != null && fix.accM > 35) return;        // fix prea împrăștiat
+    const straightM = haversineM(M._anchorPos.lat, M._anchorPos.lng, fix.lat, fix.lng);
+    if (straightM > 60000) return;                        // absurd — ignoră
+    const straightKm = M._anchorKm + straightM / 1000;
+
+    // 1) PODEA: dacă linia dreaptă spune că ai depășit poziția crezută, ai depășit-o.
+    if (straightKm > M.routeKm + 0.004) {
+      log('pozitie_podea', { deM: Math.round((straightKm - M.routeKm) * 1000), curbaGrd: Math.round(M._curveDeg) });
+      M.routeKm = straightKm;
+    }
+    // 2) DRUM DREPT: direcția nu s-a schimbat de la ancoră → linia dreaptă e drumul.
+    //    Aici poziția devine exactă, indiferent cât de prost măsoară odometrul.
+    else if (M._curveDeg < 12 && straightM > 150) {
+      M.routeKm = straightKm;
+    }
   }
 
   // ── AUTO-CALIBRAREA ODOMETRULUI ──────────────────────────────────────────
@@ -334,11 +392,25 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
   // La Sibiu asta e cea mai importantă apărare pe care o avem: fără recunoaștere,
   // 2% eroare pe o probă de 2 km înseamnă 40 m, adică o probă pornită greșit.
   // Prudent: doar pe segmente lungi, doar corecții mici, învățare lentă.
+  //
+  // Două ancore, nu una — le-am confundat o dată și calibrarea a ieșit cu 0,5% greșită
+  // chiar pe un odometru perfect:
+  //  • ancora GEOGRAFICĂ se reîmprospătează des (orice poziție de încredere, inclusiv
+  //    linia de start a probei), ca poziția absolută să aibă curbură mică de la ea;
+  //  • ancora de CALIBRARE se mișcă doar la boxuri confirmate fizic, pentru că doar
+  //    acolo avem o distanță oficială — adică o riglă independentă de odometru.
+  function ancoreazaGeo(km) {
+    M._anchorPos = M._lastPos ? { ...M._lastPos } : null;
+    M._anchorKm = km;
+    M._curveDeg = 0; M._curveHdg = null;
+  }
+
   function calibreaza(targetKm) {
     const masurat = M._rawSinceAnchor;
-    const oficial = targetKm - M._anchorKm;
+    const oficial = targetKm - M._calAnchorKm;
     M._rawSinceAnchor = 0;
-    M._anchorKm = targetKm;
+    M._calAnchorKm = targetKm;
+    ancoreazaGeo(targetKm);                   // boxul confirmat e și ancoră geografică
     if (masurat < 0.5 || oficial < 0.5) return;   // segment scurt = zgomot, nu semnal
     const nou = oficial / masurat;
     if (nou < 0.85 || nou > 1.15) {        // în afara plajei = snap greșit, nu odometru
@@ -431,8 +503,11 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
     start() {
       M.state = 'LIAISON';
       odo.reset();
-      M.calFactor = 1; M._rawSinceAnchor = 0; M._anchorKm = 0;
+      M.calFactor = 1; M._rawSinceAnchor = 0; M._calAnchorKm = 0; M._anchorKm = 0;
       M._calN = 0; M._calOficial = 0; M._calMasurat = 0;
+      // linia de start e prima ancoră geografică: de aici încolo poziția absolută lucrează
+      M._anchorPos = M._lastPos ? { ...M._lastPos } : null;
+      M._curveDeg = 0; M._curveHdg = null;
       const faraViteza = plan.rts.filter(r => r.kmh == null).length;
       say(plan.rts.length
         ? (faraViteza ? `Pornit. ${plan.rts.length} probe, ${faraViteza} fără viteză.`

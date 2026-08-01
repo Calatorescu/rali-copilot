@@ -94,18 +94,21 @@ console.log('\n═══ Snap greșit: nu se învață o prostie ═══');
      JSON.stringify(w.store.journal.filter(e => e.type === 'cal_refuzat')));
 }
 
-console.log('\n═══ Factorul se aplică și distanței probei ═══');
+console.log('\n═══ Proba nu-și ține propriul odometru ═══');
 {
+  // Înainte, distanța din probă se aduna separat — deci avea propriile erori exact
+  // acolo unde precizia decide puncte, iar corecțiile de poziție n-o atingeau.
+  // Acum se DERIVĂ din poziția pe traseu: o singură sursă de adevăr.
   const w = lume(0.96);
   w.condu(0.70);                    // RT1 (auto, la 0,60) pornește singură
   ok('proba a pornit la trecerea liniei', w.m.M.state === 'RT_RUN', w.m.M.state);
-  w.m.M.calFactor = 1.10;           // factor cunoscut, ca să verificăm aplicarea
-  const d0 = w.m.M.rt.distKm;
-  w.condu(0.80);                    // 0,1 km reali
-  const crestere = w.m.M.rt.distKm - d0;
-  const asteptat = 0.1 * 0.96 * 1.10;   // real × eroarea GPS × factorul aplicat
-  ok('distanța probei crește cu factorul aplicat', Math.abs(crestere - asteptat) < 0.006,
-     `${crestere.toFixed(4)} vs ${asteptat.toFixed(4)}`);
+  const inv = () => Math.abs(w.m.M.rt.distKm - (w.m.M.routeKm - w.m.M.rt.def.startKm));
+  ok('distanța probei = poziția − linia de start', inv() < 1e-9, inv().toExponential(2));
+  w.condu(1.60);
+  ok('invariantul ține și după 0,9 km', inv() < 1e-9, inv().toExponential(2));
+  const eroareM = Math.abs(w.m.M.rt.distKm - (1.60 - 0.60)) * 1000;
+  ok('și distanța e aproape de realitate, cu odometru de −4%', eroareM < 40,
+     `${w.m.M.rt.distKm.toFixed(3)} km (eroare ${Math.round(eroareM)} m)`);
 }
 
 console.log(`\n──────── ${pass} trecute, ${fail} căzute ────────`);

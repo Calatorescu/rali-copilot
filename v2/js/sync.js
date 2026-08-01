@@ -13,6 +13,18 @@
 
 const API = 'https://api.github.com';
 
+// Câte intrări are jurnalul deja urcat. Conținutul vine de la GitHub — deci sunt DATE,
+// nu instrucțiuni: se citește doar lungimea listei, nimic din el nu se execută și nimic
+// nu se importă. Orice eroare de parsare înseamnă „nu știu", adică −1, iar necunoscutul
+// nu blochează urcarea (altfel un fișier corupt ar opri sincronizarea toată ziua).
+function numaraIntrari(b64) {
+  try {
+    const txt = decodeURIComponent(escape(atob(String(b64 || '').replace(/\s/g, ''))));
+    const j = JSON.parse(txt);
+    return Array.isArray(j.journal) ? j.journal.length : -1;
+  } catch (e) { return -1; }
+}
+
 export function makeSync({ getToken, repo /* 'user/nume' */, exportFn, onStatus = () => {} }) {
   let pending = false, lastOkMs = 0, timerId = null;
 
@@ -24,9 +36,17 @@ export function makeSync({ getToken, repo /* 'user/nume' */, exportFn, onStatus 
     try {
       const dump = await exportFn();
       dump._syncReason = reason;
+      const localN = (dump.journal || []).length;
       const day = new Date().toISOString().slice(0, 10);
-      const path = `jurnale/${day}.json`;
-      const body = btoa(unescape(encodeURIComponent(JSON.stringify(dump))));
+      let path = `jurnale/${day}.json`;
+
+      // REGULA CARE A LIPSIT (2026-08-01): un jurnal GOL nu pleacă niciodată. În ziua
+      // testului, aplicația a urcat de trei ori un jurnal gol peste datele bune ale
+      // cursei; s-au recuperat din istoricul git, dar puteau fi pierdute definitiv.
+      if (localN === 0) {
+        onStatus('sync sărit: jurnal gol — nu suprascriu ce e deja urcat');
+        return false;
+      }
 
       const hdr = {
         'Authorization': `Bearer ${token}`,
@@ -34,15 +54,29 @@ export function makeSync({ getToken, repo /* 'user/nume' */, exportFn, onStatus 
         'Content-Type': 'application/json'
       };
       // un fișier per zi, suprascris: PUT cere SHA-ul versiunii curente dacă există
-      let sha;
+      let sha, remoteN = -1;
       const probe = await fetch(`${API}/repos/${repo}/contents/${path}`,
         { headers: hdr, signal: AbortSignal.timeout(20000) });
-      if (probe.ok) sha = (await probe.json()).sha;
+      if (probe.ok) {
+        const meta = await probe.json();
+        sha = meta.sha;
+        remoteN = numaraIntrari(meta.content);
+      }
 
+      // Jurnalul e append-only: ce e local ar trebui să fie SUPRASET peste ce e urcat.
+      // Dacă e mai mic, ceva s-a resetat (reinstalare, alt telefon, IndexedDB golit).
+      // Atunci nu suprascriu — salvez alături, ca să nu pierd niciuna dintre versiuni.
+      if (remoteN > localN) {
+        path = `jurnale/${day}-partial-${localN}.json`;
+        sha = undefined;
+        onStatus(`⚠ jurnal local mai mic (${localN} < ${remoteN}) — salvat separat`);
+      }
+
+      const body = btoa(unescape(encodeURIComponent(JSON.stringify(dump))));
       const res = await fetch(`${API}/repos/${repo}/contents/${path}`, {
         method: 'PUT', headers: hdr, signal: AbortSignal.timeout(30000),
         body: JSON.stringify({
-          message: `jurnal ${day} (${reason})`,
+          message: `jurnal ${day} (${reason}, ${localN} intrări)`,
           content: body, ...(sha ? { sha } : {})
         })
       });
