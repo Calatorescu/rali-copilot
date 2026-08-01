@@ -72,6 +72,7 @@
       <div id="rt-setup">
         <p class="section-label">PRESETĂRI RT</p>
         <div class="preset-row" id="preset-row"></div>
+        <p class="info-line hidden" id="preset-hint" style="opacity:.75">Nicio presetare — RT-urile de la Sibiu nu sunt publicate încă. Le adaugi din roadbook cu „+ salvează".</p>
 
         <p class="section-label">PARAMETRI RT</p>
 
@@ -197,6 +198,13 @@
         <p id="nav-scan-status" class="scan-status hidden"></p>
         <div id="nav-stage-confirm" class="stage-confirm hidden"></div>
 
+        <!-- Apare doar când s-au scanat mai multe leg-uri: numerotarea boxurilor
+             și kilometrajul repornesc la fiecare leg, deci trebuie ales explicit. -->
+        <div id="nav-leg-row" class="field-group hidden">
+          <label for="nav-leg-select">LEG DE NAVIGAT</label>
+          <select id="nav-leg-select"></select>
+        </div>
+
         <button class="btn btn-pri btn-lg" id="btn-nav-start" disabled>▶ START NAVIGARE</button>
       </div>
 
@@ -267,8 +275,13 @@
           </div>
           <div class="field-group" style="flex:1">
             <label>Km rămași</label>
-            <input type="number" id="batt-km" value="115" min="1" max="500" step="1" inputmode="numeric">
+            <input type="number" id="batt-km" value="173" min="1" max="500" step="1" inputmode="numeric">
           </div>
+        </div>
+        <!-- Etapele de la Sibiu, ca să nu tastezi kilometrajul din memorie -->
+        <div class="preset-row" id="batt-quick">
+          <button class="preset-chip" data-km="173">Vineri · 173 km</button>
+          <button class="preset-chip" data-km="265">Sâmbătă · 265 km</button>
         </div>
         <div style="display:flex; gap:10px;">
           <div class="field-group" style="flex:1">
@@ -338,9 +351,31 @@
       </div>
 
       <div class="settings-block">
-        <p class="block-title">CAMPIONAT 2026</p>
-        <p class="info-line done">✓ Reșița Banatul Montan — 26-27 iun (loc 14/22)</p>
-        <p class="info-line">Sibiu — 6-8 aug</p>
+        <p class="block-title">ETAPA CURENTĂ — SIBIU, 6-8 AUGUST</p>
+        <p class="info-line">Joi 19:15 · City Demo prin centru — nu se punctează</p>
+        <p class="info-line">Vineri 12:01 · Etapa 1 — 173,10 km · pauză Orlat 15:31 · finiș 18:21</p>
+        <p class="info-line">Sâmbătă 07:01 · Etapa 2 — 264,79 km, Transfăgărășan / Bâlea Lac 2043 m · finiș 18:31</p>
+        <p class="info-line">Start, finiș și parc închis: Piața Mică</p>
+      </div>
+
+      <div class="settings-block">
+        <p class="block-title">PENALIZĂRI SIBIU</p>
+        <p class="info-line">RT: 0,1 punct la fiecare 0,1 secundă · maxim 900/RT</p>
+        <p class="info-line">Oprire pe RT între tabela galbenă și cea roșie: 100</p>
+        <p class="info-line">RT ratat · TC ratat · start ratat: 900 fiecare</p>
+        <p class="info-line">Kilometraj: peste 10 km abatere/zi, 5 puncte pe km</p>
+        <p class="info-line" style="opacity:.75">TC pe minut: regulamentul spune și 60, și 10 — de întrebat la briefing</p>
+      </div>
+
+      <div class="settings-block">
+        <p class="block-title">PUNCTE DE EFICIENȚĂ (se scad din penalizări)</p>
+        <p class="info-line">Vineri: 173,10 − consum(Wh/km) + 82</p>
+        <p class="info-line">Sâmbătă: 264,79 − 2 × consum(Wh/km) + 82</p>
+        <p class="info-line">Sâmbătă fiecare 1 Wh/km face 2 puncte. Regenerare pe Hold la coborârea de la Bâlea.</p>
+      </div>
+
+      <div class="settings-block">
+        <p class="block-title">CALENDAR RĂMAS</p>
         <p class="info-line">Sinaia — 11-12 sep</p>
         <p class="info-line">Iași-Chișinău — 9-10 oct</p>
         <p class="info-line">Christmas Tour — 4-5 dec</p>

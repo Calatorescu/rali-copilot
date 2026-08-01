@@ -5,7 +5,7 @@
 //  Orice eroare JS necapturată e afișată pe ecran (cu numărul versiunii),
 //  ca să putem diagnostica pe telefon fără consolă de developer.
 // ══════════════════════════════════════════════════════════════
-const BUILD = 'v15';
+const BUILD = 'v16';
 function showFatal(msg) {
   let b = document.getElementById('fatal-banner');
   if (!b) {
@@ -24,6 +24,24 @@ window.addEventListener('unhandledrejection', e =>
   showFatal('promise: ' + (e.reason && e.reason.message ? e.reason.message : e.reason)));
 
 // ══════════════════════════════════════════════════════════════
+//  MIGRARE DE ETAPĂ — Reșița → Sibiu
+// ══════════════════════════════════════════════════════════════
+// Codul nou nu e destul: telefonul are deja salvate în localStorage presetările RT,
+// penalizările și roadbook-ul de la Reșița. Rulează O SINGURĂ DATĂ, înainte de `S`,
+// pentru că `S` își citește valorile din localStorage chiar la construire.
+// Ce NU se șterge: `rali_distcorr` (calibrarea GPS↔odometru e a mașinii, nu a etapei),
+// cheia API, tema și modelul.
+(function migrareEtapa() {
+  const ETAPA = 'sibiu-2026';
+  try {
+    if (localStorage.getItem('rali_etapa') === ETAPA) return;
+    ['rali_presets', 'rali_pen', 'rali_road', 'rali_road_leg',
+     'rali_rt_session', 'rali_nav_session'].forEach(k => localStorage.removeItem(k));
+    localStorage.setItem('rali_etapa', ETAPA);
+  } catch (e) { /* localStorage blocat — mergem mai departe cu ce e în cod */ }
+})();
+
+// ══════════════════════════════════════════════════════════════
 //  STATE
 // ══════════════════════════════════════════════════════════════
 const S = {
@@ -35,7 +53,11 @@ const S = {
     segments: [{ from: 0, speed: 40 }], distFactor: 1, voiceThresh: 3, segAnnounced: {}
   },
   road: {
-    boxes: (() => { try { return JSON.parse(ls('rali_road') || '[]'); } catch(e) { return []; } })(),
+    // `all` = tot ce s-a scanat, din toate leg-urile. `boxes` = doar leg-ul selectat,
+    // sortat pe km — restul modulului NAV navighează un singur leg, monoton crescător.
+    all: (() => { try { return JSON.parse(ls('rali_road') || '[]'); } catch(e) { return []; } })(),
+    leg: ls('rali_road_leg') || null,   // cheia leg-ului activ (vezi navLegKey), null = neales
+    boxes: [],
     active: false, legDistKm: 0, lastPos: null,
     nextIdx: 0, tickId: null, announced: {}
   },
@@ -52,15 +74,14 @@ const S = {
   }
 };
 
+// Gol intenționat. Presetările de dinainte erau RT-urile de la Reșița 2026 — viteze și
+// distanțe care nu au nicio legătură cu Sibiu. Un preset greșit e mai periculos decât
+// niciunul: îl apeși din reflex și cronometrezi după cifra altui raliu.
+// RT-urile de la Sibiu NU sunt publicate — regulamentul particular v1 nu le conține, iar
+// Anexele 6-8 (roadbook-urile, inclusiv cel de calibrare) lipsesc din PDF. Se completează
+// din roadbook, la fața locului, cu „+ Preset nou".
 function DEFAULT_PRESETS() {
-  return [
-    { name: 'RT1', spd: 46.8, dist: 7.32, type: 'auto',     spd2: null, changeKm: null },
-    { name: 'RT2', spd: 44.8, dist: 8.89, type: 'standing', spd2: null, changeKm: null },
-    { name: 'RT3', spd: 34.6, dist: 6.26, type: 'standing', spd2: null, changeKm: null },
-    { name: 'RT4', spd: 24.3, dist: 5.74, type: 'standing', spd2: null, changeKm: null },
-    { name: 'RT5', spd: 40.0, dist: 7.49, type: 'standing', spd2: null, changeKm: null },
-    { name: 'RT6', spd: 30.0, dist: 13.0, type: 'standing', spd2: 45.0, changeKm: 3.06 }
-  ];
+  return [];
 }
 
 function ls(k, v) {
@@ -540,7 +561,7 @@ function rtRender() {
           ? (absD > 15 ? 'mult mai repede' : absD > 7 ? 'mai repede' : 'ușor mai repede')
           : (absD > 15 ? 'mult mai lent'   : absD > 7 ? 'mai lent'   : 'ușor mai lent');
         const spdStr = reqSpd ? `, ${Math.round(reqSpd)} km pe oră` : '';
-        speakIfIdle(`${Math.round(absD)} secunde ${dir}, ${action}${spdStr}`, 3);
+        speakIfIdle(`${secundeRostite(absD)} secunde ${dir}, ${action}${spdStr}`, 3);
         S.voice.rtLastMs = nowMs; S.voice.paceOut = true;
       }
     } else if (S.voice.paceOut) {
@@ -828,6 +849,14 @@ function voiceFlush() {
 // ══════════════════════════════════════════════════════════════
 const NAV_SCAN_PROMPT = `Ești copilot de raliu. Extrage TOATE boxurile vizibile pe această pagină de roadbook în format JSON array.
 
+Pagina poate fi fotografiată rotit (textul pe verticală) — rotește-o mental înainte de a citi.
+
+ANTETUL PAGINII (sus, deasupra tabelului) — citește-l ÎNTÂI și repetă-l pe fiecare box:
+exemplu „Day 2 - Leg 2: Sibiu - Bâlea Lac" și „Page: 39" → "day":2, "leg":2, "page":39.
+CRITIC: numerotarea boxurilor și kilometrajul REPORNESC de la fiecare leg, deci fără
+day+leg boxurile din leg-uri diferite se amestecă. Dacă antetul chiar nu se vede, pune null —
+NU ghici și NU reporta valorile de pe altă pagină.
+
 COLOANE (stânga→dreapta): Număr box | Sum km (bold) | Sum mile (ignoră) | Section km (bold) | Section mile (ignoră) | Diagrama tulip | Dist to target (ignoră) | Comment text
 
 DIAGRAMA TULIP — interpretează vizual direcția:
@@ -841,8 +870,10 @@ steag+ceas (fără fulg de nea)="RT_START_AUTO" | steag+ceas+fulg de nea="RT_STA
 dreptunghi+steag="RT_FINISH" | ceas+steag mare="TC" | P mare="PARKING" | fulger/priză="EV"
 Waypoint normal fără icoane speciale: flag=null
 
+Ignoră adnotările scrise de mână (pix albastru/roșu) și textul transparent de pe verso.
+
 Format de returnare — DOAR JSON array valid, fără alt text:
-[{"num":67,"sumKm":19.72,"sectionKm":2.31,"dir":"STÂNGA-T","comment":"Receptie Bar / DJ 582B","flag":"RT_START_AUTO"},...]
+[{"day":2,"leg":3,"page":39,"num":67,"sumKm":19.72,"sectionKm":2.31,"dir":"STÂNGA-T","comment":"Receptie Bar / DJ 582B","flag":"RT_START_AUTO"},...]
 
 Toate boxurile de pe pagină, în ordine crescătoare a numărului.`;
 
@@ -856,15 +887,91 @@ async function navScanImage(b64, mime) {
   return boxes;
 }
 
-// Îmbină boxuri noi peste cele existente (dedup pe num+sumKm), sortează pe km cumulativ.
+// ── Identitatea unui leg ────────────────────────────────────────
+// Numerele de box și km-ul cumulativ repornesc la fiecare leg (măsurat pe roadbook-ul
+// Reșița 2026: Leg 2 p.21 are boxurile 28–36 la 7.02–8.29 km, Leg 3 p.39 are boxurile
+// 28–30 la 35.68–35.90 km, iar Leg 2 merge până la 79.72 km — deci intervalele se suprapun).
+// Fără leg în cheie, boxurile din leg-uri diferite se amestecă la sortare, iar duplicatele
+// de număr trec neobservate. Cheia e (zi, leg); '?' = antet necitit, grup separat.
+function navLegKey(b) {
+  const d = (typeof b.day === 'number') ? b.day : '?';
+  const l = (typeof b.leg === 'number') ? b.leg : '?';
+  return `${d}|${l}`;
+}
+
+function navLegLabel(key) {
+  const [d, l] = String(key).split('|');
+  if (d === '?' && l === '?') return 'fără antet';
+  return (d !== '?' ? `Ziua ${d} · ` : '') + (l !== '?' ? `Leg ${l}` : 'leg necunoscut');
+}
+
+// Ordinea naturală a leg-urilor: zi, apoi leg; '?' (antet necitit) la coadă.
+function navLegRank(k) {
+  const [d, l] = String(k).split('|');
+  return [d === '?' ? 1e6 : +d, l === '?' ? 1e6 : +l];
+}
+function navLegCmp(a, b) {
+  const ra = navLegRank(a), rb = navLegRank(b);
+  return ra[0] - rb[0] || ra[1] - rb[1];
+}
+
+// Leg-urile prezente în `all`, în ordine.
+function navLegsPresent() {
+  return Array.from(new Set(S.road.all.map(navLegKey))).sort(navLegCmp);
+}
+
+// Reconstruiește `boxes` = doar leg-ul activ, sortat pe km cumulativ.
+// Restul modulului NAV (navRender, navStart, navBoxPassed) presupune un singur
+// leg monoton crescător — aici se garantează asta.
+function navRebuildBoxes() {
+  const legs = navLegsPresent();
+  if (!legs.length) { S.road.boxes = []; S.road.leg = null; return; }
+  if (!S.road.leg || !legs.includes(S.road.leg)) S.road.leg = legs[0];
+  ls('rali_road_leg', S.road.leg);
+  S.road.boxes = S.road.all
+    .filter(b => navLegKey(b) === S.road.leg)
+    .sort((a, b) => (a.sumKm ?? 1e9) - (b.sumKm ?? 1e9));
+}
+
+function navSelectLeg(key) {
+  if (S.road.active) return;           // nu schimba traseul din mers
+  S.road.leg = key;
+  navRebuildBoxes();
+  navUpdateList(); navRenderLegPicker(); navStageConfirm();
+}
+
+// Selectorul de leg — vizibil doar când există mai mult de un leg scanat.
+function navRenderLegPicker() {
+  const row = el('nav-leg-row'), sel = el('nav-leg-select');
+  if (!row || !sel) return;
+  const legs = navLegsPresent();
+  if (legs.length < 2) { row.classList.add('hidden'); return; }
+  sel.textContent = '';
+  legs.forEach(k => {
+    const n = S.road.all.filter(b => navLegKey(b) === k).length;
+    const o = document.createElement('option');   // textContent, nu innerHTML: eticheta e derivată din scanare
+    o.value = k;
+    o.textContent = `${navLegLabel(k)} — ${n} boxuri`;
+    if (k === S.road.leg) o.selected = true;
+    sel.appendChild(o);
+  });
+  row.classList.remove('hidden');
+}
+
+// Îmbină boxuri noi peste cele existente (dedup pe leg+num+sumKm), sortează pe leg apoi km.
 // sumKm poate lipsi (null) → îl trimitem la coadă la sortare, nu blocăm.
 function navMergeBoxes(boxes) {
-  const key = b => `${b.num}_${Math.round((b.sumKm ?? -1) * 100)}`;
-  const map = new Map(S.road.boxes.map(b => [key(b), b]));
+  const key = b => `${navLegKey(b)}_${b.num}_${Math.round((b.sumKm ?? -1) * 100)}`;
+  const map = new Map(S.road.all.map(b => [key(b), b]));
   boxes.forEach(b => map.set(key(b), b));
-  S.road.boxes = Array.from(map.values())
-    .sort((a, b) => (a.sumKm ?? 1e9) - (b.sumKm ?? 1e9));
-  ls('rali_road', JSON.stringify(S.road.boxes));
+  S.road.all = Array.from(map.values()).sort((a, b) => {
+    const ka = navLegKey(a), kb = navLegKey(b);
+    return navLegCmp(ka, kb) || (a.sumKm ?? 1e9) - (b.sumKm ?? 1e9);
+  });
+  // Sari pe leg-ul tocmai scanat: e cel pe care îl pregătește acum.
+  if (boxes.length) S.road.leg = navLegKey(boxes[boxes.length - 1]);
+  navRebuildBoxes();
+  ls('rali_road', JSON.stringify(S.road.all));
 }
 
 // O singură pagină, cu camera.
@@ -879,9 +986,9 @@ async function navScan() {
     try {
       const boxes = await navScanImage(b64, mime);
       navMergeBoxes(boxes);
-      navUpdateList();
+      navUpdateList(); navRenderLegPicker();
       navStageConfirm(1);
-      sta.textContent = `✓ ${boxes.length} boxuri adăugate — total ${S.road.boxes.length}`;
+      sta.textContent = `✓ ${boxes.length} boxuri adăugate — total ${S.road.all.length}`;
       sta.style.color = 'var(--green)';
     } catch (e) {
       sta.textContent = `✗ ${e.message}`; sta.style.color = 'var(--red)';
@@ -910,12 +1017,12 @@ async function navScanMulti() {
         const boxes = await navScanImage(images[i].b64, images[i].mime);
         navMergeBoxes(boxes);
         added += boxes.length;
-        navUpdateList();
+        navUpdateList(); navRenderLegPicker();
       } catch (e) { failed++; }
     }
     navStageConfirm(images.length);
     sta.textContent = `✓ ${images.length} pagini procesate` +
-      (failed ? ` (${failed} eșuate)` : '') + ` — ${added} boxuri, total ${S.road.boxes.length}`;
+      (failed ? ` (${failed} eșuate)` : '') + ` — ${added} boxuri, total ${S.road.all.length}`;
     sta.style.color = failed ? 'var(--yellow)' : 'var(--green)';
     btn.disabled = false; btn1.disabled = false;
     btn.textContent = '🖼️ Adaugă mai multe pagini';
@@ -926,30 +1033,57 @@ async function navScanMulti() {
 function navStageConfirm(pageCount) {
   const box = el('nav-stage-confirm');
   if (!box) return;
-  const boxes = S.road.boxes;
-  if (!boxes.length) { box.classList.add('hidden'); return; }
-  const nums = boxes.map(b => b.num).filter(n => typeof n === 'number').sort((a, b) => a - b);
-  const first = boxes[0], last = boxes[boxes.length - 1];
+  if (!S.road.all.length) { box.classList.add('hidden'); return; }
   const fmtKm = v => (typeof v === 'number' && isFinite(v)) ? v.toFixed(2) : '?';
-  // toate valorile interpolate sunt numerice (num/km/pagini) — fără text din AI, deci innerHTML e sigur
-  let html = `<strong>Etapă înțeleasă:</strong> de la <b>Box ${nums.length ? nums[0] : '?'}</b> ` +
-    `la <b>Box ${nums.length ? nums[nums.length - 1] : '?'}</b> · ` +
-    `${boxes.length} boxuri · ${fmtKm(first.sumKm)}–${fmtKm(last.sumKm)} km`;
-  if (pageCount) html += ` · ${pageCount} ${pageCount === 1 ? 'pagină' : 'pagini'}`;
-  // continuitate: lipsesc numere de box între min și max?
-  const missing = [];
-  if (nums.length) {
-    const present = new Set(nums);
-    for (let k = nums[0]; k <= nums[nums.length - 1]; k++) if (!present.has(k)) missing.push(k);
+  const legs = navLegsPresent();
+  // Continuitatea se verifică ÎN INTERIORUL fiecărui leg. Verificată global, ea raporta
+  // „fără goluri" peste boxuri din leg-uri diferite amestecate — semafor verde fals.
+  let anyWarn = false;
+  const lines = legs.map(k => {
+    const bs = S.road.all.filter(b => navLegKey(b) === k)
+      .sort((a, b) => (a.sumKm ?? 1e9) - (b.sumKm ?? 1e9));
+    const nums = bs.map(b => b.num).filter(n => typeof n === 'number').sort((a, b) => a - b);
+    const kms = bs.map(b => b.sumKm).filter(v => typeof v === 'number' && isFinite(v));
+    const sel = (k === S.road.leg);
+    let line = `${sel ? '▶ ' : ''}<b>${navLegLabel(k)}</b>: ` +
+      (nums.length ? `Box ${nums[0]}–${nums[nums.length - 1]} · ` : '') +
+      `${bs.length} boxuri` +
+      (kms.length ? ` · ${fmtKm(kms[0])}–${fmtKm(kms[kms.length - 1])} km` : '');
+
+    const missing = [];
+    const dupes = [];
+    if (nums.length) {
+      const seen = new Map();
+      nums.forEach(n => seen.set(n, (seen.get(n) || 0) + 1));
+      for (let i = nums[0]; i <= nums[nums.length - 1]; i++) if (!seen.has(i)) missing.push(i);
+      seen.forEach((c, n) => { if (c > 1) dupes.push(n); });
+    }
+    if (missing.length) {
+      anyWarn = true;
+      const show = missing.slice(0, 15).join(', ') + (missing.length > 15 ? '…' : '');
+      line += `<br>&nbsp;&nbsp;⚠️ Lipsesc ${missing.length} box${missing.length > 1 ? 'uri' : ''}: ${show}. Mai scanează paginile lipsă.`;
+    }
+    if (dupes.length) {
+      anyWarn = true;
+      line += `<br>&nbsp;&nbsp;⚠️ Numere de box duplicate: ${dupes.slice(0, 15).join(', ')}. Verifică dacă o pagină e din alt leg.`;
+    }
+    if (!missing.length && !dupes.length) line += `<br>&nbsp;&nbsp;✓ Numerotare continuă, fără goluri.`;
+    return line;
+  });
+
+  if (legs.some(k => k.includes('?'))) {
+    anyWarn = true;
+    lines.push(`⚠️ Unele pagini n-au avut antetul citit (zi/leg). Rescanează-le — altfel nu se știe din ce leg sunt.`);
   }
-  if (missing.length) {
-    box.className = 'stage-confirm warn';
-    const show = missing.slice(0, 15).join(', ') + (missing.length > 15 ? '…' : '');
-    html += `<br>⚠️ Par să lipsească ${missing.length} box${missing.length > 1 ? 'uri' : ''}: ${show}. Mai scanează paginile lipsă.`;
-  } else {
-    box.className = 'stage-confirm ok';
-    html += `<br>✓ Numerotare continuă, fără goluri.`;
-  }
+
+  // Valorile interpolate sunt numerice sau '?' (navLegKey le forțează) — fără text liber din AI,
+  // deci innerHTML rămâne sigur.
+  let html = `<strong>Roadbook înțeles</strong>` +
+    (pageCount ? ` · ${pageCount} ${pageCount === 1 ? 'pagină' : 'pagini'} scanate` : '') +
+    (legs.length > 1 ? ` · ${legs.length} leg-uri` : '') + `<br>` + lines.join('<br>');
+  if (legs.length > 1) html += `<br><em>Navigarea pornește pe leg-ul marcat cu ▶.</em>`;
+
+  box.className = 'stage-confirm ' + (anyWarn ? 'warn' : 'ok');
   box.innerHTML = html;
   box.classList.remove('hidden');
 }
@@ -959,14 +1093,18 @@ function navUpdateList() {
   // sumKm poate lipsi (null) dacă scanarea roadbook-ului nu l-a extras pentru un box;
   // fără gardă, .toFixed pe null arunca si bloca tot init-ul (inclusiv GPS-ul).
   const fmtKm = v => (typeof v === 'number' && isFinite(v)) ? v.toFixed(2) : '?';
+  const multi = navLegsPresent().length > 1;
   el('nav-box-count').textContent = n === 0 ? '— niciun box scanat' :
+    (multi ? navLegLabel(S.road.leg) + ' · ' : '') +
     `${n} boxuri · ${fmtKm(S.road.boxes[0].sumKm)} – ${fmtKm(S.road.boxes[n-1].sumKm)} km`;
   el('btn-nav-start').disabled = n === 0;
 }
 
 function navClear() {
-  if (!confirm('Ștergi toate boxurile scanate?')) return;
-  S.road.boxes = []; ls('rali_road', '[]'); navUpdateList();
+  if (!confirm('Ștergi toate boxurile scanate, din toate leg-urile?')) return;
+  S.road.all = []; S.road.boxes = []; S.road.leg = null;
+  ls('rali_road', '[]'); ls('rali_road_leg', '');
+  navUpdateList(); navRenderLegPicker();
   navStageConfirm();
   const sta = el('nav-scan-status'); if (sta) sta.classList.add('hidden');
 }
@@ -1063,10 +1201,13 @@ function navRender() {
 // ══════════════════════════════════════════════════════════════
 const SYSTEM = `Ești RALI, copilotul virtual al lui Andreas Suciu la Transilvania eCLASIC 2026 (regularitate 100% electric, A.R.E.S. Championship).
 Mașina: Tesla Model Y Juniper AWD Long Range — 82 kWh, consum munte ~20 kWh/100 km, autonomie munte 280-320 km la 100%.
-Regularitate: 1 punct = 1 secundă deviere. TC = time control cu ștampilă (300 pct dacă blochezi alt echipaj). RT = test timed — menții viteză medie.
+Regularitate: 1 punct = 1 secundă deviere. La Sibiu 2026 se cronometrează la zecime: 0,1 punct per 0,1 secundă, maxim 900 pct pe RT — deci și zecimile contează, nu rotunji.
+Sibiu 2026: oprirea pe RT între tabela galbenă (~50 m înainte) și cea roșie de finiș = 100 pct. Punctele de eficiență se SCAD din penalizări: Ziua 1 = km − consum(Wh/km) + baterie(kWh); Ziua 2 = km − 2×consum + baterie. Ziua 1 = 173,10 km, Ziua 2 = 264,79 km peste Transfăgărășan (Bâlea Lac, 2043 m).
+TC = time control cu ștampilă (300 pct dacă blochezi alt echipaj). RT = test timed — menții viteză medie.
 Formula RT: timp ideal (s) = (km × 3600) ÷ viteză medie. Deviere + = în urmă. Deviere - = în avans.
-Rezultat Reșița 2026 (etapa 1): loc 14/22, 339.7 pct — TR4 pierdut (viteze mici <30 km/h, mers instinctiv prea repede).
-Calendar: Sibiu 6-8 aug | Sinaia 11-12 sep | Iași-Chișinău 9-10 oct | Christmas Tour 4-5 dec.
+Regula lui cea mai scumpă: la viteze impuse mici (sub 30 km/h) instinctul îl face să meargă prea repede. Dacă viteza RT e sub 30, avertizează-l din prima.
+Program Sibiu: vineri start 12:01, pauză Orlat 15:31-17:01, finiș 18:21. Sâmbătă start 07:01, cafea Albota 10:21-12:01, masă 14:41-16:31, finiș 18:31. Toate din/în Piața Mică.
+Calendar rămas: Sinaia 11-12 sep | Iași-Chișinău 9-10 oct | Christmas Tour 4-5 dec.
 Răspunde în română, SCURT (max 3 rânduri). Direcțiile cu MAJUSCULE. Calculezi calm, nu panicăm.`;
 
 function rtContext() {
@@ -1220,6 +1361,10 @@ function renderPresets() {
   add.textContent = '+ salvează';
   add.addEventListener('click', savePreset);
   row.appendChild(add);
+  // Fără presetări (cazul normal la începutul unei etape noi) spune de unde vin, ca să nu
+  // pară că s-a stricat ceva. Presetările vechi erau de la Reșița și au fost scoase.
+  const hint = el('preset-hint');
+  if (hint) hint.classList.toggle('hidden', S.presets.length > 0);
 }
 
 function applyPreset(i) {
@@ -1366,17 +1511,52 @@ function battCalc() {
 // ══════════════════════════════════════════════════════════════
 //  PENALTY TRACKER
 // ══════════════════════════════════════════════════════════════
+// Rândurile nu mai sunt fixate pe 6 (numărul de la Reșița) — câte RT-uri are Sibiu nu se
+// știe încă. Lista se compune din presetările create din roadbook plus orice RT deja notat,
+// iar dacă nu există niciunul se pornește de la RT1.
+function penKeys() {
+  const set = new Set();
+  S.presets.forEach(p => { if (p && p.name) set.add(p.name); });
+  // Fără filtru pe null: un rând adăugat manual, sau golit ca să-l retastezi, trebuie
+  // să rămână pe ecran. Altfel dispare sub degete în timp ce ștergi valoarea.
+  Object.keys(S.pen).forEach(k => set.add(k));
+  if (!set.size) set.add('RT1');
+  return Array.from(set).sort((a, b) => {
+    const na = parseInt(String(a).replace(/\D/g, ''), 10);
+    const nb = parseInt(String(b).replace(/\D/g, ''), 10);
+    if (isFinite(na) && isFinite(nb) && na !== nb) return na - nb;
+    return String(a).localeCompare(String(b), 'ro');
+  });
+}
+
+function addPenaltyRow() {
+  const keys = penKeys();
+  let n = 1;
+  keys.forEach(k => {
+    // Rândurile afișate pot fi doar sintetice (RT1 implicit, sau nume de presetare).
+    // Le fixăm în S.pen înainte de a adăuga, altfel dispar la prima apăsare pe „+".
+    if (!(k in S.pen)) S.pen[k] = null;
+    const v = parseInt(String(k).replace(/\D/g, ''), 10);
+    if (isFinite(v) && v >= n) n = v + 1;
+  });
+  S.pen['RT' + n] = null;
+  ls('rali_pen', JSON.stringify(S.pen));
+  renderPenalties();
+}
+
 function renderPenalties() {
   const list = el('pen-list');
   list.innerHTML = '';
   let total = 0;
-  for (let i = 1; i <= 6; i++) {
-    const key = 'RT' + i;
+  for (const key of penKeys()) {
     const val = S.pen[key] != null ? S.pen[key] : '';
     if (val !== '') total += parseFloat(val) || 0;
     const row = document.createElement('div');
     row.className = 'pen-row';
-    row.innerHTML = `<span class="lbl">${key}</span>`;
+    // textContent, nu innerHTML: numele vine din presetări scrise de mână, nu mai e 'RT1'..'RT6' fix.
+    const lbl = document.createElement('span');
+    lbl.className = 'lbl'; lbl.textContent = key;
+    row.appendChild(lbl);
     const inp = document.createElement('input');
     inp.type = 'number'; inp.step = '0.1'; inp.inputMode = 'decimal';
     inp.placeholder = '—'; inp.value = val;
@@ -1391,13 +1571,22 @@ function renderPenalties() {
     row.appendChild(unit);
     list.appendChild(row);
   }
-  el('pen-total').textContent = total.toFixed(1) + ' sec';
+  const add = document.createElement('button');
+  add.className = 'btn btn-sec btn-sm';
+  add.textContent = '+ încă un RT';
+  add.addEventListener('click', addPenaltyRow);
+  list.appendChild(add);
+  // Rotunjire la zecime ÎNAINTE de toFixed: 12.85 e reprezentat binar puțin sub 12.85,
+  // deci (12.85).toFixed(1) dă „12.8". Aici zecimea e un punct de penalizare.
+  el('pen-total').textContent = (Math.round(total * 10) / 10).toFixed(1) + ' sec';
 }
 
 function updatePenTotal() {
   let total = 0;
-  for (let i = 1; i <= 6; i++) total += parseFloat(S.pen['RT' + i]) || 0;
-  el('pen-total').textContent = total.toFixed(1) + ' sec';
+  for (const k of penKeys()) total += parseFloat(S.pen[k]) || 0;
+  // Rotunjire la zecime ÎNAINTE de toFixed: 12.85 e reprezentat binar puțin sub 12.85,
+  // deci (12.85).toFixed(1) dă „12.8". Aici zecimea e un punct de penalizare.
+  el('pen-total').textContent = (Math.round(total * 10) / 10).toFixed(1) + ' sec';
 }
 
 function resetPenalties() {
@@ -1545,6 +1734,18 @@ function navBoxPassed() {
 function el(id) { return document.getElementById(id); }
 function vibrate(pattern) { navigator.vibrate?.(pattern); }
 
+// Secunde rostite cu o zecimală, pentru sinteza vocală românească.
+// La Sibiu 2026 cronometrarea e la 0,1 s (0,1 punct per zecime), deci rotunjirea
+// la secunda întreagă ascundea până la o jumătate de punct pe fiecare anunț.
+// „virgulă" scris în litere, nu ca simbol: nu depindem de cum citește vocea „3,4".
+// Zecimea 0 se omite — „3 secunde", nu „3 virgulă 0 secunde".
+function secundeRostite(x) {
+  const v = Math.round(Math.abs(x) * 10) / 10;
+  const intreg = Math.floor(v);
+  const zecime = Math.round((v - intreg) * 10);
+  return zecime === 0 ? `${intreg}` : `${intreg} virgulă ${zecime}`;
+}
+
 // Comută tab-ul activ (folosit de reluarea sesiunii).
 function activateTab(name) {
   document.querySelectorAll('.nav-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === name));
@@ -1581,7 +1782,9 @@ function navPersistSession(force) {
   _navPersistMs = now;
   try {
     ls('rali_nav_session', JSON.stringify({
-      active: true, legDistKm: S.road.legDistKm, nextIdx: S.road.nextIdx, savedAt: now
+      // `leg` e obligatoriu: nextIdx e index în leg-ul activ, nu în tot roadbook-ul.
+      active: true, leg: S.road.leg, legDistKm: S.road.legDistKm,
+      nextIdx: S.road.nextIdx, savedAt: now
     }));
   } catch (e) {}
 }
@@ -1611,6 +1814,10 @@ function resumeRt(r) {
 }
 
 function resumeNav(r) {
+  // Reia pe leg-ul salvat, nu pe cel selectat acum — altfel nextIdx ar indica în alt traseu.
+  if (r.leg && r.leg !== S.road.leg && navLegsPresent().includes(r.leg)) {
+    S.road.leg = r.leg; navRebuildBoxes(); navUpdateList(); navRenderLegPicker();
+  }
   if (!S.road.boxes.length) return;         // fără roadbook nu avem ce relua
   S.road.active = true;
   S.road.legDistKm = r.legDistKm || 0;
@@ -1827,6 +2034,8 @@ function bindUI() {
   // Tools — penalties
   renderPenalties();
   el('btn-pen-reset').addEventListener('click', resetPenalties);
+  el('batt-quick')?.querySelectorAll('[data-km]').forEach(b =>
+    b.addEventListener('click', () => { el('batt-km').value = b.dataset.km; }));
 
   // Theme
   applyTheme(S.cfg.theme);
@@ -1846,7 +2055,12 @@ function bindUI() {
   el('btn-nav-start').addEventListener('click', navStart);
   el('btn-nav-stop').addEventListener('click', navStop);
   el('btn-nav-scan-multi').addEventListener('click', navScanMulti);
+  // Tolerant la null: dacă telefonul are încă HTML-ul vechi în cache, restul
+  // legărilor de mai jos trebuie să se facă oricum.
+  el('nav-leg-select')?.addEventListener('change', e => navSelectLeg(e.target.value));
+  navRebuildBoxes();          // migrează roadbook-ul salvat (fără leg = un singur grup)
   navUpdateList();
+  navRenderLegPicker();
   navStageConfirm();
 
   // RT Scan

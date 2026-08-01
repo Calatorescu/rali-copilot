@@ -1,4 +1,4 @@
-const CACHE = 'rali-v15';
+const CACHE = 'rali-v16';
 const ASSETS = ['./', './index.html', './style.css', './app.js', './manifest.json', './icon.svg'];
 
 self.addEventListener('install', e => {
