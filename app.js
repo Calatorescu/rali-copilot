@@ -5,7 +5,7 @@
 //  Orice eroare JS necapturată e afișată pe ecran (cu numărul versiunii),
 //  ca să putem diagnostica pe telefon fără consolă de developer.
 // ══════════════════════════════════════════════════════════════
-const BUILD = 'v18';
+const BUILD = 'v19';
 function showFatal(msg) {
   let b = document.getElementById('fatal-banner');
   if (!b) {
@@ -423,7 +423,7 @@ function rtPreview() {
 
 function rtStart() {
   S.rt.totalDist = parseFloat(el('rt-dst').value) || 2;
-  S.rt.type      = document.querySelector('input[name="rt-type"]:checked').value;
+  S.rt.type      = document.querySelector('input[name="rt-type"]:checked')?.value || S.rt.type || 'auto';
   S.rt.segments  = rtReadSegments();
   S.rt.targetSpd = S.rt.segments[0].speed;
   S.rt.distFactor = 1 + ((parseFloat(el('rt-distcorr').value) || 0) / 100);
@@ -511,6 +511,13 @@ function rtStop(auto) {
   const measured = S.rt.distKm;
   const official = S.rt.totalDist;
   const wasActive = S.rt.active;
+  // STOP manual în timpul unei probe orchestrate: curăță starea de cursă,
+  // altfel cockpitul rămânea pe deviere și proba se relua singură.
+  if (S.road.raceRunning) {
+    S.road.raceRunning = false;
+    S.road.raceIdx++;
+    el('race-rt')?.classList.add('hidden');
+  }
   // Rezultatul rămâne pe ecran după STOP — cifra de trecut în tracker nu mai dispare.
   const finalDev = S.rt.finalDevS != null ? S.rt.finalDevS : S.rt.lastDevS;
   if (wasActive && finalDev != null) {
@@ -662,7 +669,7 @@ function rtRender() {
   for (let i = 1; i < segs.length; i++) {
     if (!S.rt.segAnnounced[i] && dist >= segs[i].from - 0.05) {
       S.rt.segAnnounced[i] = true;
-      speak(`Schimbare viteză — ${segs[i].speed} km pe oră`, 3);
+      speak(`Viteză ${segs[i].speed}`, 3, 'seg');
       vibrate([60, 40, 60]);
     }
   }
@@ -681,6 +688,19 @@ function rtRender() {
   const cls = absD <= 5 ? 'ok' : absD <= 15 ? 'warn' : 'bad';
   el('dev-num').className = `dev-num ${cls}`;
   el('dev-box').className = `dev-box ${cls}`;
+
+  // Cockpitul de pe ecranul de navigare (proba orchestrată): aceleași cifre, acolo
+  // unde se uită deja — fără comutat taburi în mers.
+  if (S.road.raceRunning) {
+    const rd = el('race-dev');
+    if (rd) {
+      rd.textContent = sign + absD.toFixed(1);
+      rd.className = 'rdev ' + cls;
+      el('race-dev-lbl').textContent = frozen ? 'FINISH — NU OPRI LÂNGĂ TABELĂ'
+        : (shownDev >= 0 ? 'SECUNDE ÎN URMĂ' : 'SECUNDE ÎN AVANS');
+      el('race-spd').textContent = `${Math.round(S.gps.speed || 0)} / ${Math.round(phaseSpd)}`;
+    }
+  }
 
   // Alert vibrations at thresholds (gate: max 1x per second window)
   if (!frozen && absD > 15 && Math.floor(elapsedS) % 10 === 0 && (elapsedS % 10) < 0.3) vibrate([100]);
@@ -739,17 +759,16 @@ function rtRender() {
         const action = devS > 0
           ? (absD > 15 ? 'mult mai repede' : absD > 7 ? 'mai repede' : 'ușor mai repede')
           : (absD > 15 ? 'mult mai lent'   : absD > 7 ? 'mai lent'   : 'ușor mai lent');
-        const spdStr = reqSpd ? `, ${Math.round(reqSpd)} km pe oră` : '';
-        // speak, nu speakIfIdle: speakIfIdle ieșea fără să spună nimic când NAV vorbea,
-        // dar liniile de mai jos marcau anunțul ca livrat — devierea, singurul mesaj care
-        // decide puncte, era exact cel care se stingea. Coada cu priorități întrerupe
-        // singură ce e mai puțin important.
-        speak(`${secundeRostite(absD)} secunde ${dir}, ${action}${spdStr}`, 3);
+        // SCURT: „3 virgulă 4 în urmă, ține 32" — jumătate din lungimea veche.
+        // cat 'pace': devierea nouă o înlocuiește pe cea neconsumată din coadă —
+        // o deviere rostită târziu e o deviere falsă.
+        const spdStr = reqSpd ? `, ține ${Math.round(reqSpd)}` : '';
+        speak(`${secundeRostite(absD)} ${dir}${spdStr}`, 3, 'pace');
         S.voice.rtLastMs = nowMs; S.voice.paceOut = true;
       }
     } else if (S.voice.paceOut) {
       S.voice.paceOut = false; S.voice.rtLastMs = nowMs;
-      speak('În pace.', 1);
+      speak('În pace.', 1, 'pace');
     }
   }
 
@@ -1012,22 +1031,23 @@ function dirLookup(map, key) {
 
 // Textul complet turn-by-turn pentru un box. Flag-urile speciale (TC / RT / CFR / EV / P)
 // au prioritate; altfel manevră + reper. `isNow` = tierul de execuție.
+// SCURT. Regula, învățată la testul din Dumbrăvița (2026-08-01): la volan, fiecare
+// cuvânt în plus e un cuvânt care ține coada ocupată — iar reperul din comentariu,
+// citit în instrucțiune („la A doua intersecție, la dreapta"), a sunat ca un viraj
+// inexistent. Reperele rămân PE ECRAN; vocea spune doar distanța și manevra.
 function navTurnText(box, distKm, isNow) {
   const dp = navDistPhrase(distKm);
   switch (box.flag) {
-    case 'TC': return isNow ? 'Time Control — oprește și ștampilează'
-      : `Time Control în ${dp} — pregătește time card`;
-    case 'RT_START_STANDING': return isNow ? 'START RT — standing start' : `Start RT în ${dp}`;
-    case 'RT_START_AUTO':     return isNow ? 'START RT' : `Start RT în ${dp}`;
-    case 'RT_FINISH':         return isNow ? 'FINISH RT' : `Finish RT în ${dp}`;
-    case 'STOP-CFR':          return isNow ? 'STOP — cale ferată' : `ATENȚIE — cale ferată în ${dp} — vei opri`;
-    case 'EV':                return isNow ? 'Stație de încărcare' : `Stație de încărcare în ${dp}`;
+    case 'TC': return isNow ? 'Time Control — ștampila' : `Time Control în ${dp}`;
+    case 'RT_START_STANDING': return isNow ? 'Linia de start' : `Start probă în ${dp}`;
+    case 'RT_START_AUTO':     return isNow ? 'START probă' : `Start probă în ${dp}`;
+    case 'RT_FINISH':         return isNow ? 'FINISH' : `Finish în ${dp}`;
+    case 'STOP-CFR':          return isNow ? 'STOP — cale ferată' : `Cale ferată în ${dp} — vei opri`;
+    case 'EV':                return isNow ? 'Stație de încărcare' : `Încărcare în ${dp}`;
     case 'PARKING':           return isNow ? 'Parcare' : `Parcare în ${dp}`;
   }
   const man = navManeuver(box, isNow);
-  if (isNow) return man;
-  const lm = navLandmark(box);
-  return `În ${dp}${lm ? ', la ' + lm : ''}, ${man}`;
+  return isNow ? man : `${dp} — ${man}`;
 }
 
 // Coadă de voce cu priorități: un anunț important nu mai e tăiat de unul minor.
@@ -1039,7 +1059,16 @@ let _voiceCur = null;
 let _voiceCurAtMs = 0;
 
 function _voiceNext() {
-  if (_voiceCur || !_voiceQ.length || !window.speechSynthesis) return;
+  if (_voiceCur || !window.speechSynthesis) return;
+  // TTL: un anunț care a stat la coadă prea mult nu se mai spune deloc — pe probă,
+  // „300, dreapta" rostit când ești deja în viraj e mai rău decât tăcerea.
+  // Prio 3 (timing) expiră mai repede decât restul.
+  const now = Date.now();
+  for (let i = _voiceQ.length - 1; i >= 0; i--) {
+    const age = now - _voiceQ[i].t;
+    if (age > (_voiceQ[i].prio >= 3 ? 3500 : 5000)) _voiceQ.splice(i, 1);
+  }
+  if (!_voiceQ.length) return;
   let idx = 0;
   for (let i = 1; i < _voiceQ.length; i++) if (_voiceQ[i].prio > _voiceQ[idx].prio) idx = i;
   _voiceCur = _voiceQ.splice(idx, 1)[0];
@@ -1069,13 +1098,19 @@ setInterval(() => {
   if (window.speechSynthesis.paused) window.speechSynthesis.resume();
 }, 2000);
 
-function speak(text, prio = 2) {
+// cat (opțional): categoria anunțului — un anunț nou din aceeași categorie ÎNLOCUIEȘTE
+// predecesorul care încă așteaptă la coadă. Fără asta, pe probă se strângeau la rând
+// devieri și viraje vechi, iar când le venea rândul nu mai erau adevărate.
+function speak(text, prio = 2, cat = null) {
   if (!window.speechSynthesis || !text) return;
+  if (cat) {
+    for (let i = _voiceQ.length - 1; i >= 0; i--) if (_voiceQ[i].cat === cat) _voiceQ.splice(i, 1);
+  }
   if (_voiceCur && prio > _voiceCur.prio) {   // întrerupe doar ce e mai puțin important
     _voiceCur = null;
     window.speechSynthesis.cancel();
   }
-  _voiceQ.push({ text, prio });
+  _voiceQ.push({ text, prio, cat, t: Date.now() });
   _voiceNext();
 }
 
@@ -1384,6 +1419,52 @@ function navStageConfirm(pageCount) {
   box.className = 'stage-confirm ' + (anyWarn ? 'warn' : 'ok');
   box.innerHTML = html;
   box.classList.remove('hidden');
+  navRenderRtPrep();
+}
+
+// Panoul de pregătire a probelor: ce a găsit în roadbook + vitezele. Se completează
+// PARCAT, o singură dată — în mers nu se mai atinge nimic.
+function navRenderRtPrep() {
+  const wrap = el('nav-rt-prep');
+  if (!wrap) return;
+  const rts = navDetectRts();
+  if (!rts.length) { wrap.classList.add('hidden'); wrap.textContent = ''; return; }
+  wrap.classList.remove('hidden');
+  wrap.textContent = '';
+  const title = document.createElement('p');
+  title.className = 'section-label';
+  title.textContent = `PROBE GĂSITE ÎN ROADBOOK: ${rts.length}`;
+  wrap.appendChild(title);
+  rts.forEach(rt => {
+    const row = document.createElement('div');
+    row.className = 'rtprep-row';
+    const lbl = document.createElement('span');
+    lbl.textContent = `${rt.name} · box ${S.road.boxes[rt.startIdx].num}→${S.road.boxes[rt.finishIdx].num} · ${rt.dist.toFixed(2)} km · ${rt.type === 'standing' ? 'standing' : 'auto'}`;
+    row.appendChild(lbl);
+    const inp = document.createElement('input');
+    inp.type = 'number'; inp.min = '5'; inp.max = '120'; inp.step = '0.1';
+    inp.inputMode = 'decimal'; inp.placeholder = 'km/h?';
+    if (rt.speed != null) inp.value = rt.speed;
+    inp.addEventListener('change', () => {
+      const v = parseFloat(String(inp.value).replace(',', '.'));
+      if (isFinite(v) && v >= 5 && v <= 120) { navSaveRtSpeed(rt.key, v); navRenderRtPrep(); }
+    });
+    row.appendChild(inp);
+    const st = document.createElement('span');
+    st.className = 'rtprep-st';
+    st.textContent = rt.speed != null ? '✓' : '⚠ viteza!';
+    st.style.color = rt.speed != null ? 'var(--green)' : 'var(--red)';
+    row.appendChild(st);
+    wrap.appendChild(row);
+  });
+  const hint = document.createElement('p');
+  hint.className = 'info-line';
+  hint.style.opacity = '.75';
+  const lipsa = rts.filter(r => r.speed == null).length;
+  hint.textContent = lipsa
+    ? `Completează ${lipsa} vitez${lipsa > 1 ? 'e' : 'ă'} din buletin, apoi START — restul merge singur.`
+    : 'Totul complet. START NAVIGARE — probele pornesc și se opresc singure.';
+  wrap.appendChild(hint);
 }
 
 function navUpdateList() {
@@ -1410,6 +1491,17 @@ function navClear() {
 function navStart() {
   if (!S.road.boxes.length) return;
   S.road.active = true; S.road.legDistKm = 0; S.road.announced = {};
+  // Planul de cursă: probele detectate din roadbook, cu vitezele lor.
+  // De aici, orchestratorul (raceTick) conduce singur — pornire, deviere, finish, scris.
+  S.road.racePlan = navDetectRts();
+  S.road.raceIdx = 0;
+  S.road.raceRunning = false;
+  const faraViteza = S.road.racePlan.filter(r => r.speed == null).length;
+  if (S.road.racePlan.length) {
+    speak(faraViteza
+      ? `Navigare pornită. ${S.road.racePlan.length} probe, ${faraViteza} fără viteză.`
+      : `Navigare pornită. ${S.road.racePlan.length} probe, totul automat.`, 2);
+  } else speak('Navigare pornită.', 1);
   S.road.lastPos = S.gps.lat ? { lat: S.gps.lat, lng: S.gps.lng } : null;
   S.road.lastT = null;
   // Skip boxes within 80m to avoid voice spam at start
@@ -1418,11 +1510,14 @@ function navStart() {
   el('nav-setup').classList.add('hidden');
   el('nav-active').classList.remove('hidden');
   S.road.tickId = setInterval(navRender, 500);
-  speak('Navigare pornită.', 1);
   navPersistSession(true);
 }
 
 function navStop() {
+  // Dacă o probă orchestrată rulează, o închidem curat înainte de a opri navigarea.
+  if (S.road.raceRunning && S.rt.active) rtStop(true);
+  S.road.raceRunning = false;
+  el('race-rt')?.classList.add('hidden');
   S.road.active = false; clearInterval(S.road.tickId);
   navClearSession();
   voiceFlush();
@@ -1434,6 +1529,86 @@ function navGpsTick(pos) {
   const acc = pos.coords.accuracy;
   // Același tratament ca la RT: precizia slabă taie doar haversine, nu tot odometrul.
   S.road.legDistKm += gpsDistKm(S.road, pos, !!(acc && acc > 60));
+  navTurnDetect(pos);
+}
+
+// ── Resincronizare AUTOMATĂ pe viraje ──────────────────────────
+// Roadbook-ul n-are coordonate — doar km și viraje. Dar virajele sunt repere fizice:
+// când GPS-ul (heading) arată că mașina chiar a virat, căutăm boxul de viraj din
+// fereastra apropiată și fixăm kilometrajul pe el. E butonul „AM TRECUT DE BOX"
+// apăsat automat — răspunsul la decalajul de la testul din Dumbrăvița, unde toate
+// anunțurile alunecaseră și șoferul n-avea mâini libere să corecteze.
+function angDiff(a, b) { return ((a - b + 540) % 360) - 180; }
+
+function navTurnDetect(pos) {
+  if (!S.road.active || !S.road.boxes.length) return;
+  const c = pos.coords;
+  const spd = (c.speed != null && isFinite(c.speed)) ? c.speed * 3.6 : (S.gps.speed || 0);
+  const hdg = c.heading;
+  const t = pos.timestamp;
+  const st = S.road.turnSt || (S.road.turnSt = { acc: 0, lastHdg: null, lastT: 0, quietMs: 0, snapT: 0 });
+  // heading-ul GPS e valid doar în mers; sub 8 km/h e zgomot
+  if (hdg == null || !isFinite(hdg) || spd < 8) { st.lastHdg = null; st.acc = 0; return; }
+  if (st.lastHdg == null || t - st.lastT > 5000) {
+    st.lastHdg = hdg; st.lastT = t; st.acc = 0; st.quietMs = 0; return;
+  }
+  const d = angDiff(hdg, st.lastHdg);
+  const dt = t - st.lastT;
+  st.lastHdg = hdg; st.lastT = t;
+  if (Math.abs(d) < 3) {
+    st.quietMs += dt;
+    // virajul s-a TERMINAT (direcție stabilă 2,5 s după o rotație acumulată de peste 55°)
+    if (st.quietMs > 2500 && Math.abs(st.acc) >= 55) {
+      navTurnSnap(st.acc);
+      st.acc = 0;
+    } else if (st.quietMs > 2500) st.acc = 0;   // mers drept — uită micile corecții
+  } else {
+    st.acc += d;
+    st.quietMs = 0;
+  }
+}
+
+function navTurnSnap(accDeg) {
+  const st = S.road.turnSt;
+  const now = Date.now();
+  if (now - st.snapT < 10000) return;   // max un snap la 10 s
+  const dist = S.road.legDistKm;
+  const right = accDeg > 0;             // heading crește în sensul acelor = viraj dreapta
+  // Candidați: boxuri de VIRAJ din fereastra ±350 m, cu sensul potrivit.
+  // Giratoriile se acceptă indiferent de semn (rotația netă depinde de ieșire).
+  // Conservator: fără candidat potrivit → NICIUN snap; un snap greșit e mai rău decât driftul.
+  let best = -1, bestGap = 0.35;
+  for (let i = 0; i < S.road.boxes.length; i++) {
+    const b = S.road.boxes[i];
+    if (typeof b.sumKm !== 'number' || !isFinite(b.sumKm)) continue;
+    const gap = Math.abs(b.sumKm - dist);
+    if (gap > bestGap) continue;
+    const dir = b.dir || '';
+    const isTurn = /^GIRATORIU/.test(dir) ? true
+      : right ? (dir === 'DREAPTA' || dir === 'DREAPTA-T')
+              : (dir === 'STÂNGA' || dir === 'STÂNGA-T');
+    if (!isTurn) continue;
+    best = i; bestGap = gap;
+  }
+  if (best === -1) return;
+  const box = S.road.boxes[best];
+  const target = box.sumKm + 0.02;      // virajul se încheie puțin după box
+  const deltaKm = target - dist;
+  st.snapT = now;
+  S.road.legDistKm = target;
+  S.road.nextIdx = best + 1;
+  if (S.rt.active && Math.abs(deltaKm) < 0.5) S.rt.distKm = Math.max(0, S.rt.distKm + deltaKm);
+  const key = `${box.num}_${Math.round(box.sumKm * 100)}`;
+  for (let tt = 0; tt < NAV_TIERS.length; tt++) S.road.announced[key + '_t' + tt] = true;
+  const sta = el('nav-sync-status');
+  if (sta) {
+    const m = Math.round(Math.abs(deltaKm) * 1000);
+    sta.textContent = `✓ auto-sync Box ${box.num} (corecție ${deltaKm >= 0 ? '+' : '−'}${m} m)`;
+    sta.classList.remove('warn'); sta.classList.remove('hidden');
+    clearTimeout(S.road.syncMsgId);
+    S.road.syncMsgId = setTimeout(() => sta.classList.add('hidden'), 5000);
+  }
+  navPersistSession(true);
 }
 
 function navRender() {
@@ -1441,6 +1616,7 @@ function navRender() {
   const dist = S.road.legDistKm;
   el('nav-pos-km').textContent = dist.toFixed(3) + ' km';
   navPersistSession(); // throttle ~1/sec, pentru reluare după reload / OS-kill
+  raceTick(dist);      // orchestratorul: pornește/oprește probele singur, după plan
 
   // Advance past already-passed boxes. Garda pe tip e plasa finală: un sumKm ne-numeric
   // ar face comparația mereu falsă (NaN) și ar îngheța avansul definitiv, fără eroare.
@@ -1500,7 +1676,12 @@ function navRender() {
   if (chosen >= 0 && !S.road.announced[key + '_t' + chosen]) {
     for (let j = chosen; j < NAV_TIERS.length; j++) S.road.announced[key + '_t' + j] = true;
     const isNow = !!NAV_TIERS[chosen].now;
-    speak(navTurnText(next, distToNext, isNow));
+    // Boxurile „drept înainte" fără flag nu se rostesc deloc — sunt pe ecran; vocea
+    // se păstrează pentru viraje și evenimente. cat 'turn': un anunț nou de viraj
+    // înlocuiește predecesorul neconsumат din coadă.
+    if (next.dir !== 'ÎNAINTE' || next.flag) {
+      speak(navTurnText(next, distToNext, isNow), isNow ? 3 : 2, 'turn');
+    }
     if (next.flag === 'EV') vibrate([40, 30, 40, 30, 40]);
     else if (next.flag === 'STOP-CFR' && isNow) vibrate([200, 80, 200]);
   }
@@ -1842,7 +2023,7 @@ function tcTick() {
     if (rem <= mk && !S.tc.announced[mk]) {
       S.tc.announced[mk] = true;
       if (rem > mk - 1.0) {
-        speak(names[mk], 3);
+        speak(names[mk], 3, 'cd');   // cifra nouă o înlocuiește pe cea stătută din coadă
         if (mk <= 5) vibrate([80]);
       }
     }
@@ -2122,27 +2303,152 @@ function navBoxPassed() {
 // definise din greșeală în corpul lui (ancoră de editare greșită): bindUI dădea
 // ReferenceError la navJumpToBox și toate legările de după linia aia mureau.
 
-// ── RT direct din roadbook ─────────────────────────────────────
-// Scanarea recunoaște deja flag-urile RT_START_AUTO / RT_START_STANDING / RT_FINISH.
-// Perechea următoare (start → primul finish de după el) dă distanța probei EXACT din
-// roadbook, fără tastare în cursă. Viteza nu e în tulipe (vine din buletin) — rămâne
-// singurul câmp de completat.
-function navRtAhead() {
+// ── Probele, detectate integral din roadbook ───────────────────
+// Cerința lui Andreas de la testul din Dumbrăvița: „îi dau roadbook-ul scanat, își ia
+// de acolo TOATE probele, vitezele, timpii — apoi doar START și merge fără întrerupere."
+// Perechile RT_START_* → primul RT_FINISH de după dau distanțele; viteza se citește
+// din comentariul boxului de start dacă e scrisă acolo („30 km/h"); ce lipsește se
+// completează O DATĂ, parcat, în panoul de pregătire — niciodată în mers.
+function navDetectRts() {
   const boxes = S.road.boxes;
-  if (!boxes.length) return null;
-  let si = -1;
-  for (let i = Math.max(0, S.road.nextIdx - 1); i < boxes.length; i++) {
-    if (boxes[i].flag === 'RT_START_AUTO' || boxes[i].flag === 'RT_START_STANDING') { si = i; break; }
-  }
-  if (si === -1) return null;
-  for (let i = si + 1; i < boxes.length; i++) {
-    if (boxes[i].flag === 'RT_FINISH') {
-      const dist = boxes[i].sumKm - boxes[si].sumKm;
-      if (dist > 0.05 && dist < 60) return { start: boxes[si], finish: boxes[i], dist };
-      return null;
+  const rts = [];
+  let saved = {};
+  try { saved = JSON.parse(ls('rali_road_rts') || '{}'); } catch (e) {}
+  for (let i = 0; i < boxes.length; i++) {
+    const f = boxes[i].flag;
+    if (f !== 'RT_START_AUTO' && f !== 'RT_START_STANDING') continue;
+    for (let j = i + 1; j < boxes.length; j++) {
+      if (boxes[j].flag === 'RT_FINISH') {
+        const dist = boxes[j].sumKm - boxes[i].sumKm;
+        if (dist > 0.05 && dist < 60) {
+          const n = rts.length + 1;
+          // viteza din comentariul boxului de start, dacă organizatorul a scris-o acolo
+          const m = String(boxes[i].comment || '').match(/(\d+(?:[.,]\d+)?)\s*km\s*\/?\s*h/i);
+          const key = `${S.road.leg}|${boxes[i].num}_${Math.round(boxes[i].sumKm * 100)}`;
+          rts.push({
+            name: 'RT' + n, key,
+            startIdx: i, finishIdx: j,
+            startKm: boxes[i].sumKm, finishKm: boxes[j].sumKm,
+            dist: Math.round(dist * 100) / 100,
+            type: f === 'RT_START_STANDING' ? 'standing' : 'auto',
+            speed: saved[key] != null ? saved[key]
+                 : (m ? parseFloat(m[1].replace(',', '.')) : null)
+          });
+        }
+        break;
+      }
     }
   }
+  return rts;
+}
+
+function navSaveRtSpeed(key, speed) {
+  let saved = {};
+  try { saved = JSON.parse(ls('rali_road_rts') || '{}'); } catch (e) {}
+  saved[key] = speed;
+  ls('rali_road_rts', JSON.stringify(saved));
+}
+
+// Compat: prima probă din față (folosit de butonul manual „Pregătește RT").
+function navRtAhead() {
+  const rts = navDetectRts();
+  const boxes = S.road.boxes;
+  for (const rt of rts) {
+    if (rt.startIdx >= Math.max(0, S.road.nextIdx - 1))
+      return { start: boxes[rt.startIdx], finish: boxes[rt.finishIdx], dist: rt.dist, rt };
+  }
   return null;
+}
+
+// ══════════════════════════════════════════════════════════════
+//  ORCHESTRATORUL DE CURSĂ — zero apăsări în mers
+// ══════════════════════════════════════════════════════════════
+// Rulează din navRender. Stări per probă: 'liaison' (drum) → 'staged' (la linie,
+// standing) → RT pornit automat → oprit automat după finish → următoarea probă.
+// Regula lui Andreas de la testul din Dumbrăvița: „doar îi dau start navigație și
+// trebuie să meargă fără întrerupere până la final."
+function raceTick(dist) {
+  const plan = S.road.racePlan;
+  if (!plan || S.road.raceIdx >= plan.length) return;
+  const cur = plan[S.road.raceIdx];
+
+  if (!S.rt.active) {
+    const dToStart = cur.startKm - dist;
+
+    // avertizare unică la ~500 m de start
+    if (dToStart <= 0.5 && dToStart > 0 && !cur._warned) {
+      cur._warned = true;
+      speak(cur.speed != null
+        ? `Proba în 500. Viteza ${cur.speed}.`
+        : `Proba în 500 — FĂRĂ viteză setată, cronometrez manual.`, 3, 'race');
+      vibrate([60, 40, 60]);
+    }
+
+    if (cur.speed == null) {
+      // fără viteză nu putem cronometra — sărim proba când am trecut de finish-ul ei
+      if (dist > cur.finishKm + 0.1) { S.road.raceIdx++; }
+      return;
+    }
+
+    if (cur.type === 'standing') {
+      // Standing: oprit la linie → cronometrul pornește CÂND PLECI, nu când ajungi.
+      if (!cur._staged && Math.abs(dToStart) <= 0.04 && (S.gps.speed || 0) < 5) {
+        cur._staged = true;
+        speak('La linie. Pornesc când pleci.', 3, 'race');
+      }
+      if (cur._staged && (S.gps.speed || 0) > 6) raceStartRt(cur, 0);
+      // plasă: dacă trece de linie din rulare (start dat din mers), pornim oricum
+      else if (!cur._staged && dist >= cur.startKm && (S.gps.speed || 0) > 6) {
+        raceStartRt(cur, dist - cur.startKm);
+      }
+    } else {
+      // Auto-start: cronometrul pornește la trecerea liniei
+      if (dist >= cur.startKm) raceStartRt(cur, dist - cur.startKm);
+    }
+  } else if (S.road.raceRunning) {
+    // proba rulează — o închidem singuri la ~120 m după linia de finish (după tabele)
+    if (dist >= cur.finishKm + 0.12 || (S.rt.finishing && S.rt.distKm >= cur.dist + 0.1)) {
+      raceFinishRt(cur);
+    }
+  }
+}
+
+function raceStartRt(cur, overshootKm) {
+  el('rt-spd').value = cur.speed;
+  el('rt-dst').value = cur.dist;
+  const radio = document.querySelector(`input[name="rt-type"][value="${cur.type}"]`);
+  if (radio) radio.checked = true;
+  S.rt.pendingName = cur.name;
+  rtStart();
+  // Compensarea depășirii liniei: GPS-ul bate la ~1 s, deci trecerea se detectează cu
+  // câțiva metri întârziere. Și distanța, și ceasul se retro-datează la LINIE, altfel
+  // fiecare probă începea cu ~1 s de deviere falsă.
+  if (overshootKm > 0.001) {
+    const v = (S.gps.speed || 0) / 3.6;   // m/s
+    S.rt.distKm = overshootKm;
+    if (v > 3) {
+      const backMs = (overshootKm * 1000 / v) * 1000;
+      S.rt.startMs -= backMs;
+      if (S.rt.startPerf != null) S.rt.startPerf -= backMs;
+    }
+  }
+  S.road.raceRunning = true;
+  el('race-rt')?.classList.remove('hidden');
+  speak(`Start. Ține ${cur.speed}.`, 3, 'race');
+  vibrate([100, 60, 100]);
+  activateTab('nav');   // cockpitul e ecranul de navigare — devierea apare acolo
+}
+
+function raceFinishRt(cur) {
+  const dev = S.rt.finalDevS != null ? S.rt.finalDevS : S.rt.lastDevS;
+  S.road.raceRunning = false;   // ÎNAINTE de rtStop — garda lui pentru STOP manual să nu incrementeze dublu
+  rtStop(true);   // auto: fără dialogul de calibrare — niciun confirm() la volan
+  el('race-rt')?.classList.add('hidden');
+  if (dev != null) {
+    const a = Math.abs(dev);
+    speak(`Gata. ${secundeRostite(a)} ${dev >= 0 ? 'în urmă' : 'în avans'}. Scris la ${cur.name}.`, 3, 'race');
+  }
+  S.road.raceIdx++;
 }
 
 function navPrepRt() {

@@ -234,6 +234,8 @@
         <button class="btn btn-sec" id="btn-nav-scan-multi">🖼️ Adaugă mai multe pagini</button>
         <p id="nav-scan-status" class="scan-status hidden"></p>
         <div id="nav-stage-confirm" class="stage-confirm hidden"></div>
+        <!-- Probele detectate din roadbook + vitezele (din buletin) — pregătire, parcat -->
+        <div id="nav-rt-prep" class="rtprep hidden"></div>
 
         <!-- Apare doar când s-au scanat mai multe leg-uri: numerotarea boxurilor
              și kilometrajul repornesc la fiecare leg, deci trebuie ales explicit. -->
@@ -250,6 +252,15 @@
         <div class="nav-pos-row">
           <span class="section-label" style="margin:0">POZIȚIE LEG</span>
           <span id="nav-pos-km" class="nav-pos-val">0.000 km</span>
+        </div>
+
+        <!-- Cockpit de probă: apare SINGUR când orchestratorul pornește RT-ul, dispare
+             singur după finish. Devierea domină; virajele rămân dedesubt, mai mici. -->
+        <div id="race-rt" class="race-rt hidden">
+          <div class="rdev" id="race-dev">0.0</div>
+          <div class="rlbl" id="race-dev-lbl">SECUNDE</div>
+          <div class="rspd" id="race-spd">— / —</div>
+          <div class="rlbl">ACUM / ȚINTĂ</div>
         </div>
 
         <div class="nav-card-main">

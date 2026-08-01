@@ -95,6 +95,24 @@ html, body { height: 100%; overflow: hidden; background: var(--bg); color: var(-
 /* chip selectat (ziua la eficiență) */
 .preset-chip.sel { border-color: var(--pri); color: var(--pri); font-weight: 800; }
 
+/* Pregătirea probelor din roadbook */
+.rtprep { background: var(--surf); border-radius: 12px; padding: 10px 12px;
+          display: flex; flex-direction: column; gap: 6px; }
+.rtprep-row { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.rtprep-row span:first-child { flex: 1; }
+.rtprep-row input { width: 74px; background: var(--bg); border: 1px solid var(--border);
+                    border-radius: 8px; color: var(--text); font-size: 16px; font-weight: 700;
+                    padding: 7px 8px; text-align: center; }
+.rtprep-st { font-size: 12px; font-weight: 700; min-width: 58px; text-align: right; }
+
+/* Cockpit: pe probă, zona de navigare face loc devierii */
+.race-rt { background: var(--surf); border-radius: 14px; padding: 10px 0 4px; text-align: center; }
+.race-rt .rdev { font-size: 64px; font-weight: 800; line-height: 1; font-variant-numeric: tabular-nums; }
+.race-rt .rdev.ok { color: var(--green); } .race-rt .rdev.warn { color: var(--yellow); }
+.race-rt .rdev.bad { color: var(--red); }
+.race-rt .rspd { font-size: 22px; font-weight: 700; margin-top: 4px; }
+.race-rt .rlbl { font-size: 11px; color: var(--dim); letter-spacing: 2px; margin-top: 2px; }
+
 .rt-badge { background: var(--red); color: #fff; font-size: 10px; font-weight: 800;
   letter-spacing: 1px; padding: 2px 6px; border-radius: 6px; animation: blink 1s infinite; }
 
