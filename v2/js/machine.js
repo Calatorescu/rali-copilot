@@ -121,6 +121,7 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
   // ── legătura ──────────────────────────────────────────────────────────────
   function liaisonTick() {
     announceBoxes();
+    desyncCheck();
 
     const rt = plan.rts[M.rtIdx];
     if (!rt) {
@@ -327,21 +328,54 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
     } else { M._turnAcc += d; M._quietMs = 0; }
   }
 
+  // Snap pe viraj — REGULI STRÂNSE (rescrise 2026-08-01, după testul din Dumbrăvița).
+  // Ce s-a întâmplat acolo: la ieșirea din parcare, detectorul a văzut virajul, a găsit
+  // în fereastra de ±350 m un box de dreapta și l-a împins pe Andreas cu 238 m înainte.
+  // De acolo, aplicația era permanent înaintea realității și proba a pornit singură cu
+  // mult prea devreme. Un snap greșit e mai rău decât driftul pe care îl repară, deci:
+  //  • doar spre boxul pe care CHIAR îl aștepți (nextBoxIdx ±1), nu orice viraj din zonă;
+  //  • fereastră 150 m, nu 350;
+  //  • niciun snap în primii 150 m de leg (manevrele de ieșire din parcare nu sunt boxuri);
+  //  • corecțiile mari se anunță — dacă e greșită, șoferul o aude și o poate corecta.
   function trySnapTurn(acc) {
     if (clock.mono() - M._lastSnapT < 10000) return;
+    if (M.routeKm < 0.15) { log('snap_refuzat', { motiv: 'start_leg', routeKm: r2(M.routeKm) }); return; }
     const right = acc > 0;
-    let best = -1, gap = 0.35;
-    for (let i = 0; i < plan.boxes.length; i++) {
+    let best = -1, gap = 0.15;
+    for (let i = Math.max(0, M.nextBoxIdx - 1); i <= Math.min(plan.boxes.length - 1, M.nextBoxIdx + 1); i++) {
       const b = plan.boxes[i];
+      if (!b || !TURN_DIRS.has(b.dir || '')) continue;
       const g = Math.abs(b.sumKm - M.routeKm);
-      if (g > gap || !TURN_DIRS.has(b.dir || '')) continue;
+      if (g > gap) continue;
       const ok = /^GIRATORIU/.test(b.dir) || (right ? /^DREAPTA/.test(b.dir) : /^STÂNGA/.test(b.dir));
       if (!ok) continue;
       best = i; gap = g;
     }
-    if (best === -1) return;               // conservator: fără candidat, fără snap
+    if (best === -1) {                     // conservator: fără candidat plauzibil, fără snap
+      log('snap_refuzat', { motiv: 'fara_candidat', routeKm: r2(M.routeKm), spreDreapta: right });
+      return;
+    }
     M._lastSnapT = clock.mono();
+    const deltaM = Math.round((plan.boxes[best].sumKm + 0.02 - M.routeKm) * 1000);
     snapToBox(best, 'turn');
+    if (Math.abs(deltaM) > 60)
+      say(`Corectat ${deltaM > 0 ? 'înainte' : 'înapoi'} ${Math.abs(deltaM)} metri, box ${plan.boxes[best].num}.`, 2, 'sync');
+  }
+
+  // „Merg drept, dar aplicația crede că trebuia să fi virat." Fără geometrie, ăsta e
+  // singurul semn că poziția s-a desincronizat — și exact ce i-a lipsit lui Andreas
+  // la testul din Dumbrăvița. Dacă am depășit cu >250 m un box de VIRAJ fără ca
+  // detectorul să fi văzut vreun viraj, spunem cu voce tare că suntem pe dinafară.
+  function desyncCheck() {
+    const prev = plan.boxes[M.nextBoxIdx - 1];
+    if (!prev || !TURN_DIRS.has(prev.dir || '')) return;
+    const past = M.routeKm - prev.sumKm;
+    if (past < 0.25 || M._desyncSaid === prev.num) return;
+    if (clock.mono() - M._lastSnapT < 20000) return;   // tocmai am sincronizat, e în regulă
+    M._desyncSaid = prev.num;
+    say(`Atenție: ar fi trebuit să virezi la boxul ${prev.num}. Dacă ești tot pe drept, apasă SUNT LA BOX.`, 3, 'desync');
+    tone('alarm');
+    log('desync_warn', { boxNum: prev.num, pastM: Math.round(past * 1000) });
   }
 
   // ── API public ────────────────────────────────────────────────────────────
