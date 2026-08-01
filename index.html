@@ -140,6 +140,9 @@
         </div>
 
         <button class="btn btn-pri btn-lg" id="btn-rt-start">PORNEȘTE RT</button>
+        <!-- Start armat: cronometrul pornește EXACT la minutul fix (ceasul oficial),
+             nu la reacția degetului — la standing start fiecare zecime e punct -->
+        <button class="btn btn-sec" id="btn-rt-arm">⏱ Armează startul la minutul fix</button>
       </div>
 
       <!-- Active panel -->
@@ -149,18 +152,39 @@
           <div class="dev-lbl" id="dev-lbl">secunde</div>
         </div>
 
+        <!-- Viteza curentă lângă țintă — antidotul direct la mersul instinctiv prea repede
+             la medii mici (TR4 Reșița, 303 pct). Vitezometrul era pe alt tab. -->
+        <div class="rt-spd-row" id="rt-spd-row">
+          <div class="rt-spd-cell"><span class="rt-spd-big" id="rt-now-spd">--</span><span class="rt-spd-cap">ACUM</span></div>
+          <div class="rt-spd-sep">·</div>
+          <div class="rt-spd-cell"><span class="rt-spd-big" id="rt-tgt-spd">--</span><span class="rt-spd-cap">ȚINTĂ</span></div>
+        </div>
+
+        <!-- Ultimii 200 m: oprirea între tabela galbenă și cea roșie = 100 pct la Sibiu -->
+        <div id="rt-finish-warn" class="finish-warn hidden">⚠ ZONĂ DE FINIȘ — NU OPRI</div>
+
         <div class="stats-card">
           <div class="stat-row"><span>Timp scurs</span><span id="s-elapsed">0:00</span></div>
           <div class="stat-row"><span>Timp ideal</span><span id="s-ideal">0:00</span></div>
           <div class="stat-row"><span>Distanță parcursă</span><span id="s-dist">0.000 km</span></div>
           <div class="stat-row"><span>Distanță rămasă</span><span id="s-rem">—</span></div>
           <div class="stat-row hidden" id="s-phase-row"><span>Viteză țintă acum</span><span id="s-phase">— km/h</span></div>
-          <div class="stat-row accent"><span>Viteză necesară</span><span id="s-reqspd">— km/h</span></div>
+          <div class="stat-row accent"><span>Viteză recuperare</span><span id="s-reqspd">— km/h</span></div>
         </div>
 
         <div class="prog-row">
           <div class="prog-bar"><div class="prog-fill" id="prog-fill"></div></div>
           <span id="prog-pct">0%</span>
+        </div>
+
+        <!-- Corecție de distanță ÎN TIMPUL probei — distanța decide penalizarea și era
+             necorectabilă; NAV avea butoanele astea, RT nu -->
+        <span class="section-label" style="margin:0">CORECȚIE DISTANȚĂ</span>
+        <div class="nav-offset-row">
+          <button class="btn btn-sec" id="btn-rtoff-m100">−100m</button>
+          <button class="btn btn-sec" id="btn-rtoff-m10">−10m</button>
+          <button class="btn btn-sec" id="btn-rtoff-p10">+10m</button>
+          <button class="btn btn-sec" id="btn-rtoff-p100">+100m</button>
         </div>
 
         <button class="btn btn-danger btn-lg" id="btn-rt-stop">STOP RT</button>
@@ -254,6 +278,10 @@
              cale era 200 de apăsări pe +100m -->
         <button class="btn btn-sec" id="btn-nav-jump">⏩ Sunt la box…</button>
 
+        <!-- RT direct din roadbook: scanarea recunoaște RT_START/RT_FINISH — distanța
+             probei = diferența de km dintre ele, fără tastare în cursă -->
+        <button class="btn btn-pri hidden" id="btn-nav-rt"></button>
+
         <button class="btn btn-danger btn-lg" id="btn-nav-stop">■ STOP NAVIGARE</button>
       </div>
     </section>
@@ -277,6 +305,12 @@
         <div style="display:flex; gap:10px;">
           <button class="btn btn-sec" id="btn-tc-sync">⟳ Acum +1 min</button>
           <button class="btn btn-danger" id="btn-tc-stop">STOP</button>
+        </div>
+        <!-- Ceasul raliului ≠ ceasul telefonului. Diferența se măsoară la TC-ul de start
+             și se pune aici; countdown-ul și startul armat o folosesc. Start ratat = 900. -->
+        <div class="field-group">
+          <label>Ceas oficial − telefon (secunde; + dacă oficialul e înainte)</label>
+          <input type="number" id="tc-clockoff" step="0.5" value="0" inputmode="decimal">
         </div>
         <p class="info-line">Alertă vocală la 60s, 30s, 10s și 5-4-3-2-1-GO. Pleci înainte de oră = 300 puncte.</p>
       </div>
@@ -311,6 +345,28 @@
         </div>
         <div class="batt-out" id="batt-out">Apasă Calculează.</div>
         <button class="btn btn-pri" id="btn-batt-calc">Calculează + voce</button>
+      </div>
+
+      <!-- Punctele de eficiență Sibiu: se SCAD din penalizări. Sâmbătă consumul intră
+           dublu — 1 Wh/km economisit = 2 puncte, cât 2 secunde de deviere pe RT. -->
+      <div class="tool-card">
+        <span class="tool-title">🍃 PUNCTE DE EFICIENȚĂ (SIBIU)</span>
+        <div class="preset-row" id="eff-day-row">
+          <button class="preset-chip" data-effday="1" data-km="173.1">Vineri · ×1</button>
+          <button class="preset-chip" data-effday="2" data-km="264.79">Sâmbătă · ×2</button>
+        </div>
+        <div style="display:flex; gap:10px;">
+          <div class="field-group" style="flex:1">
+            <label>Consum mediu (Wh/km, de pe bord)</label>
+            <input type="number" id="eff-cons" placeholder="ex. 175" min="50" max="500" step="1" inputmode="numeric">
+          </div>
+          <div class="field-group" style="flex:1">
+            <label>Km parcurși în zi</label>
+            <input type="number" id="eff-km" value="173.1" min="1" max="500" step="0.1" inputmode="decimal">
+          </div>
+        </div>
+        <div class="batt-out" id="eff-out">Alege ziua, pune consumul de pe bord.</div>
+        <button class="btn btn-pri" id="btn-eff-calc">Calculează punctele</button>
       </div>
 
       <!-- Penalty Tracker -->

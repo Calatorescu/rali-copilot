@@ -75,6 +75,26 @@ html, body { height: 100%; overflow: hidden; background: var(--bg); color: var(-
 .wake-warn { background: var(--red); color: #fff; font-size: 13px; font-weight: 600;
   padding: 8px 14px; text-align: center; }
 
+/* ACUM · ȚINTĂ în panoul RT — cifre mari, citite dintr-o privire la volan */
+.rt-spd-row { display: flex; align-items: center; justify-content: center; gap: 16px;
+  background: var(--surf); border-radius: 12px; padding: 8px 0; }
+.rt-spd-cell { display: flex; flex-direction: column; align-items: center; min-width: 84px; }
+.rt-spd-big { font-size: 44px; font-weight: 800; line-height: 1;
+  font-variant-numeric: tabular-nums; }
+.rt-spd-cap { font-size: 10px; letter-spacing: 2px; color: var(--dim); margin-top: 2px; }
+.rt-spd-sep { font-size: 30px; color: var(--dim); }
+.rt-spd-row.over  .rt-spd-big:first-child, .rt-spd-row.over  #rt-now-spd { color: var(--red); }
+.rt-spd-row.under #rt-now-spd { color: var(--yellow); }
+.rt-spd-row.ok    #rt-now-spd { color: var(--green); }
+
+/* Zona de finiș — clipește, e ultimul loc unde ai voie să greșești */
+.finish-warn { background: var(--red); color: #fff; font-size: 16px; font-weight: 800;
+  text-align: center; padding: 10px; border-radius: 12px; letter-spacing: 1px;
+  animation: blink 1s infinite; }
+
+/* chip selectat (ziua la eficiență) */
+.preset-chip.sel { border-color: var(--pri); color: var(--pri); font-weight: 800; }
+
 .rt-badge { background: var(--red); color: #fff; font-size: 10px; font-weight: 800;
   letter-spacing: 1px; padding: 2px 6px; border-radius: 6px; animation: blink 1s infinite; }
 

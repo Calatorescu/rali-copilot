@@ -5,7 +5,7 @@
 //  Orice eroare JS necapturată e afișată pe ecran (cu numărul versiunii),
 //  ca să putem diagnostica pe telefon fără consolă de developer.
 // ══════════════════════════════════════════════════════════════
-const BUILD = 'v17';
+const BUILD = 'v18';
 function showFatal(msg) {
   let b = document.getElementById('fatal-banner');
   if (!b) {
@@ -442,6 +442,9 @@ function rtStart() {
   S.rt.finishing = false;
   S.rt.finalDevS = null; S.rt.lastDevS = null;
   S.rt.estMode = false; S.rt.accWarned = false;
+  S.rt.zoneVoiced = false;
+  S.rt.runName = S.rt.pendingName || null;    // numele presetului aplicat → rândul din tracker
+  el('rt-finish-warn')?.classList.add('hidden');
   el('rt-result')?.classList.add('hidden');   // rezultatul vechi jos — începe proba nouă
 
   el('rt-setup').classList.add('hidden');
@@ -460,6 +463,50 @@ function rtStart() {
 }
 
 // auto=true => oprire automată la finish (nu propune calibrare, distanța ≈ oficialul).
+// ── Start armat: rtStart se declanșează EXACT la minutul fix al ceasului oficial ──
+// La standing start, cronometrul pornit „la reacția degetului" pierde zecimi care sunt
+// puncte. Armat, pornirea e a ceasului, nu a reflexului. Folosește offsetul oficial-telefon
+// din UTILE (tc-clockoff). A doua apăsare anulează.
+let _rtArmT = null, _rtArmTick = null;
+function rtArmToggle() {
+  const btn = el('btn-rt-arm');
+  if (_rtArmT) {
+    clearTimeout(_rtArmT); clearInterval(_rtArmTick);
+    _rtArmT = null;
+    btn.textContent = '⏱ Armează startul la minutul fix';
+    speak('Armare anulată.', 1);
+    return;
+  }
+  const offMs = (parseFloat(el('tc-clockoff')?.value) || 0) * 1000;   // oficial − telefon
+  const officialNow = Date.now() + offMs;
+  let wait = 60000 - (officialNow % 60000);
+  if (wait < 3000) wait += 60000;            // sub 3 s nu mai armezi în minutul ăsta
+  const fireAt = Date.now() + wait;
+  const said = {};
+  _rtArmT = setTimeout(() => {
+    clearInterval(_rtArmTick); _rtArmT = null;
+    btn.textContent = '⏱ Armează startul la minutul fix';
+    rtStart();
+    vibrate([200, 80, 200]);
+  }, wait);
+  const upd = () => {
+    const remS = Math.ceil((fireAt - Date.now()) / 1000);
+    btn.textContent = `⏱ ARMAT — start în ${remS} s (apasă pentru anulare)`;
+    if (remS <= 3 && remS >= 1 && !said[remS]) { said[remS] = true; speak(String(remS), 3); }
+  };
+  upd();
+  _rtArmTick = setInterval(upd, 200);
+  speak(`Armat. Start peste ${Math.round(wait / 1000)} secunde, la minutul fix.`, 2);
+}
+
+// Corecție manuală de distanță în timpul probei — distanța decide penalizarea.
+function rtOffset(deltaM) {
+  if (!S.rt.active) return;
+  S.rt.distKm = Math.max(0, S.rt.distKm + deltaM / 1000);
+  vibrate([20]);
+  rtRender();
+}
+
 function rtStop(auto) {
   const measured = S.rt.distKm;
   const official = S.rt.totalDist;
@@ -467,12 +514,22 @@ function rtStop(auto) {
   // Rezultatul rămâne pe ecran după STOP — cifra de trecut în tracker nu mai dispare.
   const finalDev = S.rt.finalDevS != null ? S.rt.finalDevS : S.rt.lastDevS;
   if (wasActive && finalDev != null) {
+    const a = Math.abs(finalDev);
+    const pts = Math.round(a * 10) / 10;
+    // Scrierea automată în tracker — până acum cifra trebuia reținută din mers și
+    // retastată în UTILE. Numele vine din presetul aplicat; fără preset, doar pe ecran.
+    let trackTxt = '';
+    if (S.rt.runName) {
+      S.pen[S.rt.runName] = pts;
+      ls('rali_pen', JSON.stringify(S.pen));
+      try { renderPenalties(); } catch (e) {}
+      trackTxt = ` · scris în tracker la ${S.rt.runName}`;
+    }
     const res = el('rt-result');
     if (res) {
-      const a = Math.abs(finalDev);
       res.textContent = `Ultimul RT: deviere ${finalDev >= 0 ? '+' : '−'}${a.toFixed(1)} s ` +
-        `(${finalDev >= 0 ? 'în urmă' : 'în avans'}) ≈ ${(Math.round(a * 10) / 10).toFixed(1)} puncte · ` +
-        `${measured.toFixed(2)} km măsurați`;
+        `(${finalDev >= 0 ? 'în urmă' : 'în avans'}) ≈ ${pts.toFixed(1)} puncte · ` +
+        `${measured.toFixed(2)} km măsurați${trackTxt}`;
       res.classList.remove('hidden');
     }
   }
@@ -588,12 +645,17 @@ function rtRender() {
   const pct      = Math.min(100, (dist / total) * 100);
   const phaseSpd = segPhaseSpeed(dist, segs);            // viteza țintă acum
 
-  // Required speed to recover deviation on remaining segment
-  let reqSpd = null;
-  if (remaining > 0.001) {
-    const remIdealS = segIdealTime(total, segs) - idealS;
-    const remActualS = remIdealS - devS;
-    reqSpd = remActualS > 1 ? (remaining * 3600) / remActualS : null;
+  // Viteza de recuperare pe fereastră SCURTĂ (500 m), plafonată la ±30% din viteza fazei.
+  // Întinsă pe tot restul probei era greșită de două ori: presupunea că nu există puncte
+  // de cronometrare ascunse pe traseu, și producea cifre absurde spre final.
+  let reqSpd = null, recWinM = 0;
+  if (remaining > 0.001 && phaseSpd > 0) {
+    const w = Math.min(0.5, remaining);                 // km
+    recWinM = Math.round(w * 1000);
+    const idealW = (w / phaseSpd) * 3600;               // s la viteza fazei
+    const tAvail = idealW - devS;                       // + în urmă → timp mai puțin
+    reqSpd = tAvail > 1 ? (w * 3600) / tAvail : phaseSpd * 1.3;
+    reqSpd = Math.max(phaseSpd * 0.7, Math.min(phaseSpd * 1.3, reqSpd));
   }
 
   // Voice: anunță fiecare schimbare de medie la trecerea pragului ei
@@ -636,12 +698,31 @@ function rtRender() {
     el('s-reqspd').textContent = 'FINISH';
     el('s-reqspd').style.color = 'var(--green)';
   } else if (reqSpd === null) {
-    el('s-reqspd').textContent = 'IMPOSIBIL ⚠';
-    el('s-reqspd').style.color = 'var(--red)';
+    el('s-reqspd').textContent = '—';
+    el('s-reqspd').style.color = '';
   } else {
-    el('s-reqspd').textContent = reqSpd.toFixed(1) + ' km/h';
+    el('s-reqspd').textContent = `${reqSpd.toFixed(1)} km/h · ${recWinM} m`;
     el('s-reqspd').style.color = '';
   }
+
+  // ACUM · ȚINTĂ — cifrele mari de sub deviere. Colorare pe diferență: roșu = prea
+  // repede (greșeala de la Reșița), galben = prea lent, verde = în fereastră.
+  const nowSpd = S.gps.speed || 0;
+  el('rt-now-spd').textContent = Math.round(nowSpd);
+  el('rt-tgt-spd').textContent = Math.round(phaseSpd);
+  const spdRow = el('rt-spd-row');
+  if (spdRow) {
+    const d = nowSpd - phaseSpd;
+    spdRow.className = 'rt-spd-row ' + (d > 2 ? 'over' : d < -2 ? 'under' : 'ok');
+  }
+
+  // Zona de finiș: vocal la 300 m (o dată), banda clipitoare sub 200 m — și cât timp
+  // devierea e înghețată după linia calculată (fizic încă poți fi ÎNAINTE de tabelă).
+  if (!frozen && !S.rt.zoneVoiced && remaining <= 0.3 && remaining > 0.001) {
+    S.rt.zoneVoiced = true;
+    speak('Zona de finiș în 300 de metri. Nu opri până după tabela roșie.', 3);
+  }
+  el('rt-finish-warn')?.classList.toggle('hidden', !(frozen || (remaining <= 0.2 && remaining > 0.001)));
 
   el('prog-fill').style.width  = pct + '%';
   el('prog-pct').textContent   = Math.round(pct) + '%';
@@ -1389,6 +1470,16 @@ function navRender() {
   el('nav-comment-next').textContent = next.comment || '';
   el('nav-boxnum-next').textContent  = `Box ${next.num}`;
 
+  // Butonul „RT din roadbook" — vizibil doar când urmează o pereche start→finish de RT
+  const btnRt = el('btn-nav-rt');
+  if (btnRt) {
+    const rtA = navRtAhead();
+    if (rtA) {
+      btnRt.textContent = `▶ Pregătește RT: box ${rtA.start.num}→${rtA.finish.num} · ${rtA.dist.toFixed(2)} km`;
+      btnRt.classList.remove('hidden');
+    } else btnRt.classList.add('hidden');
+  }
+
   if (ni + 1 < boxes.length) {
     const af = boxes[ni + 1];
     el('nav-after-text').textContent =
@@ -1608,6 +1699,7 @@ function renderPresets() {
 function applyPreset(i) {
   const p = S.presets[i];
   if (!p) return;
+  S.rt.pendingName = p.name || null;   // rtStop scrie automat devierea în rândul ăsta din tracker
   el('rt-spd').value = p.spd;
   el('rt-dst').value = p.dist;
   // Doar valorile cunoscute: un preset importat cu type lipsă sau cu ghilimele în valoare
@@ -1646,6 +1738,37 @@ function deletePreset(i) {
 }
 
 // ══════════════════════════════════════════════════════════════
+//  PUNCTE DE EFICIENȚĂ — Sibiu, art. 6.3.2
+// ══════════════════════════════════════════════════════════════
+// Ziua 1: km − consum(Wh/km) + baterie(kWh) · Ziua 2: km − 2×consum + baterie.
+// Punctele se SCAD din penalizări. Sâmbătă 1 Wh/km = 2 puncte = 2 s de deviere pe RT —
+// cifra care spune, în timp real, dacă merită vânat consumul sau zecimile.
+let _effDay = 1;
+function effCalc() {
+  const num = v => { const n = parseFloat(String(v).replace(',', '.')); return isFinite(n) ? n : null; };
+  const cons = num(el('eff-cons').value);
+  const km = num(el('eff-km').value);
+  const out = el('eff-out');
+  if (cons == null || km == null) { out.textContent = 'Pune consumul de pe bord și km-ii zilei.'; return; }
+  const BATT = 82;
+  const pts = _effDay === 2 ? km - 2 * cons + BATT : km - cons + BATT;
+  const marginal = _effDay === 2 ? 2 : 1;
+  const rez = pts >= 0
+    ? `BONUS ${pts.toFixed(1)} puncte (se scad din penalizări)`
+    : `${Math.abs(pts).toFixed(1)} puncte ÎN PLUS la penalizări`;
+  out.textContent = `Ziua ${_effDay}: ${km} − ${_effDay === 2 ? '2×' : ''}${cons} + ${BATT} = ` +
+    `${pts.toFixed(1)} → ${rez}. Fiecare 1 Wh/km economisit = ${marginal} punct${marginal > 1 ? 'e' : ''}.`;
+}
+
+function effSelectDay(btn) {
+  _effDay = parseInt(btn.dataset.effday, 10) || 1;
+  el('eff-km').value = btn.dataset.km || '';
+  document.querySelectorAll('#eff-day-row .preset-chip').forEach(b =>
+    b.classList.toggle('sel', b === btn));
+  if (el('eff-cons').value) effCalc();
+}
+
+// ══════════════════════════════════════════════════════════════
 //  TC DEPARTURE COUNTDOWN
 // ══════════════════════════════════════════════════════════════
 function tcSet() {
@@ -1664,11 +1787,12 @@ function tcSet() {
 }
 
 function tcSyncPlus1() {
-  // plecare la minutul rotund următor; dacă e sub 20s, sare la cel de după
-  const t = new Date();
+  // plecare la minutul rotund următor AL CEASULUI OFICIAL; sub 20s, sare la cel de după
+  const off = tcClockOffMs();
+  const t = new Date(Date.now() + off);
   t.setSeconds(0, 0);
   t.setMinutes(t.getMinutes() + 1);
-  if (t.getTime() - Date.now() < 20000) t.setMinutes(t.getMinutes() + 1);
+  if (t.getTime() - (Date.now() + off) < 20000) t.setMinutes(t.getMinutes() + 1);
   S.tc.targetMs = t.getTime();
   S.tc.announced = {};
   el('tc-time').value = `${pad(t.getHours())}:${pad(t.getMinutes())}:00`;
@@ -1684,9 +1808,15 @@ function tcStop() {
   el('tc-display').className = 'cd-display';
 }
 
+// Offsetul oficial−telefon (secunde, din câmpul de sub countdown). Ora de pe time card
+// e în CEASUL RALIULUI; telefonul poate diferi cu secunde bune — la 300 pct pentru
+// plecare timpurie și 900 pentru start ratat, secundele alea contează.
+function tcClockOffMs() { return (parseFloat(el('tc-clockoff')?.value) || 0) * 1000; }
+
 function tcTick() {
   if (!S.tc.targetMs) return;
-  const remMs = S.tc.targetMs - Date.now();
+  // ținta e în ceas oficial; oficialul o atinge când telefonul arată țintă − offset
+  const remMs = S.tc.targetMs - tcClockOffMs() - Date.now();
   const rem = remMs / 1000;
   const disp = el('tc-display');
 
@@ -1959,12 +2089,83 @@ function navBoxPassed() {
   // Snap: de aici înainte, „în X metri" e din nou exact roadbook-ul.
   S.road.legDistKm = box.sumKm;
   S.road.nextIdx = idx + 1;
+  // Același drift GPS a afectat și odometrul RT, dacă rulează — corectează-l cu aceeași
+  // diferență (gratuit: boxul e o poziție confirmată fizic). Sanity: sub 500 m.
+  if (S.rt.active && Math.abs(deltaM) < 500) S.rt.distKm = Math.max(0, S.rt.distKm + deltaM / 1000);
   // Re-permite anunțurile pentru boxurile care urmează; cel confirmat rămâne „spus".
   S.road.announced = {};
   const key = `${box.num}_${Math.round(box.sumKm * 100)}`;
   for (let t = 0; t < NAV_TIERS.length; t++) S.road.announced[key + '_t' + t] = true;
 
-  // Repornire la mijloc de leg — „sunt la box N". navStart pleacă mereu de la km 0, deci
+// Verificare de coerență: corecție mare = posibil traseu greșit sau box confirmat greșit.
+  const sta = el('nav-sync-status');
+  const absM = Math.abs(deltaM);
+  const sign = deltaM >= 0 ? '+' : '−';
+  if (absM > 200) {
+    sta.textContent = `⚠ Diferență mare: ${sign}${absM} m față de roadbook — verificați poziția!`;
+    sta.classList.add('warn');
+    speak(`Atenție, diferență de ${absM} de metri față de roadbook. Verificați poziția.`, 1);
+    vibrate([200, 80, 200]);
+  } else {
+    sta.textContent = `✓ Sincronizat la Box ${box.num} (corecție ${sign}${absM} m)`;
+    sta.classList.remove('warn');
+    vibrate([30]);
+  }
+  sta.classList.remove('hidden');
+  clearTimeout(S.road.syncMsgId);
+  S.road.syncMsgId = setTimeout(() => sta.classList.add('hidden'), 6000);
+
+  navRender();
+  navPersistSession(true);
+}
+// ↑ aici se ÎNCHIDE navBoxPassed. Funcțiile de mai jos sunt globale — prima versiune le
+// definise din greșeală în corpul lui (ancoră de editare greșită): bindUI dădea
+// ReferenceError la navJumpToBox și toate legările de după linia aia mureau.
+
+// ── RT direct din roadbook ─────────────────────────────────────
+// Scanarea recunoaște deja flag-urile RT_START_AUTO / RT_START_STANDING / RT_FINISH.
+// Perechea următoare (start → primul finish de după el) dă distanța probei EXACT din
+// roadbook, fără tastare în cursă. Viteza nu e în tulipe (vine din buletin) — rămâne
+// singurul câmp de completat.
+function navRtAhead() {
+  const boxes = S.road.boxes;
+  if (!boxes.length) return null;
+  let si = -1;
+  for (let i = Math.max(0, S.road.nextIdx - 1); i < boxes.length; i++) {
+    if (boxes[i].flag === 'RT_START_AUTO' || boxes[i].flag === 'RT_START_STANDING') { si = i; break; }
+  }
+  if (si === -1) return null;
+  for (let i = si + 1; i < boxes.length; i++) {
+    if (boxes[i].flag === 'RT_FINISH') {
+      const dist = boxes[i].sumKm - boxes[si].sumKm;
+      if (dist > 0.05 && dist < 60) return { start: boxes[si], finish: boxes[i], dist };
+      return null;
+    }
+  }
+  return null;
+}
+
+function navPrepRt() {
+  const rtA = navRtAhead();
+  if (!rtA) return;
+  el('rt-dst').value = rtA.dist.toFixed(2);
+  const type = rtA.start.flag === 'RT_START_STANDING' ? 'standing' : 'auto';
+  const radio = document.querySelector(`input[name="rt-type"][value="${type}"]`);
+  if (radio) radio.checked = true;
+  S.rt.pendingName = null;   // proba nu are nume de preset — trackerul se completează manual
+  rtPreview();
+  activateTab('rt');
+  const sta = el('rt-scan-status');
+  if (sta) {
+    sta.classList.remove('hidden');
+    sta.className = 'scan-status';
+    sta.style.color = 'var(--green)';
+    sta.textContent = `✓ Din roadbook: box ${rtA.start.num}→${rtA.finish.num}, ${rtA.dist.toFixed(2)} km, ${type}. Completează viteza din buletin.`;
+  }
+  vibrate([30]);
+}
+
+// Repornire la mijloc de leg — „sunt la box N". navStart pleacă mereu de la km 0, deci
 // după o oprire (pauza de la Orlat) navigarea era inutilizabilă pentru restul leg-ului:
 // navBoxPassed acceptă doar boxul curent ±1, iar butoanele mută 10-100 m per apăsare.
 function navJumpToBox() {
@@ -1987,28 +2188,6 @@ function navJumpToBox() {
   navRender();
   navPersistSession(true);
   speak(`Poziție setată la box ${box.num}.`, 2);
-}
-
-// Verificare de coerență: corecție mare = posibil traseu greșit sau box confirmat greșit.
-  const sta = el('nav-sync-status');
-  const absM = Math.abs(deltaM);
-  const sign = deltaM >= 0 ? '+' : '−';
-  if (absM > 200) {
-    sta.textContent = `⚠ Diferență mare: ${sign}${absM} m față de roadbook — verificați poziția!`;
-    sta.classList.add('warn');
-    speak(`Atenție, diferență de ${absM} de metri față de roadbook. Verificați poziția.`, 1);
-    vibrate([200, 80, 200]);
-  } else {
-    sta.textContent = `✓ Sincronizat la Box ${box.num} (corecție ${sign}${absM} m)`;
-    sta.classList.remove('warn');
-    vibrate([30]);
-  }
-  sta.classList.remove('hidden');
-  clearTimeout(S.road.syncMsgId);
-  S.road.syncMsgId = setTimeout(() => sta.classList.add('hidden'), 6000);
-
-  navRender();
-  navPersistSession(true);
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -2384,6 +2563,23 @@ function bindUI() {
   el('btn-pen-reset').addEventListener('click', resetPenalties);
   el('batt-quick')?.querySelectorAll('[data-km]').forEach(b =>
     b.addEventListener('click', () => { el('batt-km').value = b.dataset.km; }));
+
+  // Îmbunătățirile pentru Sibiu (audit 2026-08-01) — toate cu ?. ca HTML-ul vechi din
+  // cache să nu rupă restul legărilor
+  el('btn-rt-arm')?.addEventListener('click', rtArmToggle);
+  el('btn-rtoff-m100')?.addEventListener('click', () => rtOffset(-100));
+  el('btn-rtoff-m10') ?.addEventListener('click', () => rtOffset(-10));
+  el('btn-rtoff-p10') ?.addEventListener('click', () => rtOffset(10));
+  el('btn-rtoff-p100')?.addEventListener('click', () => rtOffset(100));
+  el('btn-nav-rt')?.addEventListener('click', navPrepRt);
+  el('btn-eff-calc')?.addEventListener('click', effCalc);
+  document.querySelectorAll('#eff-day-row .preset-chip').forEach(b =>
+    b.addEventListener('click', () => effSelectDay(b)));
+  const tco = el('tc-clockoff');
+  if (tco) {
+    tco.value = ls('rali_clockoff') || '0';
+    tco.addEventListener('change', () => ls('rali_clockoff', tco.value));
+  }
 
   // Theme
   applyTheme(S.cfg.theme);
