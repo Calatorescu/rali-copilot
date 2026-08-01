@@ -5,18 +5,27 @@
 //  Orice eroare JS necapturată e afișată pe ecran (cu numărul versiunii),
 //  ca să putem diagnostica pe telefon fără consolă de developer.
 // ══════════════════════════════════════════════════════════════
-const BUILD = 'v16';
+const BUILD = 'v17';
 function showFatal(msg) {
   let b = document.getElementById('fatal-banner');
   if (!b) {
     b = document.createElement('div');
     b.id = 'fatal-banner';
     b.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:99999;' +
-      'background:#ff3b30;color:#fff;font:12px/1.4 sans-serif;padding:8px;' +
+      'background:#ff3b30;color:#fff;font:12px/1.4 sans-serif;padding:8px 40px 8px 8px;' +
       'white-space:pre-wrap;word-break:break-word;';
+    // Se poate ÎNCHIDE: o eroare benignă acoperea headerul permanent, peste tot ecranul util.
+    const x = document.createElement('button');
+    x.textContent = '✕';
+    x.style.cssText = 'position:absolute;top:4px;right:6px;background:none;border:0;' +
+      'color:#fff;font-size:18px;padding:4px 8px;';
+    x.addEventListener('click', () => b.remove());
+    b.appendChild(x);
     (document.body || document.documentElement).appendChild(b);
   }
-  b.textContent = 'BUILD ' + BUILD + ' • EROARE: ' + msg;
+  const t = document.createElement('span');
+  t.textContent = 'BUILD ' + BUILD + ' • EROARE: ' + msg;
+  b.replaceChildren(b.firstChild, t);   // păstrează ✕, înlocuiește textul
 }
 window.addEventListener('error', e =>
   showFatal((e.message || 'eroare') + '  @' + String(e.filename || '').split('/').pop() + ':' + e.lineno));
@@ -55,16 +64,20 @@ const S = {
   road: {
     // `all` = tot ce s-a scanat, din toate leg-urile. `boxes` = doar leg-ul selectat,
     // sortat pe km — restul modulului NAV navighează un singur leg, monoton crescător.
-    all: (() => { try { return JSON.parse(ls('rali_road') || '[]'); } catch(e) { return []; } })(),
+    // Gardurile de tip (Array.isArray / typeof) nu sunt paranoia: o valoare de alt tip
+    // trece de JSON.parse fără excepție, apoi aruncă abia în bindUI (ex. presets.forEach),
+    // iar bindUI oprit la jumătate lasă aplicația fără butoane — inclusiv fără Import,
+    // deci fără cale de reparare din interior.
+    all: (() => { try { const v = JSON.parse(ls('rali_road') || '[]'); return Array.isArray(v) ? v : []; } catch(e) { return []; } })(),
     leg: ls('rali_road_leg') || null,   // cheia leg-ului activ (vezi navLegKey), null = neales
     boxes: [],
     active: false, legDistKm: 0, lastPos: null,
     nextIdx: 0, tickId: null, announced: {}
   },
-  presets: (() => { try { return JSON.parse(ls('rali_presets') || 'null') || DEFAULT_PRESETS(); } catch(e) { return DEFAULT_PRESETS(); } })(),
+  presets: (() => { try { const v = JSON.parse(ls('rali_presets') || 'null'); return Array.isArray(v) ? v : DEFAULT_PRESETS(); } catch(e) { return DEFAULT_PRESETS(); } })(),
   tc: { targetMs: null, tickId: null, announced: {} },
-  pen: (() => { try { return JSON.parse(ls('rali_pen') || '{}'); } catch(e) { return {}; } })(),
-  voice: { rtLastMs: 0, rtLastDev: null, paceOut: false },
+  pen: (() => { try { const v = JSON.parse(ls('rali_pen') || '{}'); return (v && typeof v === 'object' && !Array.isArray(v)) ? v : {}; } catch(e) { return {}; } })(),
+  voice: { rtLastMs: 0, paceOut: false },
   rec: { obj: null, listening: false, cancelled: false },
   chat: { busy: false },
   cfg: {
@@ -145,6 +158,8 @@ function gpsOk(pos) {
   S.gps.heading  = c.heading;
   S.gps.lat      = c.latitude;
   S.gps.lng      = c.longitude;
+  S.gps.lastFixMs = Date.now();   // watchdog-ul de mai jos se uită la vârsta asta
+  if (S.gps.lostWarned) { S.gps.lostWarned = false; if (S.rt.active || S.road.active) speak('GPS revenit.', 2); }
   gpsDot('active');
   gpsStatus(null);
   renderSpeed();
@@ -214,6 +229,29 @@ function gpsRetry() {
 function gpsDot(s) {
   const d = document.getElementById('gps-dot');
   d.className = 'gps-dot' + (s === 'active' ? ' active' : s === 'searching' ? ' searching' : '');
+}
+
+// Watchdog: odată primit primul fix, NIMIC nu semnala oprirea fluxului — bulina rămânea
+// verde pentru totdeauna, viteza înghețată, RT-ul numărând timp cu odometrul mort.
+// Tipic după foto la un TC: camera Android suspendă PWA-ul și watchPosition amuțește.
+// Peste 3 s fără fix → bulină de căutare; peste 8 s → anunț vocal (o dată) + repornirea
+// watch-ului; gpsOk readuce totul la normal la primul fix.
+function gpsWatchdogTick() {
+  if (S.gps.watchId == null || !S.gps.lastFixMs) return;
+  const age = Date.now() - S.gps.lastFixMs;
+  if (age < 3000) return;
+  gpsDot('searching');
+  if (age < 8000) return;
+  if (!S.gps.lostWarned) {
+    S.gps.lostWarned = true;
+    if (S.rt.active || S.road.active) speak('Atenție, GPS pierdut.', 2);
+    gpsStatus('GPS pierdut — repornesc căutarea…', false, true);
+  }
+  if (!S.gps.lastRestartMs || Date.now() - S.gps.lastRestartMs > 8000) {
+    S.gps.lastRestartMs = Date.now();
+    try { navigator.geolocation.clearWatch(S.gps.watchId); } catch (e) {}
+    startWatch();
+  }
 }
 
 function renderSpeed() {
@@ -354,11 +392,16 @@ function rtAddSegRow(km, spd) {
 
 // Calibrare odometru: din ce-a arătat app-ul vs distanța reală a secțiunii etalon.
 function rtCalibrate() {
-  const measured = parseFloat(prompt('Câți km a ARĂTAT aplicația pe secțiunea de probă?'));
+  const measured = parseFloat(String(prompt('Câți km a ARĂTAT aplicația pe secțiunea de probă?')).replace(',', '.'));
   if (!measured || measured <= 0) return;
-  const real = parseFloat(prompt('Câți km are REAL secțiunea (din roadbook)?'));
+  const real = parseFloat(String(prompt('Câți km are REAL secțiunea (din roadbook)?')).replace(',', '.'));
   if (!real || real <= 0) return;
-  const corr = (real / measured - 1) * 100;
+  // COMPUNE cu factorul activ, nu-l ignora: cifra „arătată" include deja corecția
+  // curentă. Formula veche (real/measured-1) o anula parțial — cu +2% activ și un raport
+  // care cerea +4%, scria +1,96%. Aceeași formulă ca la auto-calibrare (rtOfferCalibration).
+  const curFactor = parseFloat(ls('rali_distcorr') || '0') / 100 + 1;
+  let corr = (curFactor * (real / measured) - 1) * 100;
+  corr = Math.max(-15, Math.min(15, corr));
   el('rt-distcorr').value = corr.toFixed(1);
   ls('rali_distcorr', corr.toFixed(1));
   alert(`Corecție distanță setată: ${corr >= 0 ? '+' : ''}${corr.toFixed(1)}%`);
@@ -388,12 +431,18 @@ function rtStart() {
   S.rt.voiceThresh = Math.max(1, parseFloat(el('rt-voicethr').value) || 3);
   ls('rali_voicethr', String(S.rt.voiceThresh));
   S.rt.segAnnounced = {};
-  S.rt.startMs   = Date.now();
+  S.rt.startMs   = Date.now();          // pentru reluarea după crash (ceas de perete)
+  S.rt.startPerf = performance.now();   // pentru afișaj: imun la corecțiile NTP ale ceasului
   S.rt.distKm    = 0;
   S.rt.lastPos   = S.gps.lat ? { lat: S.gps.lat, lng: S.gps.lng } : null;
-  S.rt.lastT     = null;
+  // lastT = acum, nu null: cu null, primul fix după START adăuga 0 — la auto-start cu
+  // 40 km/h se pierdeau ~11 m ≈ 1 s de timp ideal, mereu în direcția „în urmă".
+  S.rt.lastT     = S.rt.lastPos ? Date.now() : null;
   S.rt.active    = true;
   S.rt.finishing = false;
+  S.rt.finalDevS = null; S.rt.lastDevS = null;
+  S.rt.estMode = false; S.rt.accWarned = false;
+  el('rt-result')?.classList.add('hidden');   // rezultatul vechi jos — începe proba nouă
 
   el('rt-setup').classList.add('hidden');
   el('rt-live').classList.remove('hidden');
@@ -401,7 +450,7 @@ function rtStart() {
   el('s-phase-row').classList.toggle('hidden', S.rt.segments.length <= 1);
 
   S.rt.tickId = setInterval(rtRender, 250);
-  S.voice.rtLastMs = 0; S.voice.rtLastDev = null; S.voice.paceOut = false;
+  S.voice.rtLastMs = 0; S.voice.paceOut = false;
   const startType = S.rt.type === 'standing' ? 'standing start' : 'start';
   const nChg = S.rt.segments.length - 1;
   const chgTxt = nChg > 0 ? `, cu ${nChg} ${nChg === 1 ? 'schimbare' : 'schimbări'} de medie` : '';
@@ -415,6 +464,19 @@ function rtStop(auto) {
   const measured = S.rt.distKm;
   const official = S.rt.totalDist;
   const wasActive = S.rt.active;
+  // Rezultatul rămâne pe ecran după STOP — cifra de trecut în tracker nu mai dispare.
+  const finalDev = S.rt.finalDevS != null ? S.rt.finalDevS : S.rt.lastDevS;
+  if (wasActive && finalDev != null) {
+    const res = el('rt-result');
+    if (res) {
+      const a = Math.abs(finalDev);
+      res.textContent = `Ultimul RT: deviere ${finalDev >= 0 ? '+' : '−'}${a.toFixed(1)} s ` +
+        `(${finalDev >= 0 ? 'în urmă' : 'în avans'}) ≈ ${(Math.round(a * 10) / 10).toFixed(1)} puncte · ` +
+        `${measured.toFixed(2)} km măsurați`;
+      res.classList.remove('hidden');
+    }
+  }
+  S.rt.finalDevS = null; S.rt.lastDevS = null;
   S.rt.active = false; S.rt.finishing = false;
   clearInterval(S.rt.tickId);
   rtClearSession();
@@ -429,6 +491,12 @@ function rtStop(auto) {
 
 // Propune un nou factor de corecție din discrepanța măsurat vs oficial la finalul RT.
 function rtOfferCalibration(measured, official) {
+  // Doar când proba a fost parcursă efectiv (90-110% din oficial). Un STOP apăsat din
+  // reflex la 1,2 km din 5,7 producea o „corecție" de +375%, clamp-ată la +15% — care
+  // arăta plauzibil în confirm() și, acceptată din reflex la volan, strica măsurarea
+  // tuturor RT-urilor rămase din zi.
+  const ratio = measured / official;
+  if (ratio < 0.9 || ratio > 1.1) return;
   const err = (official / measured - 1) * 100;
   if (Math.abs(err) < 0.8) return; // sub prag — nu deranjăm
   const curFactor = S.rt.distFactor || 1;         // măsuratul include deja acest factor
@@ -450,33 +518,53 @@ function rtOfferCalibration(measured, official) {
 //  • gardă de jitter: ignoră mișcarea când ești practic oprit (viteză < 2 km/h) sau
 //    când saltul de poziție e sub ~4 m fără viteză validă (tremur GPS staționar).
 // `state` are { lastPos, lastT }. Actualizează starea și întoarce km-ul de adăugat.
-function gpsDistKm(state, pos) {
+function gpsDistKm(state, pos, accBad) {
   const c = pos.coords;
   const cur = { lat: c.latitude, lng: c.longitude };
   const t = pos.timestamp;
   let inc = 0;
+  const spd = c.speed;                                          // m/s sau null
+  const spdOk = spd != null && isFinite(spd) && spd >= 0;
   if (state.lastPos && state.lastT != null) {
     const dt = (t - state.lastT) / 1000;                        // secunde
     const hav = haversine(state.lastPos.lat, state.lastPos.lng, cur.lat, cur.lng); // km
-    const spd = c.speed;                                        // m/s sau null
-    const spdOk = spd != null && isFinite(spd) && spd >= 0;
     const spdKmh = spdOk ? spd * 3.6 : null;
-    const stationary = spdOk ? (spdKmh < 2) : (hav < 0.004);    // ~2 km/h  /  ~4 m
-    if (!stationary && dt > 0 && dt < 10) {
-      if (spdOk)          inc = (spd * dt) / 1000;              // integrare viteză
-      else if (hav < 0.5) inc = hav;                           // rezervă haversine
+    // Staționar doar când sursele disponibile sunt DE ACORD. Viteza singură e des
+    // subraportată (0 km/h în plin mers, imediat după recâștigarea fixului); haversine
+    // o dă de gol. Înainte, dezacordul se rezolva în favoarea vitezei = distanță pierdută.
+    const stationary = spdOk ? (spdKmh < 2 && hav < 0.004) : (hav < 0.004);
+    // dt până la 30 s (era 10): o pauză de fix mai lungă se acoperă cu ultima viteză
+    // validă, altfel distanța din gaură dispărea definitiv din odometru.
+    if (!stationary && dt > 0 && dt < 30) {
+      if (spdOk)                       inc = (spd * dt) / 1000;            // Doppler — bun și cu acc slabă
+      else if (!accBad && hav < 0.5)   inc = hav;                          // haversine doar cu poziție bună
+      else if (state.lastSpdMs != null) inc = (state.lastSpdMs * dt) / 1000; // gol total: ultima viteză validă
+      // Viteza zice „stau", poziția zice „m-am mișcat serios" → crede poziția (plauzibilă
+      // pentru dt), altfel fiecare recâștigare de fix mănâncă metri reali.
+      if (spdOk && !accBad && hav < 0.5 && hav > inc * 2 + 0.01) inc = hav;
     }
   }
   state.lastPos = cur;
   state.lastT = t;
+  if (spdOk) state.lastSpdMs = spd;
   return inc;
 }
 
 function rtGpsTick(pos) {
   if (!S.rt.active) return;
   const acc = pos.coords.accuracy;
-  if (acc && acc > 60) return; // skip noisy fix
-  S.rt.distKm += gpsDistKm(S.rt, pos) * (S.rt.distFactor || 1); // + calibrare
+  const accBad = !!(acc && acc > 60);
+  // Precizia slabă NU mai oprește odometrul. Înainte: `return` — distanța îngheța, dar
+  // cronometrul curgea, devierea urca cu 1 s/secundă, iar vocea comanda „mai repede"
+  // pentru o întârziere inexistentă; după 10 s de pauză eroarea devenea permanentă.
+  // Viteza Doppler rămâne utilizabilă și când poziția e împrăștiată — doar haversine
+  // se taie (în gpsDistKm), nu toată măsurarea.
+  S.rt.distKm += gpsDistKm(S.rt, pos, accBad) * (S.rt.distFactor || 1); // + calibrare
+  if (accBad && !S.rt.accWarned) {
+    S.rt.accWarned = true;
+    speak('GPS slab. Țin distanța din viteză — condu constant.', 2);
+  } else if (!accBad) S.rt.accWarned = false;
+  S.rt.estMode = accBad;   // rtRender marchează distanța ca estimată
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -486,7 +574,11 @@ function rtRender() {
   if (!S.rt.active) return;
 
   const segs     = S.rt.segments;
-  const elapsedS = (Date.now() - S.rt.startMs) / 1000;
+  // performance.now când există (monoton — o corecție NTP a ceasului în timpul probei
+  // nu mută devierea); Date.now doar ca rezervă după o reluare veche.
+  const elapsedS = S.rt.startPerf != null
+    ? (performance.now() - S.rt.startPerf) / 1000
+    : (Date.now() - S.rt.startMs) / 1000;
   const dist     = S.rt.distKm;
   const total    = S.rt.totalDist;
 
@@ -513,24 +605,30 @@ function rtRender() {
     }
   }
 
-  // Deviation display
-  const absD = Math.abs(devS);
-  const sign = devS >= 0 ? '+' : '−';
-  const arrow = devS >= 0 ? '▲' : '▼';   // ▲ = în urmă (mai repede), ▼ = în avans (mai lent)
+  // Deviation display — după linia de finiș calculată, cifra afișată e cea ÎNGHEȚATĂ
+  // la linie (rezultatul probei), nu una care crește cât aștepți să treci tabela.
+  const frozen = S.rt.finishing && S.rt.finalDevS != null;
+  const shownDev = frozen ? S.rt.finalDevS : devS;
+  const absD = Math.abs(shownDev);
+  const sign = shownDev >= 0 ? '+' : '−';
+  const arrow = shownDev >= 0 ? '▲' : '▼';   // ▲ = în urmă (mai repede), ▼ = în avans (mai lent)
   el('dev-num').textContent = sign + absD.toFixed(1);
-  el('dev-lbl').textContent = devS >= 0 ? `${arrow} secunde în urmă` : `${arrow} secunde în avans`;
+  el('dev-lbl').textContent = frozen ? 'FINISH — nu opri lângă tabelă · STOP după ea'
+    : (shownDev >= 0 ? `${arrow} secunde în urmă` : `${arrow} secunde în avans`);
 
   const cls = absD <= 5 ? 'ok' : absD <= 15 ? 'warn' : 'bad';
   el('dev-num').className = `dev-num ${cls}`;
   el('dev-box').className = `dev-box ${cls}`;
 
   // Alert vibrations at thresholds (gate: max 1x per second window)
-  if (absD > 15 && Math.floor(elapsedS) % 10 === 0 && (elapsedS % 10) < 0.3) vibrate([100]);
+  if (!frozen && absD > 15 && Math.floor(elapsedS) % 10 === 0 && (elapsedS % 10) < 0.3) vibrate([100]);
 
   // Stats
   el('s-elapsed').textContent  = fmtSec(elapsedS) + ' s';
   el('s-ideal').textContent    = fmtSec(idealS) + ' s';
-  el('s-dist').textContent     = dist.toFixed(3) + ' km';
+  // „≈" = GPS slab, distanța vine din integrarea vitezei, nu din poziții — de știut
+  // când citești cifra, nu de panicat.
+  el('s-dist').textContent     = (S.rt.estMode ? '≈' : '') + dist.toFixed(3) + ' km';
   el('s-rem').textContent      = remaining.toFixed(3) + ' km';
   if (segs.length > 1) el('s-phase').textContent = phaseSpd.toFixed(1) + ' km/h';
 
@@ -552,7 +650,7 @@ function rtRender() {
   // în afara pragului; când revii sub prag, confirmă „în pace". Pragul e reglabil.
   const nowMs = Date.now();
   const thr = S.rt.voiceThresh || 3;
-  if (elapsedS > 5) {
+  if (elapsedS > 5 && !frozen) {           // după finiș nu mai comandăm corecții de ritm
     if (absD > thr) {
       const justCrossed = !S.voice.paceOut;
       if (justCrossed || nowMs - S.voice.rtLastMs > 8000) {
@@ -561,24 +659,34 @@ function rtRender() {
           ? (absD > 15 ? 'mult mai repede' : absD > 7 ? 'mai repede' : 'ușor mai repede')
           : (absD > 15 ? 'mult mai lent'   : absD > 7 ? 'mai lent'   : 'ușor mai lent');
         const spdStr = reqSpd ? `, ${Math.round(reqSpd)} km pe oră` : '';
-        speakIfIdle(`${secundeRostite(absD)} secunde ${dir}, ${action}${spdStr}`, 3);
+        // speak, nu speakIfIdle: speakIfIdle ieșea fără să spună nimic când NAV vorbea,
+        // dar liniile de mai jos marcau anunțul ca livrat — devierea, singurul mesaj care
+        // decide puncte, era exact cel care se stingea. Coada cu priorități întrerupe
+        // singură ce e mai puțin important.
+        speak(`${secundeRostite(absD)} secunde ${dir}, ${action}${spdStr}`, 3);
         S.voice.rtLastMs = nowMs; S.voice.paceOut = true;
       }
     } else if (S.voice.paceOut) {
       S.voice.paceOut = false; S.voice.rtLastMs = nowMs;
-      speakIfIdle('În pace.', 1);
+      speak('În pace.', 1);
     }
   }
 
   // Persistă sesiunea RT (throttle ~1/sec) pentru reluare după reload / OS-kill
   rtPersistSession();
 
-  // Auto-stop when done (guard against repeat calls every 250ms)
+  // FINISH: NU mai oprim automat. Odometrul aplicației poate atinge 100% cu sute de
+  // metri înainte sau după tabela reală (drift GPS) — oprirea automată îl relaxa înainte
+  // de tabelă (oprirea lângă finiș = 100 pct la Sibiu) și ascundea devierea finală în
+  // 1,5 s, exact cifra de trecut în tracker. Acum: devierea îngheață la linia calculată,
+  // ecranul spune ce urmează, STOP-ul rămâne manual.
   if (pct >= 100 && dist >= total - 0.01 && !S.rt.finishing) {
     S.rt.finishing = true;
-    speak('Finish RT.', 3);
-    setTimeout(() => { if (S.rt.active) { S.rt.finishing = false; rtStop(true); } }, 1500);
+    S.rt.finalDevS = devS;
+    speak('Finish R T, ' + secundeRostite(Math.abs(devS)) + ' secunde ' +
+          (devS >= 0 ? 'în urmă' : 'în avans') + '. Nu opri lângă tabelă. Apasă STOP după ce treci de ea.', 3);
   }
+  S.rt.lastDevS = devS;   // rtStop îngheață rezultatul pe ecran din valoarea asta
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -593,8 +701,11 @@ function openCamera(onData, multiple) {
   if (multiple) inp.multiple = true;
   else inp.capture = 'environment';
   inp.style.cssText = 'position:fixed;top:-9999px;opacity:0;';
+  // Curățare și când selectorul e ANULAT (onchange nu se declanșează atunci) — altfel
+  // fiecare scanare anulată lasă un input orfan în pagină.
+  window.addEventListener('focus', () => setTimeout(() => inp.remove(), 1000), { once: true });
   inp.onchange = () => {
-    document.body.removeChild(inp);
+    inp.remove();
     const files = Array.from(inp.files || []);
     if (!files.length) return;
     const readOne = f => new Promise(resolve => {
@@ -612,6 +723,36 @@ function openCamera(onData, multiple) {
   inp.click();
 }
 
+// POST comun către Claude, cu timeout. Fără timeout, cu semnal slab pe munte fetch-ul
+// atârnă nelimitat și butonul rămâne blocat pe „Scanez...". Erorile de timeout/rețea
+// primesc mesaj în română — ele ajung direct pe ecran, la volan.
+async function fetchClaude(key, body, timeoutMs) {
+  let res;
+  try {
+    res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      signal: AbortSignal.timeout(timeoutMs),
+      headers: {
+        'x-api-key': key,
+        'anthropic-version': '2023-06-01',
+        'content-type': 'application/json',
+        'anthropic-dangerous-direct-browser-access': 'true'
+      },
+      body: JSON.stringify(body)
+    });
+  } catch (e) {
+    if (e && (e.name === 'TimeoutError' || e.name === 'AbortError'))
+      throw new Error('A expirat — semnal slab? Reîncearcă.');
+    throw new Error('Fără conexiune — reîncearcă când ai semnal.');
+  }
+  if (!res.ok) {
+    const j = await res.json().catch(() => ({}));
+    throw new Error(j.error?.message || `HTTP ${res.status}`);
+  }
+  const j = await res.json();
+  return j.content[0].text.trim();
+}
+
 async function callClaudeVision(b64, mime, textPrompt, maxTok, sysPrompt, modelOverride) {
   const key = S.cfg.apiKey;
   if (!key) throw new Error('Adaugă API Key în SETĂRI.');
@@ -627,22 +768,7 @@ async function callClaudeVision(b64, mime, textPrompt, maxTok, sysPrompt, modelO
     }]
   };
   if (sysPrompt) body.system = sysPrompt;
-  const res = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: {
-      'x-api-key': key,
-      'anthropic-version': '2023-06-01',
-      'content-type': 'application/json',
-      'anthropic-dangerous-direct-browser-access': 'true'
-    },
-    body: JSON.stringify(body)
-  });
-  if (!res.ok) {
-    const j = await res.json().catch(() => ({}));
-    throw new Error(j.error?.message || `HTTP ${res.status}`);
-  }
-  const j = await res.json();
-  return j.content[0].text.trim();
+  return fetchClaude(key, body, 90000);   // imagine pe uplink slab — 90s
 }
 
 async function rtScan() {
@@ -667,22 +793,35 @@ Returnează DOAR JSON valid, fără alt text:
 - note = identificator scurt (ex: "RT 4", "TR 1")
 Dacă nu identifici un parametru cu siguranță, pune null (sau [] pentru changes).`, 300);
 
-      const match = raw.match(/\{[\s\S]*?\}/);
+      // Lacom, nu non-lacom: cu `changes` nevid, primul `}` e al obiectului interior
+      // și non-lacomul tăia JSON-ul la jumătate — scanarea RT-urilor cu schimbare
+      // de medie eșua întotdeauna cu „Format neașteptat".
+      const match = raw.match(/\{[\s\S]*\}/);
       if (!match) throw new Error('Format neașteptat');
       const d = JSON.parse(match[0]);
 
-      if (d.speed != null)    el('rt-spd').value = d.speed;
-      if (d.distance != null) el('rt-dst').value = d.distance;
+      // Răspunsul modelului e conținut extern — clamp pe limitele fizice ale probei
+      // (aceleași ca min/max din HTML). O viteză de 1e9 dintr-o citire greșită ar da
+      // timp ideal 0 și devieri absurde, fără niciun semn vizibil de eroare.
+      const clamp = (v, lo, hi) => {
+        const n = typeof v === 'string' ? parseFloat(v.replace(',', '.')) : v;
+        return (typeof n === 'number' && isFinite(n)) ? Math.min(hi, Math.max(lo, n)) : null;
+      };
+      const spdV = clamp(d.speed, 5, 120), dstV = clamp(d.distance, 0.1, 50);
+      if (spdV != null) el('rt-spd').value = spdV;
+      if (dstV != null) el('rt-dst').value = dstV;
       if (d.start === 'standing') document.querySelector('input[name="rt-type"][value="standing"]').checked = true;
       if (d.start === 'auto')     document.querySelector('input[name="rt-type"][value="auto"]').checked     = true;
       el('rt-segs').innerHTML = '';
       (Array.isArray(d.changes) ? d.changes : []).forEach(c => {
-        if (c && c.km > 0 && c.speed > 0) rtAddSegRow(c.km, c.speed);
+        if (!c) return;
+        const km = clamp(c.km, 0.01, 50), sp = clamp(c.speed, 5, 120);
+        if (km != null && sp != null) rtAddSegRow(km, sp);
       });
       rtPreview();
 
-      const spd = d.speed    != null ? `${d.speed} km/h` : '? km/h';
-      const dst = d.distance != null ? `${d.distance} km` : '? km';
+      const spd = spdV != null ? `${spdV} km/h` : '? km/h';
+      const dst = dstV != null ? `${dstV} km` : '? km';
       const stt = d.start === 'standing' ? 'standing start' : d.start === 'auto' ? 'auto-start' : '?';
       sta.textContent = `✓ ${d.note ? d.note + ': ' : ''}${spd} · ${dst} · ${stt}`;
       sta.style.color = 'var(--green)';
@@ -777,8 +916,17 @@ function navManeuver(box, now) {
     case 'DREAPTA-T': return now ? 'dreapta acum, la T' : 'la dreapta, la T';
   }
   if (/^GIRATORIU-/.test(box.dir || ''))
-    return 'sens giratoriu, ' + (DIR_VOICE[box.dir] || '') + (now ? ', acum' : '');
-  return DIR_VOICE[box.dir] || box.dir || 'manevră';
+    return 'sens giratoriu, ' + (dirLookup(DIR_VOICE, box.dir) || '') + (now ? ', acum' : '');
+  // Fără ecou al valorii brute: ce nu e în lista închisă nu se rostește ca instrucțiune.
+  // Roadbook-urile scanate înainte de validare stau încă în localStorage, nefiltrate.
+  return dirLookup(DIR_VOICE, box.dir) || 'manevră';
+}
+
+// Căutare doar pe proprietăți proprii: pe un obiect literal, chei ca "constructor" sau
+// "toString" ar întoarce funcții moștenite (truthy) — și ar ajunge pe ecran sau în voce.
+function dirLookup(map, key) {
+  return (typeof key === 'string' &&
+    Object.prototype.hasOwnProperty.call(map, key)) ? map[key] : null;
 }
 
 // Textul complet turn-by-turn pentru un box. Flag-urile speciale (TC / RT / CFR / EV / P)
@@ -807,12 +955,14 @@ function navTurnText(box, distKm, isNow) {
 // Un anunț cu prioritate strict mai mare întrerupe anunțul curent; altfel se pune la coadă.
 const _voiceQ = [];
 let _voiceCur = null;
+let _voiceCurAtMs = 0;
 
 function _voiceNext() {
   if (_voiceCur || !_voiceQ.length || !window.speechSynthesis) return;
   let idx = 0;
   for (let i = 1; i < _voiceQ.length; i++) if (_voiceQ[i].prio > _voiceQ[idx].prio) idx = i;
   _voiceCur = _voiceQ.splice(idx, 1)[0];
+  _voiceCurAtMs = Date.now();
   const mine = _voiceCur;
   const u = new SpeechSynthesisUtterance(mine.text);
   u.lang = 'ro-RO'; u.rate = 1.1; u.volume = 1.0;
@@ -820,6 +970,23 @@ function _voiceNext() {
   // 60ms delay: Android Chrome drops speak() called imediat după cancel()
   setTimeout(() => { if (_voiceCur === mine) window.speechSynthesis.speak(u); }, 60);
 }
+
+// Watchdog: pe Chrome Android, onend/onerror pot să nu vină deloc după pierderea
+// focusului audio (apel telefonic, comutare Bluetooth, ecran stins) — _voiceCur rămânea
+// setat pentru totdeauna și vocea murea în tăcere pentru tot restul zilei. Dacă anunțul
+// curent e mai vechi decât ar putea dura rostit și sinteza tace, îl aruncăm și mergem
+// mai departe. resume() periodic tratează bug-ul cunoscut de „pauză spontană".
+setInterval(() => {
+  if (!window.speechSynthesis) return;
+  if (_voiceCur) {
+    const maxMs = Math.max(6000, _voiceCur.text.length * 90);
+    if (Date.now() - _voiceCurAtMs > maxMs && !window.speechSynthesis.speaking) {
+      _voiceCur = null;
+      _voiceNext();
+    }
+  }
+  if (window.speechSynthesis.paused) window.speechSynthesis.resume();
+}, 2000);
 
 function speak(text, prio = 2) {
   if (!window.speechSynthesis || !text) return;
@@ -884,7 +1051,33 @@ async function navScanImage(b64, mime) {
   if (!match) throw new Error('Format neașteptat');
   const boxes = JSON.parse(match[0]);
   if (!Array.isArray(boxes) || !boxes.length) throw new Error('Niciun box identificat');
-  return boxes;
+  return navSanitizeBoxes(boxes);
+}
+
+// Validarea ieșirii din scanare — GRANIȚA DE ÎNCREDERE a modulului NAV.
+// Răspunsul modelului e derivat dintr-o poză a unui document tipărit de altcineva, deci e
+// conținut extern, nu date de încredere. Fără validare, două lucruri rele:
+//  • un sumKm lipsă sau ca șir ("19,72") face NaN în navRender și bucla de avans îngheață
+//    DEFINITIV pe boxul ăla — navigație moartă în mijlocul etapei, fără mesaj de eroare;
+//  • un `dir` liber ajunge rostit cu voce tare ca instrucțiune de condus (navManeuver) —
+//    text ostil din pagină ar deveni comandă falsă spusă cu autoritate șoferului.
+// De aceea: numerele se convertesc sau devin null, dir/flag doar din lista închisă,
+// comentariul se taie la 120, iar boxurile fără kilometraj se resping cu mesaj clar.
+function navSanitizeBoxes(boxes) {
+  const okNum = v => {
+    const n = typeof v === 'string' ? parseFloat(v.replace(',', '.')) : v;
+    return (typeof n === 'number' && isFinite(n)) ? n : null;
+  };
+  const okDir = v => (typeof v === 'string' &&
+    Object.prototype.hasOwnProperty.call(DIR_ARROW, v)) ? v : null;
+  const clean = boxes.map(b => ({
+    day: okNum(b.day), leg: okNum(b.leg), page: okNum(b.page), num: okNum(b.num),
+    sumKm: okNum(b.sumKm), sectionKm: okNum(b.sectionKm),
+    dir: okDir(b.dir), flag: okDir(b.flag),
+    comment: typeof b.comment === 'string' ? b.comment.slice(0, 120) : ''
+  })).filter(b => b.sumKm !== null);   // fără km, boxul nu e navigabil — mai bine refoto
+  if (!clean.length) throw new Error('Boxuri fără kilometraj — refotografiază pagina');
+  return clean;
 }
 
 // ── Identitatea unui leg ────────────────────────────────────────
@@ -928,9 +1121,20 @@ function navRebuildBoxes() {
   if (!legs.length) { S.road.boxes = []; S.road.leg = null; return; }
   if (!S.road.leg || !legs.includes(S.road.leg)) S.road.leg = legs[0];
   ls('rali_road_leg', S.road.leg);
+  // Doar boxuri cu kilometraj numeric: navScanImage validează de-acum la sursă, dar
+  // roadbook-urile scanate cu versiuni vechi stau în localStorage nefiltrate, iar un
+  // sumKm lipsă făcea NaN în bucla de avans din navRender — navigație înghețată definitiv.
+  const drop = [];
   S.road.boxes = S.road.all
     .filter(b => navLegKey(b) === S.road.leg)
-    .sort((a, b) => (a.sumKm ?? 1e9) - (b.sumKm ?? 1e9));
+    .filter(b => {
+      const ok = typeof b.sumKm === 'number' && isFinite(b.sumKm);
+      // doar numeric — lista ajunge în innerHTML, iar `num` din date vechi e nevalidat
+      if (!ok) drop.push(typeof b.num === 'number' ? b.num : '?');
+      return ok;
+    })
+    .sort((a, b) => a.sumKm - b.sumKm);
+  S.road.dropped = drop;   // navStageConfirm le raportează, ca paginile să fie refotografiate
 }
 
 function navSelectLeg(key) {
@@ -1003,6 +1207,15 @@ async function navScanMulti() {
   if (!S.cfg.apiKey) { alert('Adaugă Claude API Key în SETĂRI.'); return; }
   openCamera(async (images) => {
     if (!images || !images.length) return;
+    // Plafon: fiecare pagină = un apel Sonnet cu imagine. O selecție „toate pozele" din
+    // galerie ar lansa sute de apeluri, secvențial, fără buton de oprire.
+    const MAX_PAGES = 12;
+    if (images.length > MAX_PAGES) {
+      alert(`Maxim ${MAX_PAGES} pagini o dată (ai selectat ${images.length}). Scanează în tranșe.`);
+      return;
+    }
+    if (images.length > 5 &&
+        !confirm(`${images.length} pagini = ${images.length} apeluri către Claude. Continui?`)) return;
     const btn = el('btn-nav-scan-multi');
     const btn1 = el('btn-nav-scan');
     const sta = el('nav-scan-status');
@@ -1075,6 +1288,10 @@ function navStageConfirm(pageCount) {
     anyWarn = true;
     lines.push(`⚠️ Unele pagini n-au avut antetul citit (zi/leg). Rescanează-le — altfel nu se știe din ce leg sunt.`);
   }
+  if (S.road.dropped && S.road.dropped.length) {
+    anyWarn = true;
+    lines.push(`⚠️ ${S.road.dropped.length} box${S.road.dropped.length > 1 ? 'uri' : ''} fără kilometraj, scos${S.road.dropped.length > 1 ? 'e' : ''} din navigare (nr. ${S.road.dropped.slice(0, 10).join(', ')}). Refotografiază pagina.`);
+  }
 
   // Valorile interpolate sunt numerice sau '?' (navLegKey le forțează) — fără text liber din AI,
   // deci innerHTML rămâne sigur.
@@ -1134,8 +1351,8 @@ function navStop() {
 
 function navGpsTick(pos) {
   const acc = pos.coords.accuracy;
-  if (acc && acc > 60) return;
-  S.road.legDistKm += gpsDistKm(S.road, pos); // aceeași măsurare hibridă ca la RT
+  // Același tratament ca la RT: precizia slabă taie doar haversine, nu tot odometrul.
+  S.road.legDistKm += gpsDistKm(S.road, pos, !!(acc && acc > 60));
 }
 
 function navRender() {
@@ -1144,10 +1361,12 @@ function navRender() {
   el('nav-pos-km').textContent = dist.toFixed(3) + ' km';
   navPersistSession(); // throttle ~1/sec, pentru reluare după reload / OS-kill
 
-  // Advance past already-passed boxes
-  while (S.road.nextIdx < S.road.boxes.length &&
-         dist > S.road.boxes[S.road.nextIdx].sumKm + 0.08) {
-    S.road.nextIdx++;
+  // Advance past already-passed boxes. Garda pe tip e plasa finală: un sumKm ne-numeric
+  // ar face comparația mereu falsă (NaN) și ar îngheța avansul definitiv, fără eroare.
+  while (S.road.nextIdx < S.road.boxes.length) {
+    const km = S.road.boxes[S.road.nextIdx].sumKm;
+    if (typeof km === 'number' && isFinite(km) && dist <= km + 0.08) break;
+    S.road.nextIdx++;   // trecut de box — sau box corupt, peste care sari, nu blochezi leg-ul
   }
 
   const boxes = S.road.boxes;
@@ -1161,8 +1380,8 @@ function navRender() {
 
   const next = boxes[ni];
   const distToNext = Math.max(0, next.sumKm - dist);
-  const arrow  = DIR_ARROW[next.dir]  || next.dir  || '?';
-  const fArrow = DIR_ARROW[next.flag] || '';
+  const arrow  = dirLookup(DIR_ARROW, next.dir)  || '?';
+  const fArrow = dirLookup(DIR_ARROW, next.flag) || '';
 
   el('nav-dist-next').textContent    = distToNext < 0.1 ?
     `${Math.round(distToNext * 1000)} m` : `${distToNext.toFixed(2)} km`;
@@ -1173,8 +1392,8 @@ function navRender() {
   if (ni + 1 < boxes.length) {
     const af = boxes[ni + 1];
     el('nav-after-text').textContent =
-      `Box ${af.num} · ${af.sectionKm != null ? af.sectionKm.toFixed(2) + ' km' : '?'} · ${DIR_ARROW[af.dir]||af.dir||'?'}` +
-      (af.flag ? ' '+DIR_ARROW[af.flag] : '') + (af.comment ? ' · '+af.comment : '');
+      `Box ${af.num} · ${af.sectionKm != null ? af.sectionKm.toFixed(2) + ' km' : '?'} · ${dirLookup(DIR_ARROW, af.dir) || '?'}` +
+      (af.flag ? ' ' + (dirLookup(DIR_ARROW, af.flag) || '') : '') + (af.comment ? ' · ' + af.comment : '');
   } else {
     el('nav-after-text').textContent = '— finish leg —';
   }
@@ -1227,29 +1446,12 @@ async function callClaude(msg) {
   if (!key) return 'Adaugă Claude API Key în tab-ul SETĂRI.';
   const context = rtContext();
   const full = context ? context + '\n\n' + msg : msg;
-
-  const res = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: {
-      'x-api-key': key,
-      'anthropic-version': '2023-06-01',
-      'content-type': 'application/json',
-      'anthropic-dangerous-direct-browser-access': 'true'
-    },
-    body: JSON.stringify({
-      model: S.cfg.model,
-      max_tokens: 280,
-      system: SYSTEM,
-      messages: [{ role: 'user', content: full }]
-    })
-  });
-
-  if (!res.ok) {
-    const j = await res.json().catch(() => ({}));
-    throw new Error(j.error?.message || `HTTP ${res.status}`);
-  }
-  const j = await res.json();
-  return j.content[0].text.trim();
+  return fetchClaude(key, {
+    model: S.cfg.model,
+    max_tokens: 280,
+    system: SYSTEM,
+    messages: [{ role: 'user', content: full }]
+  }, 45000);   // chat, fără imagine — 45s ajung
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -1307,21 +1509,57 @@ async function sendChat() {
 //  WAKE LOCK
 // ══════════════════════════════════════════════════════════════
 let _wakeLock = null;
+let _wakeFailWarned = false;
+let _hiddenAtMs = null;   // când a plecat pagina din prim-plan (pentru deviarea fantomă)
 
 async function acquireWakeLock() {
   if (!('wakeLock' in navigator)) return;
   try {
     _wakeLock = await navigator.wakeLock.request('screen');
     el('wake-icon').classList.add('on');
+    _wakeFailWarned = false;
+    const warn = el('wake-warn'); if (warn) warn.classList.add('hidden');
     _wakeLock.addEventListener('release', () => {
       el('wake-icon').classList.remove('on');
       // re-acquire when tab becomes visible again
     });
-  } catch (_) {}
+  } catch (_) {
+    // Eșecul era înghițit complet — pe Samsung cu economisire de baterie, cererea e
+    // respinsă, ecranul se stinge în mijlocul probei și pagina îngheață, dar cronometrul
+    // (Date.now) curge: deviere fantomă la trezire. Iconița de 14px nu e un avertisment.
+    el('wake-icon').classList.remove('on');
+    const warn = el('wake-warn');
+    if (warn) warn.classList.remove('hidden');
+    if (!_wakeFailWarned) {
+      _wakeFailWarned = true;
+      speak('Atenție: ecranul se poate stinge singur. Oprește economisirea bateriei.', 2);
+    }
+    // re-cerere la primul tap — gestul utilizatorului deblochează des cererea
+    document.addEventListener('click', () => acquireWakeLock(), { once: true });
+  }
 }
 
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible') acquireWakeLock();
+  if (document.visibilityState === 'visible') {
+    acquireWakeLock();
+    // Pagina a fost suspendată (cameră, ecran stins, alt app). Cronometrul a curs,
+    // odometrul nu — deci pentru pauze de peste 3 s cu RT activ, umple distanța cu
+    // viteza-țintă (estimarea neutră: dacă chiar a ținut media, corecția e exactă)
+    // și spune-i pe ecran + voce ce s-a întâmplat, în loc de o deviere fantomă mută.
+    if (_hiddenAtMs && S.rt.active) {
+      const gapS = (Date.now() - _hiddenAtMs) / 1000;
+      if (gapS > 3) {
+        const spd = segPhaseSpeed(S.rt.distKm, S.rt.segments) || S.rt.targetSpd || 0;
+        const addKm = (spd * gapS) / 3600;
+        S.rt.distKm += addKm;
+        S.rt.lastPos = null; S.rt.lastT = null;   // primul fix nou nu întinde haversine peste gaură
+        speak(`Ecran stins ${Math.round(gapS)} secunde. Am estimat ${Math.round(addKm * 1000)} metri — verifică devierea.`, 2);
+      }
+    }
+    _hiddenAtMs = null;
+  } else {
+    _hiddenAtMs = Date.now();
+  }
 });
 
 // ══════════════════════════════════════════════════════════════
@@ -1369,9 +1607,14 @@ function renderPresets() {
 
 function applyPreset(i) {
   const p = S.presets[i];
+  if (!p) return;
   el('rt-spd').value = p.spd;
   el('rt-dst').value = p.dist;
-  document.querySelector(`input[name="rt-type"][value="${p.type}"]`).checked = true;
+  // Doar valorile cunoscute: un preset importat cu type lipsă sau cu ghilimele în valoare
+  // ar da null.checked / SyntaxError la querySelector și ar opri funcția la jumătate.
+  const t = p.type === 'standing' ? 'standing' : 'auto';
+  const radio = document.querySelector(`input[name="rt-type"][value="${t}"]`);
+  if (radio) radio.checked = true;
   // Schimbările pot veni din formatul nou (changes[]) sau cel vechi (spd2/changeKm).
   el('rt-segs').innerHTML = '';
   const changes = p.changes || (p.spd2 && p.changeKm ? [{ km: p.changeKm, speed: p.spd2 }] : []);
@@ -1460,13 +1703,19 @@ function tcTick() {
   disp.textContent = `${m}:${pad(s)}`;
   disp.className = 'cd-display' + (rem <= 5 ? ' now' : rem <= 30 ? ' soon' : '');
 
-  // Anunțuri vocale
-  const sec = Math.ceil(rem);
-  const marks = { 60:'60 secunde', 30:'30 secunde', 10:'10 secunde', 5:'5', 4:'4', 3:'3', 2:'2', 1:'1' };
-  if (marks[sec] && !S.tc.announced[sec] && rem <= sec && rem > sec - 0.25) {
-    S.tc.announced[sec] = true;
-    speak(marks[sec], 3);
-    if (sec <= 5) vibrate([80]);
+  // Anunțuri vocale — FĂRĂ fereastră de 0,25 s: un singur tick întârziat (GC, GPS,
+  // cerere AI) sărea complet marcajul, iar „3-2-1" cu o cifră lipsă naște panică la start.
+  // Regula: orice marcaj sub care am coborât se marchează; se ROSTEȘTE doar dacă suntem
+  // încă la sub o secundă de el — un „3" strigat la 1,8 s rămase ar fi mai rău decât lipsa lui.
+  const names = { 60: '60 secunde', 30: '30 secunde', 10: '10 secunde', 5: '5', 4: '4', 3: '3', 2: '2', 1: '1' };
+  for (const mk of [60, 30, 10, 5, 4, 3, 2, 1]) {
+    if (rem <= mk && !S.tc.announced[mk]) {
+      S.tc.announced[mk] = true;
+      if (rem > mk - 1.0) {
+        speak(names[mk], 3);
+        if (mk <= 5) vibrate([80]);
+      }
+    }
   }
 }
 
@@ -1608,15 +1857,19 @@ function micToggle() {
   S.rec.obj = rec; S.rec.listening = true; S.rec.cancelled = false;
   el('btn-chat-mic').classList.add('listening');
 
+  let heard = false;   // trimite DOAR ce s-a dictat acum — nu textul tastat mai demult
   rec.onresult = e => {
     const txt = e.results[0][0].transcript;
     el('chat-in').value = txt;
+    heard = true;
   };
   rec.onerror = () => {};
   rec.onend = () => {
     S.rec.listening = false;
     el('btn-chat-mic').classList.remove('listening');
-    if (!S.rec.cancelled && el('chat-in').value.trim()) sendChat();
+    // Înainte se trimitea orice era în câmp, inclusiv un mesaj început cu degetele și
+    // netrimis — microfonul devenea un buton de „trimite orice" accidental.
+    if (!S.rec.cancelled && heard && el('chat-in').value.trim()) sendChat();
   };
   try {
     rec.start();
@@ -1692,7 +1945,12 @@ function navBoxPassed() {
   if (S.road.nextIdx - 1 >= 0) cand.push(S.road.nextIdx - 1);
   if (S.road.nextIdx < boxes.length) cand.push(S.road.nextIdx);
   const valid = cand.filter(i => typeof boxes[i].sumKm === 'number' && isFinite(boxes[i].sumKm));
-  if (!valid.length) return;
+  if (!valid.length) {
+    // Fără feedback, butonul părea mort — spune de ce nu se poate sincroniza.
+    const st = el('nav-sync-status');
+    if (st) { st.textContent = 'Box fără kilometraj — nu pot sincroniza aici.'; st.classList.remove('hidden'); }
+    return;
+  }
   const idx = valid.reduce((a, b) =>
     Math.abs(boxes[a].sumKm - dist) <= Math.abs(boxes[b].sumKm - dist) ? a : b);
   const box = boxes[idx];
@@ -1706,7 +1964,32 @@ function navBoxPassed() {
   const key = `${box.num}_${Math.round(box.sumKm * 100)}`;
   for (let t = 0; t < NAV_TIERS.length; t++) S.road.announced[key + '_t' + t] = true;
 
-  // Verificare de coerență: corecție mare = posibil traseu greșit sau box confirmat greșit.
+  // Repornire la mijloc de leg — „sunt la box N". navStart pleacă mereu de la km 0, deci
+// după o oprire (pauza de la Orlat) navigarea era inutilizabilă pentru restul leg-ului:
+// navBoxPassed acceptă doar boxul curent ±1, iar butoanele mută 10-100 m per apăsare.
+function navJumpToBox() {
+  if (!S.road.active || !S.road.boxes.length) return;
+  const v = prompt('La ce număr de box ești acum?');
+  if (v == null) return;
+  const n = parseInt(String(v).replace(/\D/g, ''), 10);
+  const st = el('nav-sync-status');
+  const idx = S.road.boxes.findIndex(b => b.num === n);
+  if (idx === -1) {
+    if (st) { st.textContent = `Box ${isFinite(n) ? n : '?'} nu există în leg-ul ăsta.`; st.classList.remove('hidden'); }
+    return;
+  }
+  const box = S.road.boxes[idx];
+  S.road.legDistKm = box.sumKm;
+  S.road.nextIdx = idx + 1;
+  S.road.announced = {};
+  S.road.lastPos = null; S.road.lastT = null;
+  if (st) { st.textContent = `✓ Poziție setată la Box ${box.num} (km ${box.sumKm.toFixed(2)})`; st.classList.remove('hidden'); }
+  navRender();
+  navPersistSession(true);
+  speak(`Poziție setată la box ${box.num}.`, 2);
+}
+
+// Verificare de coerență: corecție mare = posibil traseu greșit sau box confirmat greșit.
   const sta = el('nav-sync-status');
   const absM = Math.abs(deltaM);
   const sign = deltaM >= 0 ? '+' : '−';
@@ -1798,8 +2081,41 @@ function resumeRt(r) {
   S.rt.distFactor = r.distFactor || 1;
   S.rt.voiceThresh = r.voiceThresh || 3;
   S.rt.startMs    = r.startMs;              // timpul curge mai departe (corect pentru cursă)
+  // ancorează cronometrul monoton la timpul de perete scurs până acum
+  S.rt.startPerf  = performance.now() - (Date.now() - r.startMs);
   S.rt.distKm     = r.distKm || 0;
+
+  // Distanța dintre crash și „Reia" era PIERDUTĂ: timpul continua, odometrul nu, deci
+  // fiecare secundă de pauză devenea o secundă falsă de „în urmă", permanentă și
+  // necorectabilă. Umplem golul cu viteza-țintă (dacă a ținut media, corecția e exactă)
+  // și spunem explicit cât am estimat — cifră, nu tăcere.
+  let gapTxt = '';
+  if (r.savedAt) {
+    const gapS = Math.max(0, (Date.now() - r.savedAt) / 1000);
+    if (gapS > 3) {
+      const spd = segPhaseSpeed(S.rt.distKm, S.rt.segments) || S.rt.targetSpd || 0;
+      const addKm = (spd * gapS) / 3600;
+      S.rt.distKm += addKm;
+      gapTxt = ` Pauză ${Math.round(gapS)} secunde — am estimat ${Math.round(addKm * 1000)} metri. Verifică devierea.`;
+    }
+  }
+
+  // Segmentele deja trecute se marchează ca anunțate — altfel reluarea le striga pe
+  // toate în rafală („Schimbare viteză — 45… — 50…"), fix în momentul cel mai prost.
   S.rt.segAnnounced = {};
+  S.rt.segments.forEach((sg, i) => { if (i > 0 && sg.from <= S.rt.distKm) S.rt.segAnnounced[i] = true; });
+
+  // Repopulează câmpurile din setup: după STOP, ecranul arăta 40 km/h / 2,00 km
+  // în loc de proba tocmai rulată.
+  try {
+    el('rt-spd').value = S.rt.targetSpd;
+    el('rt-dst').value = S.rt.totalDist;
+    const radio = document.querySelector(`input[name="rt-type"][value="${S.rt.type === 'standing' ? 'standing' : 'auto'}"]`);
+    if (radio) radio.checked = true;
+    el('rt-segs').innerHTML = '';
+    S.rt.segments.slice(1).forEach(sg => rtAddSegRow(sg.from, sg.speed));
+  } catch (e) {}
+
   S.rt.lastPos = null; S.rt.lastT = null;
   S.rt.active = true; S.rt.finishing = false;
   el('rt-setup').classList.add('hidden');
@@ -1808,9 +2124,9 @@ function resumeRt(r) {
   el('s-phase-row').classList.toggle('hidden', S.rt.segments.length <= 1);
   clearInterval(S.rt.tickId);
   S.rt.tickId = setInterval(rtRender, 250);
-  S.voice.rtLastMs = 0; S.voice.rtLastDev = null; S.voice.paceOut = false;
+  S.voice.rtLastMs = 0; S.voice.paceOut = false;
   activateTab('rt');
-  speak('RT reluat.', 1);
+  speak('RT reluat.' + gapTxt, 2);
 }
 
 function resumeNav(r) {
@@ -1840,9 +2156,13 @@ function showResumeBanner(rtS, navS) {
     'background:#1c1c1e;color:#fff;border:1px solid #ff9f0a;border-radius:12px;' +
     'padding:10px 12px;font:13px/1.4 sans-serif;box-shadow:0 6px 24px rgba(0,0,0,.5);';
   const msg = document.createElement('div');
+  const age = s => {
+    const sec = Math.max(0, Math.round((Date.now() - (s.savedAt || Date.now())) / 1000));
+    return sec < 90 ? `acum ${sec} s` : `acum ${Math.round(sec / 60)} min`;
+  };
   const parts = [];
-  if (rtS)  parts.push(`RT în curs (${(rtS.distKm || 0).toFixed(2)} km)`);
-  if (navS) parts.push(`Navigare în curs (${(navS.legDistKm || 0).toFixed(2)} km)`);
+  if (rtS)  parts.push(`RT în curs (${(rtS.distKm || 0).toFixed(2)} km, ${age(rtS)})`);
+  if (navS) parts.push(`Navigare în curs (${(navS.legDistKm || 0).toFixed(2)} km, ${age(navS)})`);
   msg.textContent = '↩ Reiei sesiunea? ' + parts.join(' + ');
   msg.style.marginBottom = '8px';
   bar.appendChild(msg);
@@ -1953,10 +2273,37 @@ function importData() {
       const s = el('set-status');
       try {
         const obj = JSON.parse(r.result);
-        const data = obj && obj.data ? obj.data : obj;
+        // Doar backup-uri făcute de exportData (au _app: 'RALI'). Orice alt JSON e refuzat —
+        // un fișier greșit înlocuia tăcut roadbook-ul și presetările, apoi reîncărca.
+        if (!obj || obj._app !== 'RALI' || !obj.data || typeof obj.data !== 'object')
+          throw new Error('Nu e un backup RALI');
+        const data = obj.data;
+        const found = EXPORT_KEYS.filter(k => data[k] != null);
+        if (!found.length) throw new Error('Fișierul nu conține date RALI');
+        // Structura valorilor critice — un rali_presets ne-array trecea de aici și arunca
+        // în bindUI la următoarea pornire, lăsând aplicația fără butoane, nereparabilă
+        // din interior (Import și câmpul de cheie se leagă tot în bindUI).
+        const shape = { rali_presets: 'array', rali_road: 'array', rali_pen: 'object' };
+        for (const k of found) {
+          if (!shape[k]) continue;
+          let v = data[k];
+          if (typeof v === 'string') { try { v = JSON.parse(v); } catch (e) { throw new Error(k + ' e corupt'); } }
+          const ok = shape[k] === 'array' ? Array.isArray(v)
+                                          : (v && typeof v === 'object' && !Array.isArray(v));
+          if (!ok) throw new Error(k + ' are structură greșită');
+        }
+        if (!confirm(`Înlocuiesc ${found.length} seturi de date (presetări, roadbook, penalizări)?\nDatele actuale se pierd.`)) {
+          if (s) s.textContent = 'Import anulat.';
+          return;
+        }
+        // Plasă de salvare: starea de dinainte, recuperabilă manual dacă importul a fost o greșeală.
+        try {
+          localStorage.setItem('rali_pre_import', JSON.stringify(
+            Object.fromEntries(EXPORT_KEYS.map(k => [k, ls(k)]))));
+        } catch (e) {}
         let n = 0;
-        EXPORT_KEYS.forEach(k => {
-          if (data[k] != null) { ls(k, typeof data[k] === 'string' ? data[k] : JSON.stringify(data[k])); n++; }
+        found.forEach(k => {
+          ls(k, typeof data[k] === 'string' ? data[k] : JSON.stringify(data[k])); n++;
         });
         if (s) s.textContent = `Import reușit ✓ (${n} chei) — reîncarc…`;
         setTimeout(() => location.reload(), 1200);
@@ -1982,6 +2329,7 @@ function init() {
   if (bt) bt.textContent = BUILD;
   try { acquireWakeLock(); } catch (_) {}
   try { gpsInit(); } catch (err) { showFatal('gpsInit: ' + err.message); }
+  setInterval(gpsWatchdogTick, 1000);      // detectează fluxul GPS mort (vezi gpsWatchdogTick)
   try { checkResumeSessions(); } catch (err) { console.warn('resume:', err); }
 
   if ('serviceWorker' in navigator) {
@@ -2044,6 +2392,7 @@ function bindUI() {
 
   // NAV offset
   el('btn-nav-passed').addEventListener('click', navBoxPassed);
+  el('btn-nav-jump')?.addEventListener('click', navJumpToBox);
   el('btn-off-m100').addEventListener('click', () => navOffset(-100));
   el('btn-off-m10').addEventListener('click',  () => navOffset(-10));
   el('btn-off-p10').addEventListener('click',  () => navOffset(10));
@@ -2085,12 +2434,25 @@ function bindUI() {
   });
 
   // Settings
-  el('api-key').value    = S.cfg.apiKey;
+  // Cheia NU se rescrie în DOM la pornire — un nod input cu valoarea completă e o copie
+  // în plus, gratuit de evitat. Placeholder-ul arată doar coada, ca să vezi CARE cheie e.
+  if (S.cfg.apiKey) el('api-key').placeholder = 'salvată ✓ (…' + S.cfg.apiKey.slice(-4) + ')';
   el('model-sel').value  = S.cfg.model;
 
   el('btn-save-key').addEventListener('click', () => {
-    S.cfg.apiKey = el('api-key').value.trim();
+    const v = el('api-key').value.trim();
+    // Câmp gol = „nu schimb nimic", nu „șterge cheia" — ștergerea din greșeală, în mașină,
+    // ar lăsa scanarea și chatul moarte până acasă. Ștergerea se face tastând „sterge".
+    if (!v) {
+      const s0 = el('set-status');
+      s0.textContent = S.cfg.apiKey ? 'Cheia rămâne cea salvată. Scrie „sterge" ca s-o elimini.' : 'Nicio cheie salvată.';
+      setTimeout(() => { s0.textContent = ''; }, 3500);
+      return;
+    }
+    S.cfg.apiKey = (v.toLowerCase() === 'sterge') ? '' : v;
     ls('rali_key', S.cfg.apiKey);
+    el('api-key').value = '';
+    el('api-key').placeholder = S.cfg.apiKey ? 'salvată ✓ (…' + S.cfg.apiKey.slice(-4) + ')' : 'sk-ant-api03-…';
     const s = el('set-status');
     s.textContent = S.cfg.apiKey ? 'API key salvat ✓' : 'Key șters.';
     setTimeout(() => { s.textContent = ''; }, 2500);
@@ -2102,12 +2464,21 @@ function bindUI() {
       sta.textContent = '✗ speechSynthesis indisponibil pe acest browser';
       sta.style.color = 'var(--red)'; return;
     }
-    const voices = window.speechSynthesis.getVoices();
-    const roVoice = voices.find(v => v.lang.startsWith('ro'));
-    sta.style.color = roVoice ? 'var(--green)' : 'var(--yellow)';
-    sta.textContent = roVoice
-      ? `✓ Voce română găsită: ${roVoice.name}`
-      : `⚠ Voce română indisponibilă — folosesc vocea implicită (${voices[0]?.name || '?'})`;
+    // getVoices() e des GOL la primul apel pe Chrome (lista vine async, la voiceschanged)
+    // — raporta fals „voce română indisponibilă" și îl speria degeaba.
+    const report = () => {
+      const voices = window.speechSynthesis.getVoices();
+      const roVoice = voices.find(v => v.lang.startsWith('ro'));
+      sta.style.color = roVoice ? 'var(--green)' : 'var(--yellow)';
+      sta.textContent = roVoice
+        ? `✓ Voce română găsită: ${roVoice.name}`
+        : `⚠ Voce română indisponibilă — folosesc vocea implicită (${voices[0]?.name || '?'})`;
+    };
+    if (!window.speechSynthesis.getVoices().length) {
+      sta.style.color = 'var(--dim)'; sta.textContent = '… încarc lista de voci';
+      window.speechSynthesis.addEventListener('voiceschanged', report, { once: true });
+      setTimeout(report, 1500);   // plasă: unele WebView-uri nu declanșează voiceschanged
+    } else report();
     speak('Test voce copilot raliu. Stânga în 300 metri. Finish RT.', 1);
   });
 

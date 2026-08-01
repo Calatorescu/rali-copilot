@@ -1,4 +1,4 @@
-const CACHE = 'rali-v16';
+const CACHE = 'rali-v17';
 const ASSETS = ['./', './index.html', './style.css', './app.js', './manifest.json', './icon.svg'];
 
 self.addEventListener('install', e => {
@@ -16,7 +16,10 @@ self.addEventListener('activate', e => {
 });
 
 self.addEventListener('fetch', e => {
-  if (e.request.url.includes('anthropic.com')) return;
+  // Verificare pe HOST, nu pe substring — „anthropic.com" oriunde în URL trecea de filtru.
+  // Non-GET nu poate veni oricum din cache, deci trece direct la rețea.
+  const u = new URL(e.request.url);
+  if (u.hostname === 'api.anthropic.com' || e.request.method !== 'GET') return;
   e.respondWith(
     caches.match(e.request).then(cached => {
       if (cached) return cached;

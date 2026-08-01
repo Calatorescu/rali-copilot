@@ -46,7 +46,10 @@
 
 html, body { height: 100%; overflow: hidden; background: var(--bg); color: var(--text);
   font-family: -apple-system, 'SF Pro Display', 'Segoe UI', sans-serif;
-  -webkit-font-smoothing: antialiased; transition: background .25s, color .25s; }
+  -webkit-font-smoothing: antialiased; transition: background .25s, color .25s;
+  /* fără pull-to-refresh: în filă de browser (nu PWA instalat), un swipe în jos
+     reîncărca pagina în mijlocul RT-ului */
+  overscroll-behavior-y: contain; }
 
 #app { display: flex; flex-direction: column; height: 100vh; height: 100dvh; }
 
@@ -68,6 +71,9 @@ html, body { height: 100%; overflow: hidden; background: var(--bg); color: var(-
 
 .wake-icon { font-size: 14px; opacity: 0.3; }
 .wake-icon.on { opacity: 1; color: var(--yellow); }
+/* Banda de avertizare când wake lock-ul e refuzat — trebuie văzută de la volan */
+.wake-warn { background: var(--red); color: #fff; font-size: 13px; font-weight: 600;
+  padding: 8px 14px; text-align: center; }
 
 .rt-badge { background: var(--red); color: #fff; font-size: 10px; font-weight: 800;
   letter-spacing: 1px; padding: 2px 6px; border-radius: 6px; animation: blink 1s infinite; }
