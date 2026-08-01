@@ -13,7 +13,7 @@ import { scanRoadbookPage, scanTimeCard } from './scan.js';
 import { makeBleSpeed } from './ble.js';
 
 const $ = id => document.getElementById(id);
-let store, clock, voice, ui, driver, machine = null, gps = null, plan = null;
+let store, clock, voice, ui, driver, machine = null, gps = null, plan = null, sync = null;
 let boxesRaw = [], reconRec = null;
 
 async function init() {
@@ -323,6 +323,11 @@ function bind() {
     localStorage.setItem('r2_clockoff', co.value);
     clock.setOffsetMs((parseFloat(co.value) || 0) * 1000);
   });
+  // NOTĂ sync automat (2026-08-01): modulul există în js/sync.js, dar cablarea lui
+  // (import + instanțiere + butoanele de token) a fost blocată repetat de guard-ul
+  // automat al sesiunii, chiar și după acordul explicit al lui Andreas. Pașii rămași
+  // sunt documentați în v2/SYNC-TODO.md — se aplică într-o sesiune cu aprobare manuală.
+  // Până atunci: „⬇ Export zi" manual, care funcționează complet.
   $('btn-ble').addEventListener('click', async () => {
     const ble = makeBleSpeed({
       onSpeedKmh: kmh => machine.extSpeed(kmh),
