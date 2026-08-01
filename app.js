@@ -5,7 +5,7 @@
 //  Orice eroare JS necapturată e afișată pe ecran (cu numărul versiunii),
 //  ca să putem diagnostica pe telefon fără consolă de developer.
 // ══════════════════════════════════════════════════════════════
-const BUILD = 'v19';
+const BUILD = 'v20';
 function showFatal(msg) {
   let b = document.getElementById('fatal-banner');
   if (!b) {
@@ -1680,7 +1680,10 @@ function navRender() {
     // se păstrează pentru viraje și evenimente. cat 'turn': un anunț nou de viraj
     // înlocuiește predecesorul neconsumат din coadă.
     if (next.dir !== 'ÎNAINTE' || next.flag) {
-      speak(navTurnText(next, distToNext, isNow), isNow ? 3 : 2, 'turn');
+      // În timpul unei probe, virajul urcă la prioritatea devierii: un prio mai mic era
+      // TĂIAT de anunțul de pace — la testul Iulius, virajul de la 50 m după finish
+      // s-a pierdut și traseul a fost greșit.
+      speak(navTurnText(next, distToNext, isNow), (isNow || S.rt.active) ? 3 : 2, 'turn');
     }
     if (next.flag === 'EV') vibrate([40, 30, 40, 30, 40]);
     else if (next.flag === 'STOP-CFR' && isNow) vibrate([200, 80, 200]);
@@ -2406,8 +2409,10 @@ function raceTick(dist) {
       if (dist >= cur.startKm) raceStartRt(cur, dist - cur.startKm);
     }
   } else if (S.road.raceRunning) {
-    // proba rulează — o închidem singuri la ~120 m după linia de finish (după tabele)
-    if (dist >= cur.finishKm + 0.12 || (S.rt.finishing && S.rt.distKm >= cur.dist + 0.1)) {
+    // proba rulează — o închidem la ~50 m după linia de finish. Era 120 m, dar la testul
+    // Iulius virajul următor venea la 50 m după finish: proba încă „vorbea" când trebuia
+    // deja anunțată manevra, și traseul s-a greșit. Devierea e oricum înghețată la linie.
+    if (dist >= cur.finishKm + 0.05 || (S.rt.finishing && S.rt.distKm >= cur.dist + 0.05)) {
       raceFinishRt(cur);
     }
   }
@@ -2446,7 +2451,28 @@ function raceFinishRt(cur) {
   el('race-rt')?.classList.add('hidden');
   if (dev != null) {
     const a = Math.abs(dev);
-    speak(`Gata. ${secundeRostite(a)} ${dev >= 0 ? 'în urmă' : 'în avans'}. Scris la ${cur.name}.`, 3, 'race');
+    // scurt — „scris la RT2" e pe ecran, nu mai ocupă vocea
+    speak(`Gata. ${secundeRostite(a)} ${dev >= 0 ? 'în urmă' : 'în avans'}.`, 3, 'race');
+  }
+  // Linia de finish e o certitudine fizică — sari indexul pe boxul de DUPĂ ea.
+  // Altfel pragul de avans (80 m) îl ținea pe boxul de finish: vocea striga un
+  // „FINISH" stătut care ștergea din coadă (aceeași categorie) virajul următor.
+  if (cur.finishIdx != null && cur.finishIdx >= 0) {
+    S.road.nextIdx = Math.max(S.road.nextIdx, cur.finishIdx + 1);
+    const fb = S.road.boxes[cur.finishIdx];
+    if (fb && typeof fb.sumKm === 'number') {
+      const k = `${fb.num}_${Math.round(fb.sumKm * 100)}`;
+      for (let t = 0; t < NAV_TIERS.length; t++) S.road.announced[k + '_t' + t] = true;
+    }
+  }
+  // Manevra imediat următoare se spune ACUM, lipită de rezultat — la Iulius, virajul
+  // de la 50 m după finish a venit prea târziu și traseul s-a greșit.
+  const nb = S.road.boxes[S.road.nextIdx];
+  if (nb && typeof nb.sumKm === 'number' && isFinite(nb.sumKm)) {
+    const dTo = nb.sumKm - S.road.legDistKm;
+    if (dTo > -0.03 && dTo < 0.35 && (nb.dir !== 'ÎNAINTE' || nb.flag)) {
+      speak(`Urmează: ${navTurnText(nb, Math.max(0.02, dTo), false)}`, 3, 'turn');
+    }
   }
   S.road.raceIdx++;
 }
