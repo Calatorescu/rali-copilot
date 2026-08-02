@@ -196,8 +196,6 @@ function startDay(dinPreluare) {
   // la fiecare bătaie, deci schimbarea de leg (mașină nouă) nu rupe nimic.
   clearInterval(tickId);
   tickId = setInterval(() => { try { machine.tick(); } catch (e) {} }, 1000);
-  // intrare-scut în istoric: back-ul accidental nu mai închide aplicația în cursă
-  try { history.pushState({ screen: 'run' }, ''); } catch (e) {}
   showScreen('run');
 }
 
@@ -481,13 +479,25 @@ function bind() {
 
   // BACK pe Android închide MODALUL, nu aplicația (testul din 02.08 după-amiaza:
   // back în modal a omorât aplicația în plină probă — PWA standalone fără istoric).
+  // Intrare-scut în istoric, pusă O dată: back-ul are mereu ceva de „consumat"
+  // înainte să poată închide aplicația.
+  try { history.pushState({ guard: true }, ''); } catch (e) {}
+
   window.addEventListener('popstate', () => {
     if (!bp.classList.contains('hidden')) {
       bp.classList.add('hidden'); $('bp-confirm').classList.add('hidden');
       return;
     }
-    // în cursă, back nu are voie să închidă aplicația: se pune la loc o intrare-scut
-    if (!$('scr-run').classList.contains('hidden')) history.pushState({ guard: true }, '');
+    // Back ar închide aplicația → întreabă (cerut de Andreas, 02.08, după ce un back
+    // accidental a omorât aplicația în plină probă).
+    if (confirm('Închizi aplicația RALI?')) {
+      // PWA-ul instalat nu se poate închide din cod pe toate telefoanele; unde se
+      // poate, window.close() o face acum — unde nu, următorul BACK iese direct,
+      // fără altă întrebare (scutul nu se mai pune la loc).
+      try { window.close(); } catch (e) {}
+      return;
+    }
+    history.pushState({ guard: true }, '');   // a zis nu: scutul revine
   });
 
   function bpDeschide() {
