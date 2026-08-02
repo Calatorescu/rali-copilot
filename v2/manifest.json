@@ -1,6 +1,7 @@
 {
   "name": "RALI 2",
   "short_name": "RALI2",
+  "id": "/rali-copilot/v2/",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
