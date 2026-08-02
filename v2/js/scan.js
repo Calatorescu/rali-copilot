@@ -20,6 +20,7 @@ COLOANE: Număr box | Sum km (bold) | Sum mile (ignoră) | Section km (bold) | S
 TULIP: "ÎNAINTE","STÂNGA","DREAPTA","STÂNGA-T","DREAPTA-T","GIRATORIU-1".."GIRATORIU-4","STOP-CFR".
 ICOANE → "flag": steag+ceas="RT_START_AUTO" | steag+ceas+fulg="RT_START_STANDING" | dreptunghi+steag="RT_FINISH" | ceas+steag mare="TC" | P="PARKING" | fulger="EV" | altfel null.
 Ignoră adnotările de mână și transparența de pe verso.
+FIECARE rând numerotat din tabel = un box care APARE în răspuns — nu omite niciunul, oricât de neobișnuit i-ar fi comentariul sau simbolurile. Comentariul se transcrie scurtat dacă e lung, dar boxul nu dispare.
 DOAR JSON array valid:
 [{"day":1,"leg":1,"page":2,"num":6,"sumKm":3.10,"sectionKm":0.45,"dir":"ÎNAINTE","comment":"...","flag":"RT_START_AUTO"},...]`;
 
