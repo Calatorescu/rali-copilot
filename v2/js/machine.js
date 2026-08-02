@@ -421,6 +421,13 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
   function snapToBox(i, how) {
     const b = plan.boxes[i];
     const before = M.routeKm;
+    // Boxul confirmat rămâne confirmat: desyncCheck nu mai are voie să se plângă de
+    // el. La testul din 02.08 (după-amiaza), virajul de la boxul 5 a fost detectat și
+    // sincronizat, apoi la 20 s — fix cât fereastra de tăcere — mașina făcuse 278 m pe
+    // drum drept și alarma a urlat „trebuia să virezi la boxul 5", în plină probă.
+    // Alarmă falsă prin construcție: distanța de la box nu spune nimic dacă virajul
+    // ăla a fost DEJA făcut.
+    M._confirmedIdx = Math.max(M._confirmedIdx != null ? M._confirmedIdx : -1, i);
     // Poziția devine EXACT kilometrul boxului — fără vechiul +20 m „ca să fii după box".
     // Cei 20 m artificiali intrau în riglă și calibrarea învăța un bias de +2,5% pe un
     // odometru PERFECT — fix în mecanismul care există ca să scoată biasul (audit, #13).
@@ -575,15 +582,22 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
   // la testul din Dumbrăvița. Dacă am depășit cu >250 m un box de VIRAJ fără ca
   // detectorul să fi văzut vreun viraj, spunem cu voce tare că suntem pe dinafară.
   function desyncCheck() {
-    const prev = plan.boxes[M.nextBoxIdx - 1];
+    const prevIdx = M.nextBoxIdx - 1;
+    const prev = plan.boxes[prevIdx];
     if (!prev || !TURN_DIRS.has(prev.dir || '')) return;
+    // virajul confirmat (snap pe viraj sau manual) nu mai poate genera alarmă —
+    // distanța față de el crește normal pe drumul drept de după (02.08, alarma falsă)
+    if (M._confirmedIdx != null && prevIdx <= M._confirmedIdx) return;
     const past = M.routeKm - prev.sumKm;
     if (past < 0.25 || M._desyncSaid === prev.num) return;
     if (clock.mono() - M._lastSnapT < 20000) return;   // tocmai am sincronizat, e în regulă
     M._desyncSaid = prev.num;
-    say(`Atenție: ar fi trebuit să virezi la boxul ${prev.num}. Dacă ești tot pe drept, apasă SUNT LA BOX.`, 3, 'desync');
+    // În probă instrucțiunea e diferită: lista de boxuri NU se folosește la 50 km/h.
+    say(M.rt
+      ? `Atenție: virajul de la boxul ${prev.num} pare ratat. Continuă — corectezi când poți opri.`
+      : `Atenție: ar fi trebuit să virezi la boxul ${prev.num}. Dacă ești tot pe drept, apasă SUNT LA BOX.`, 3, 'desync');
     tone('alarm');
-    log('desync_warn', { boxNum: prev.num, pastM: Math.round(past * 1000) });
+    log('desync_warn', { boxNum: prev.num, pastM: Math.round(past * 1000), inRt: !!M.rt });
   }
 
   // ── API public ────────────────────────────────────────────────────────────
@@ -598,7 +612,7 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
       odo.reset();
       M.routeKm = 0; M.traceM = null; M._projMiss = 0;
       M.rtIdx = 0; M.rt = null; M.nextBoxIdx = 0; M.results = {}; M.lastDebrief = null;
-      M._ann = {}; M._staged = false; M._warnedRt = {}; M._desyncSaid = null;
+      M._ann = {}; M._staged = false; M._warnedRt = {}; M._desyncSaid = null; M._confirmedIdx = -1;
       M._lastFixMono = null; M._gpsLostSaid = false;
       M.calFactor = 1; M._rawSinceAnchor = 0; M._calAnchorKm = 0; M._anchorKm = 0;
       M._calN = 0; M._calOficial = 0; M._calMasurat = 0;
@@ -680,9 +694,10 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
         M.rt = { def: rt, t0Mono: clock.mono() - (clock.rally() - st.rtStartRally),
                  t0Rally: st.rtStartRally, distKm: Math.max(0, M.routeKm - rt.startKm), log: [], frozen: null };
       }
-      // indexul boxurilor se aliniază pe poziție
+      // indexul boxurilor se aliniază pe poziție; tot ce e în urmă e considerat făcut
       M.nextBoxIdx = 0;
       while (M.nextBoxIdx < plan.boxes.length && plan.boxes[M.nextBoxIdx].sumKm < M.routeKm - 0.05) M.nextBoxIdx++;
+      M._confirmedIdx = M.nextBoxIdx - 1;
       say('Cursă preluată.', 2);
       log('takeover', { routeKm: r2(M.routeKm), state: M.state });
       ui.render(M, plan);

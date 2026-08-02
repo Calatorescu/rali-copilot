@@ -196,6 +196,8 @@ function startDay(dinPreluare) {
   // la fiecare bătaie, deci schimbarea de leg (mașină nouă) nu rupe nimic.
   clearInterval(tickId);
   tickId = setInterval(() => { try { machine.tick(); } catch (e) {} }, 1000);
+  // intrare-scut în istoric: back-ul accidental nu mai închide aplicația în cursă
+  try { history.pushState({ screen: 'run' }, ''); } catch (e) {}
   showScreen('run');
 }
 
@@ -471,10 +473,26 @@ function bind() {
   // curentă vizibilă, distanța până la fiecare box, iar corecțiile mari spun
   // ce strică înainte s-o facă.
   const bp = $('boxpick');
-  const bpInchide = () => { bp.classList.add('hidden'); $('bp-confirm').classList.add('hidden'); };
+  const bpInchide = () => {
+    bp.classList.add('hidden'); $('bp-confirm').classList.add('hidden');
+    // consumă intrarea de istoric pusă la deschidere, ca back-ul să rămână consistent
+    if (history.state && history.state.modal) history.back();
+  };
+
+  // BACK pe Android închide MODALUL, nu aplicația (testul din 02.08 după-amiaza:
+  // back în modal a omorât aplicația în plină probă — PWA standalone fără istoric).
+  window.addEventListener('popstate', () => {
+    if (!bp.classList.contains('hidden')) {
+      bp.classList.add('hidden'); $('bp-confirm').classList.add('hidden');
+      return;
+    }
+    // în cursă, back nu are voie să închidă aplicația: se pune la loc o intrare-scut
+    if (!$('scr-run').classList.contains('hidden')) history.pushState({ guard: true }, '');
+  });
 
   function bpDeschide() {
     const M = machine.M;
+    if (bp.classList.contains('hidden')) history.pushState({ modal: 'boxpick' }, '');
     $('bp-now').textContent = M.routeKm.toFixed(2) + ' km';
     const urm = machine.M.nextBoxIdx;
     const b = plan.boxes[urm];
@@ -483,6 +501,33 @@ function bind() {
       : 'după ultimul box';
     const lista = $('bp-list');
     lista.textContent = '';
+
+    // MODUL MĂNUȘĂ (testul din 02.08, după-amiaza): în mers, lista de 7 rânduri nu se
+    // poate nici citi, nici nimeri. Peste 20 km/h se arată UN singur buton uriaș cu
+    // boxul cel mai plauzibil, plus „LISTA COMPLETĂ" pentru cazul rar.
+    if (M.speedKmh > 20 && !bpDeschide._fortatLista) {
+      const cands = machine.boxuriApropiate(7);
+      if (cands.length) {
+        let mi = 0;
+        cands.forEach((c, i) => { if (Math.abs(c.deltaM) < Math.abs(cands[mi].deltaM)) mi = i; });
+        const c = cands[mi];
+        const mare = document.createElement('button');
+        mare.className = 'btn ok bp-mare';
+        mare.textContent = `✓ SUNT LA BOX ${c.box.num}`;
+        mare.addEventListener('click', () => bpAlege(c.box.num));
+        const alt = document.createElement('button');
+        alt.className = 'btn sec';
+        alt.textContent = 'LISTA COMPLETĂ…';
+        alt.addEventListener('click', () => {
+          bpDeschide._fortatLista = true;
+          bpDeschide();
+          bpDeschide._fortatLista = false;
+        });
+        lista.append(mare, alt);
+        bp.classList.remove('hidden');
+        return;
+      }
+    }
     const apropiate = machine.boxuriApropiate(7);
     if (apropiate.length) {
       let mi = 0;

@@ -161,6 +161,48 @@ console.log('\n═══ #18 — din DAY_END se iese prin SUNT LA BOX ═══'
   ok('boxul te scoate din DAY_END', w.m.M.state === 'LIAISON', w.m.M.state);
 }
 
+console.log('\n═══ Alarma falsă de desincronizare (testul de teren din 02.08, după-amiaza) ═══');
+{
+  // Reprodus din jurnalul real: viraj STÂNGA-T detectat și sincronizat la boxul 5
+  // (t=141 s), RT1 pornește la 0,60 (t=157 s), iar la t=161 s — fix când fereastra de
+  // tăcere de 20 s expira și mașina făcuse 278 m pe drum drept — alarma urla „trebuia
+  // să virezi la boxul 5". Virajul fusese FĂCUT și CONFIRMAT de aplicația însăși.
+  const boxes = sanitizeBoxes([
+    { num: 1, sumKm: 0.00, dir: 'ÎNAINTE', flag: 'TC', comment: 'Start' },
+    { num: 5, sumKm: 0.38, dir: 'STÂNGA-T', comment: 'înapoi pe Principala' },
+    { num: 6, sumKm: 0.60, dir: 'ÎNAINTE', flag: 'RT_START_AUTO', comment: 'START RT 1 · 40 km/h' },
+    { num: 8, sumKm: 2.60, dir: 'ÎNAINTE', flag: 'RT_FINISH', comment: 'FINISH' }
+  ]);
+  const w = lume(boxes);
+  w.condu(0.30, 40);
+  w.m.atBox(5, true);                     // virajul confirmat (echivalentul snapului pe viraj)
+  ok('sincronizat la boxul 5', Math.abs(w.m.M.routeKm - 0.38) < 0.01, w.m.M.routeKm.toFixed(3));
+  w.said.length = 0;
+  w.condu(1.20, 50);                      // RT pornește la 0,60; drum drept, 50 km/h
+  ok('proba a pornit', w.m.M.state === 'RT_RUN', w.m.M.state);
+  ok('NICIO alarmă falsă pentru virajul deja confirmat',
+     !w.said.some(s => /virezi la boxul 5|boxul 5 pare ratat/.test(s.t)),
+     JSON.stringify(w.said.filter(s => /boxul 5/.test(s.t)).map(s => s.t)));
+  ok('niciun desync_warn în jurnal', !w.store.journal.some(e => e.type === 'desync_warn'),
+     JSON.stringify(w.store.journal.filter(e => e.type === 'desync_warn')));
+}
+
+console.log('\n═══ Desincronizarea REALĂ se anunță în continuare — dar altfel în probă ═══');
+{
+  const boxes = sanitizeBoxes([
+    { num: 1, sumKm: 0.00, dir: 'ÎNAINTE', flag: 'TC', comment: 'Start' },
+    { num: 2, sumKm: 0.20, dir: 'ÎNAINTE', flag: 'RT_START_AUTO', comment: 'START RT · 40 km/h' },
+    { num: 3, sumKm: 0.80, dir: 'STÂNGA', comment: 'viraj în probă' },
+    { num: 4, sumKm: 2.20, dir: 'ÎNAINTE', flag: 'RT_FINISH', comment: 'FINISH' }
+  ]);
+  const w = lume(boxes);
+  w.condu(1.15, 50);                      // trece de virajul de la 0,80 fără să vireze
+  const d = w.said.filter(s => /boxul 3/.test(s.t));
+  ok('alarma reală vine', d.length >= 1, JSON.stringify(w.said.map(s => s.t)));
+  ok('în probă NU trimite la lista de boxuri', d.every(s => !/apasă SUNT LA BOX/.test(s.t)),
+     JSON.stringify(d.map(s => s.t)));
+}
+
 console.log('\n═══ #1 — leg-urile nu se mai amestecă ═══');
 {
   const doua = [

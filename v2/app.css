@@ -77,6 +77,9 @@ input { background: var(--bg); border: 1px solid var(--border); border-radius: 1
 .modal-box { background: var(--surf); border-radius: 16px; padding: 14px; width: 100%;
   max-width: 460px; max-height: 90vh; overflow-y: auto; }
 .bp-item { text-align: left; padding: 13px 14px; margin-bottom: 7px; font-size: 16px; }
+/* modul mănușă: un singur buton, citibil și nimerit la 50 km/h */
+.bp-mare { display: block; width: 100%; font-size: 26px; font-weight: 800;
+  padding: 26px 14px; margin-bottom: 10px; }
 .bp-item .bp-com { display: block; font-size: 12px; font-weight: 500; color: var(--dim);
   margin-top: 3px; }
 #bp-list .btn.pri { outline: 2px solid #fff6; }
