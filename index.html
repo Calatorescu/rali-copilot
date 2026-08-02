@@ -358,25 +358,22 @@
         <button class="btn btn-pri" id="btn-batt-calc">Calculează + voce</button>
       </div>
 
-      <!-- Punctele de eficiență Sibiu: se SCAD din penalizări. Sâmbătă consumul intră
-           dublu — 1 Wh/km economisit = 2 puncte, cât 2 secunde de deviere pe RT. -->
+      <!-- Puncte de eficiență, Regulament A.R.E.S. Rally 2026 art. 6.3:
+           (Wh/km declarați − Wh/km realizați) × 2. Bateria nu mai intră deloc.
+           Fiecare 1 Wh/km = 2 puncte, în ambele zile. -->
       <div class="tool-card">
-        <span class="tool-title">🍃 PUNCTE DE EFICIENȚĂ (SIBIU)</span>
-        <div class="preset-row" id="eff-day-row">
-          <button class="preset-chip" data-effday="1" data-km="173.1">Vineri · ×1</button>
-          <button class="preset-chip" data-effday="2" data-km="264.79">Sâmbătă · ×2</button>
-        </div>
+        <span class="tool-title">🍃 PUNCTE DE EFICIENȚĂ (A.R.E.S. art. 6.3)</span>
         <div style="display:flex; gap:10px;">
           <div class="field-group" style="flex:1">
-            <label>Consum mediu (Wh/km, de pe bord)</label>
-            <input type="number" id="eff-cons" placeholder="ex. 175" min="50" max="500" step="1" inputmode="numeric">
+            <label>Declarat de producător (Wh/km)</label>
+            <input type="number" id="eff-decl" value="153" min="50" max="500" step="1" inputmode="numeric">
           </div>
           <div class="field-group" style="flex:1">
-            <label>Km parcurși în zi</label>
-            <input type="number" id="eff-km" value="173.1" min="1" max="500" step="0.1" inputmode="decimal">
+            <label>Realizat, de pe bord (Wh/km)</label>
+            <input type="number" id="eff-cons" placeholder="ex. 185" min="50" max="500" step="1" inputmode="numeric">
           </div>
         </div>
-        <div class="batt-out" id="eff-out">Alege ziua, pune consumul de pe bord.</div>
+        <div class="batt-out" id="eff-out">Cifra declarată se confirmă la administrative — până atunci e 153 (WLTP).</div>
         <button class="btn btn-pri" id="btn-eff-calc">Calculează punctele</button>
       </div>
 

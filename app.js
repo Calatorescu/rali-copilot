@@ -1694,9 +1694,11 @@ function navRender() {
 //  CLAUDE API
 // ══════════════════════════════════════════════════════════════
 const SYSTEM = `Ești RALI, copilotul virtual al lui Andreas Suciu la Transilvania eCLASIC 2026 (regularitate 100% electric, A.R.E.S. Championship).
-Mașina: Tesla Model Y Juniper AWD Long Range — 82 kWh, consum munte ~20 kWh/100 km, autonomie munte 280-320 km la 100%.
+Mașina: Tesla Model Y Juniper AWD Long Range — baterie ~75 kWh utilizabil (78,1-78,4 nominal), lungime 4,79 m, înălțime 1,624 m, masă ~2000 kg. Consum munte ~20 kWh/100 km, autonomie munte ~260-300 km la 100%.
+Clasa: Electric — MAIN, corect. Pe formula de scor A.R.E.S. art. 4.2 mașina iese sub 14 la orice combinație plauzibilă de cifre, iar Max cere scor peste 14. Bateria mare COBOARĂ scorul (e la numitor), nu îl urcă.
 Regularitate: 1 punct = 1 secundă deviere. La Sibiu 2026 se cronometrează la zecime: 0,1 punct per 0,1 secundă, maxim 900 pct pe RT — deci și zecimile contează, nu rotunji.
-Sibiu 2026: oprirea pe RT între tabela galbenă (~50 m înainte) și cea roșie de finiș = 100 pct. Punctele de eficiență se SCAD din penalizări: Ziua 1 = km − consum(Wh/km) + baterie(kWh); Ziua 2 = km − 2×consum + baterie. Ziua 1 = 173,10 km, Ziua 2 = 264,79 km peste Transfăgărășan (Bâlea Lac, 2043 m).
+Sibiu 2026: oprirea pe RT între tabela galbenă (~50 m înainte) și cea roșie de finiș = 100 pct. Ziua 1 = 173,10 km, Ziua 2 = 264,79 km peste Transfăgărășan (Bâlea Lac, 2043 m).
+EFICIENȚĂ — se aplică Regulamentul A.R.E.S. Rally 2026, art. 6.3 (confirmat de organizator, stabilit 02.08.2026), NU regulamentul particular de pe site: puncte eficiență = (Wh/km declarați de producător − Wh/km realizați) × 2. Clasament = eficiență − penalizări + bonus, câștigă numărul MAI MARE. Capacitatea bateriei nu intră deloc în calcul. Fiecare 1 Wh/km economisit = 2 puncte, în ambele zile. Consumul se citește din tabul A.R.C, meniul Trips, iar odometrul se resetează doar la start (art. 4.7-4.8), deci tot ce consumi cu mașina pornită între start și finiș intră în cifră.
 TC = time control cu ștampilă (300 pct dacă blochezi alt echipaj). RT = test timed — menții viteză medie.
 Formula RT: timp ideal (s) = (km × 3600) ÷ viteză medie. Deviere + = în urmă. Deviere - = în avans.
 Regula lui cea mai scumpă: la viteze impuse mici (sub 30 km/h) instinctul îl face să meargă prea repede. Dacă viteza RT e sub 30, avertizează-l din prima.
@@ -1922,34 +1924,44 @@ function deletePreset(i) {
 }
 
 // ══════════════════════════════════════════════════════════════
-//  PUNCTE DE EFICIENȚĂ — Sibiu, art. 6.3.2
+//  PUNCTE DE EFICIENȚĂ — Regulament A.R.E.S. Rally 2026, art. 6.3
 // ══════════════════════════════════════════════════════════════
-// Ziua 1: km − consum(Wh/km) + baterie(kWh) · Ziua 2: km − 2×consum + baterie.
-// Punctele se SCAD din penalizări. Sâmbătă 1 Wh/km = 2 puncte = 2 s de deviere pe RT —
-// cifra care spune, în timp real, dacă merită vânat consumul sau zecimile.
-let _effDay = 1;
-function effCalc() {
-  const num = v => { const n = parseFloat(String(v).replace(',', '.')); return isFinite(n) ? n : null; };
-  const cons = num(el('eff-cons').value);
-  const km = num(el('eff-km').value);
-  const out = el('eff-out');
-  if (cons == null || km == null) { out.textContent = 'Pune consumul de pe bord și km-ii zilei.'; return; }
-  const BATT = 82;
-  const pts = _effDay === 2 ? km - 2 * cons + BATT : km - cons + BATT;
-  const marginal = _effDay === 2 ? 2 : 1;
-  const rez = pts >= 0
-    ? `BONUS ${pts.toFixed(1)} puncte (se scad din penalizări)`
-    : `${Math.abs(pts).toFixed(1)} puncte ÎN PLUS la penalizări`;
-  out.textContent = `Ziua ${_effDay}: ${km} − ${_effDay === 2 ? '2×' : ''}${cons} + ${BATT} = ` +
-    `${pts.toFixed(1)} → ${rez}. Fiecare 1 Wh/km economisit = ${marginal} punct${marginal > 1 ? 'e' : ''}.`;
+// Andreas a stabilit pe 2026-08-02, după ce a întrebat organizatorul: la Sibiu se aplică
+// REGULAMENTUL A.R.E.S., nu cel particular de pe site. Formula e cu totul alta:
+//
+//     PEF = (Wh/km declarați de producător − Wh/km realizați) × 2
+//     Clasament = PEF − PP + PB   →   NUMĂRUL MAI MARE CÂȘTIGĂ
+//
+// Capacitatea bateriei NU mai intră nicăieri. Singurul lucru care contează e cu cât bați
+// cifra declarată. Fiecare 1 Wh/km valorează 2 puncte, în ambele zile — nu doar sâmbătă.
+//
+// Cifra declarată e reglabilă fiindcă NU e sigură: sursele publice dau între 148 și 166
+// Wh/km pentru Model Y Juniper AWD LR, iar ce contează e ce acceptă organizatorul.
+// Se confirmă la verificările administrative și se scrie aici.
+const EFF_DECL_KEY = 'rali_eff_declarat';
+function effDeclarat() {
+  const v = parseFloat(localStorage.getItem(EFF_DECL_KEY));
+  return isFinite(v) && v > 0 ? v : 153;   // implicit: WLTP TEH, ev-database
 }
 
-function effSelectDay(btn) {
-  _effDay = parseInt(btn.dataset.effday, 10) || 1;
-  el('eff-km').value = btn.dataset.km || '';
-  document.querySelectorAll('#eff-day-row .preset-chip').forEach(b =>
-    b.classList.toggle('sel', b === btn));
-  if (el('eff-cons').value) effCalc();
+function effCalc() {
+  const num = v => { const n = parseFloat(String(v).replace(',', '.')); return isFinite(n) ? n : null; };
+  const decl = num(el('eff-decl').value);
+  const real = num(el('eff-cons').value);
+  const out = el('eff-out');
+  if (decl == null) { out.textContent = 'Pune consumul declarat (se află la administrative).'; return; }
+  try { localStorage.setItem(EFF_DECL_KEY, String(decl)); } catch (e) {}
+  if (real == null) {
+    out.textContent = `Declarat ${decl} Wh/km. Pune consumul realizat, de pe bord (tab A.R.C, meniul Trips).`;
+    return;
+  }
+  const pef = (decl - real) * 2;
+  const rez = pef >= 0
+    ? `+${pef.toFixed(0)} puncte CÂȘTIGATE`
+    : `${pef.toFixed(0)} puncte — te trage ÎN JOS`;
+  out.textContent = `(${decl} − ${real}) × 2 = ${rez}. ` +
+    (pef < 0 ? `Ca să ajungi la zero îți trebuie ${real - decl} Wh/km mai puțin. ` : '') +
+    `Fiecare 1 Wh/km economisit = 2 puncte. Clasament: PEF − penalizări + bonus, câștigă cine are mai mult.`;
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -2036,7 +2048,14 @@ function tcTick() {
 // ══════════════════════════════════════════════════════════════
 //  BATTERY CALCULATOR
 // ══════════════════════════════════════════════════════════════
-const BATT_KWH = 82;
+// Capacitatea UTILIZABILĂ, nu cea nominală — aici se calculează cât la sută îți trebuie
+// ca să ajungi, iar acolo contează energia pe care chiar o poți scoate din baterie.
+// Corectat 2026-08-02 de la 82 la 75: 82 era o cifră a mea, nesusținută de nicio sursă
+// pentru Model Y Juniper AWD Long Range. Sursele publice dau 75,0 kWh utilizabil /
+// 78,1-78,4 nominal. Cu 82 aplicația credea că ai cu ~9% mai multă energie decât ai —
+// eroare exact în direcția periculoasă pe o etapă de munte.
+// DE CONFIRMAT cu cifra reală a mașinii; până atunci se merge pe varianta prudentă.
+const BATT_KWH = 75;
 function battCalc() {
   const now  = parseFloat(el('batt-now').value)  || 0;
   const km   = parseFloat(el('batt-km').value)   || 0;
@@ -2905,8 +2924,9 @@ function bindUI() {
   el('btn-rtoff-p100')?.addEventListener('click', () => rtOffset(100));
   el('btn-nav-rt')?.addEventListener('click', navPrepRt);
   el('btn-eff-calc')?.addEventListener('click', effCalc);
-  document.querySelectorAll('#eff-day-row .preset-chip').forEach(b =>
-    b.addEventListener('click', () => effSelectDay(b)));
+  // Cifra declarată se ține minte între sesiuni: o afli o dată, la administrative.
+  const ed = el('eff-decl');
+  if (ed) { ed.value = String(effDeclarat()); ed.addEventListener('change', effCalc); }
   const tco = el('tc-clockoff');
   if (tco) {
     tco.value = ls('rali_clockoff') || '0';
