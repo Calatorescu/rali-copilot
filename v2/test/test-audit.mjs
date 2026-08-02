@@ -222,6 +222,29 @@ console.log('\n═══ #1 — leg-urile nu se mai amestecă ═══');
   ok('totalKm e al leg-ului, nu al amestecului', plan1.totalKm === 3.0, String(plan1.totalKm));
 }
 
+console.log('\n═══ Antetul necitit pe o pagină nu rupe leg-ul (02.08, seara) ═══');
+{
+  // cazul real: pagina 1 scanată cu day:null, paginile 2-3 cu day:1 — aceleași leg
+  const rupt = sanitizeBoxes([
+    { day: null, leg: 1, num: 1, sumKm: 0.00, dir: 'ÎNAINTE', flag: 'TC', comment: 'Start' },
+    { day: null, leg: 1, num: 2, sumKm: 0.29, dir: 'DREAPTA', comment: 'spre József' },
+    { day: 1, leg: 1, num: 5, sumKm: 0.57, dir: 'ÎNAINTE', flag: 'RT_START_AUTO', comment: 'START · 40 km/h' },
+    { day: 1, leg: 1, num: 7, sumKm: 2.57, dir: 'ÎNAINTE', flag: 'RT_FINISH', comment: 'FINISH' }
+  ]);
+  const g = groupByLeg(rupt);
+  ok('UN singur grup, nu două', g.length === 1, JSON.stringify(g.map(x => [x.key, x.boxes.length])));
+  ok('toate boxurile în el, ordonate pe km', g[0].boxes.length === 4 && g[0].boxes[0].num === 1);
+
+  // ambiguitate REALĂ: două zile au Leg 1 → orfanul nu se lipește de niciuna
+  const ambiguu = sanitizeBoxes([
+    { day: 1, leg: 1, num: 1, sumKm: 0.0, dir: 'ÎNAINTE', comment: 'a' },
+    { day: 2, leg: 1, num: 1, sumKm: 0.0, dir: 'ÎNAINTE', comment: 'b' },
+    { day: null, leg: 1, num: 9, sumKm: 3.0, dir: 'STÂNGA', comment: 'orfan' }
+  ]);
+  ok('la ambiguitate rămâne separat', groupByLeg(ambiguu).length === 3,
+     JSON.stringify(groupByLeg(ambiguu).map(x => x.key)));
+}
+
 console.log('\n═══ Verificatorul de roadbook (propunerea 1) ═══');
 {
   // fixtura BOX de mai sus e sintetică (numere sărite) — verificatorul o reclamă pe

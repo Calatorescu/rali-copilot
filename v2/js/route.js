@@ -37,6 +37,24 @@ export function groupByLeg(boxes) {
     if (!map.has(k)) map.set(k, []);
     map.get(k).push(b);
   }
+  // „?" înseamnă ANTET NECITIT pe pagina aia, nu alt leg (02.08, seara: o pagină
+  // scanată fără „Day 1" a rupt leg-ul în două — planul activ a rămas fără primele
+  // 4 boxuri, deși toate 12 fuseseră citite corect). Un grup cu componente „?" se
+  // lipește de grupul complet care se potrivește pe ce SE cunoaște — dar NUMAI dacă
+  // potrivirea e unică; la ambiguitate (două zile cu același leg), rămâne separat.
+  const complete = [...map.keys()].filter(k => !k.includes('?'));
+  for (const k of [...map.keys()]) {
+    if (!k.includes('?') || !map.has(k)) continue;
+    const [d, l] = k.split('|');
+    const candidati = complete.filter(c => {
+      const [cd, cl] = c.split('|');
+      return (d === '?' || cd === d) && (l === '?' || cl === l);
+    });
+    if (candidati.length === 1) {
+      map.get(candidati[0]).push(...map.get(k));
+      map.delete(k);
+    }
+  }
   const rank = k => { const [d, l] = String(k).split('|');
     return [d === '?' ? 1e6 : +d, l === '?' ? 1e6 : +l]; };
   return [...map.entries()]
