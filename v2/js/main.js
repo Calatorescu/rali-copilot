@@ -21,7 +21,7 @@ let boxesRaw = [], reconRec = null;
 // Versiunea build-ului — se ține SINCRON cu CACHE din sw.js la fiecare deploy.
 // Vizibilă în antet și scrisă în jurnal la fiecare pornire: „ce versiune rulează
 // telefonul?" se citește, nu se ghicește (02.08, seara — nu se putea ști).
-const BUILD = 'v23';
+const BUILD = 'v24';
 
 async function init() {
   store = await makeStore();
@@ -555,9 +555,15 @@ function bind() {
     if (M.speedKmh > 20 && !bpDeschide._fortatLista) {
       const cands = machine.boxuriApropiate(7);
       if (cands.length) {
-        let mi = 0;
-        cands.forEach((c, i) => { if (Math.abs(c.deltaM) < Math.abs(cands[mi].deltaM)) mi = i; });
-        const c = cands[mi];
+        // Sugestia preferă boxurile MARCATE (TC, probe, viraje, giratorii): pilotul
+        // apasă la repere fizice, nu la „reper — drum drept". Pe 02.08 poziția crezută
+        // era 5,17 și butonul a sugerat box 11 („reper", 5,07) în loc de TC-ul de
+        // final (box 12, 5,35) — unde era mașina de fapt.
+        const marcat = c => c.box.flag != null || (c.box.dir && c.box.dir !== 'ÎNAINTE');
+        const pool = cands.filter(c => marcat(c) && Math.abs(c.deltaM) < 450);
+        const alege = (pool.length ? pool : cands)
+          .reduce((a, c) => Math.abs(c.deltaM) < Math.abs(a.deltaM) ? c : a);
+        const c = alege;
         const mare = document.createElement('button');
         mare.className = 'btn ok bp-mare';
         mare.textContent = `✓ SUNT LA BOX ${c.box.num}`;

@@ -92,12 +92,18 @@ export function makeOdometer() {
         const dt = (fix.tMs - last.t) / 1000;
         const hav = haversineM(last.lat, last.lng, fix.lat, fix.lng);
         const accBad = fix.accM != null && fix.accM > 60;
-        const stationary = spdOk ? (fix.speedMs < 0.55 && hav < 4) : (hav < 4);
+        // Pragul de „stă pe loc" crește cu imprecizia fixului (02.08, tura 3): la stop,
+        // GPS-ul tremură cu ordinul preciziei (4-16 m între fixuri), iar pragul fix de
+        // 4 m lăsa tremurul să intre ca distanță prin ramura „viteza minte" — +141 m
+        // adunați în bucla cu opriri, corectați abia de snapul pe viraj.
+        const zgomot = Math.max(4, (fix.accM != null ? fix.accM : 10) * 1.2);
+        const stationary = spdOk ? (fix.speedMs < 0.55 && hav < zgomot) : (hav < zgomot);
         if (!stationary && dt > 0 && dt < 30) {
           if (spdOk) inc = fix.speedMs * dt;
           else if (!accBad && hav < 500) inc = hav;
           else if (last.spdMs != null) inc = last.spdMs * dt;
-          if (spdOk && !accBad && hav < 500 && hav > inc * 2 + 10) inc = hav; // viteza minte
+          // „viteza minte" cere mișcare peste zgomotul plauzibil, nu doar peste 10 m
+          if (spdOk && !accBad && hav < 500 && hav > inc * 2 + Math.max(10, zgomot)) inc = hav;
         }
       }
       last = { lat: fix.lat, lng: fix.lng, t: fix.tMs, spdMs: spdOk ? fix.speedMs : (last ? last.spdMs : null) };

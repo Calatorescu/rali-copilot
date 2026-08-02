@@ -335,5 +335,41 @@ console.log('\n═══ Vocea: prio 4, TTL pe viraje, REPETĂ, watchdog, unită
   ok('distRo: 20 de metri', distRo(20) === '20 de metri', distRo(20));
 }
 
+console.log('\n═══ Tura 4 (02.08): jitterul de la stop nu mai intră în odometru ═══');
+{
+  const { makeOdometer } = await import('../js/geo.js');
+  const o = makeOdometer();
+  o.step({ lat: 45, lng: 21, tMs: 0, speedMs: 0, accM: 10 });
+  // 20 s oprit la stop: poziția tremură cu 5-8 m pe fix (sub precizia de 10 m)
+  let total = 0, lat = 45;
+  for (let i = 1; i <= 20; i++) {
+    lat = 45 + (i % 2 ? 6 : 0) / 111320;      // du-te-vino de 6 m
+    total += o.step({ lat, lng: 21, tMs: i * 1000, speedMs: 0, accM: 10 });
+  }
+  ok('20 s de tremur la stop ≈ 0 m (era ~60-120)', total < 5, total.toFixed(1) + ' m');
+  // dar mișcarea REALĂ cu vitezometrul mut tot se contorizează
+  const o2 = makeOdometer();
+  o2.step({ lat: 45, lng: 21, tMs: 0, speedMs: 0, accM: 10 });
+  const inc = o2.step({ lat: 45 + 60 / 111320, lng: 21, tMs: 2000, speedMs: 0, accM: 10 });
+  ok('60 m reali cu viteza mută → tot haversine', inc > 50, inc.toFixed(1));
+}
+
+console.log('\n═══ Tura 4: recuperarea spune CÂT prinzi când plafonul nu ajunge ═══');
+{
+  const boxes = sanitizeBoxes([
+    { num: 1, sumKm: 0.00, dir: 'ÎNAINTE', flag: 'TC', comment: 'Start' },
+    { num: 2, sumKm: 0.20, dir: 'ÎNAINTE', flag: 'RT_START_AUTO', comment: 'START RT · 40 km/h' },
+    { num: 3, sumKm: 2.20, dir: 'ÎNAINTE', flag: 'RT_FINISH', comment: 'FINISH' }
+  ]);
+  const w = lume(boxes);
+  w.condu(0.25, 40);
+  ok('în probă', w.m.M.state === 'RT_RUN');
+  // condu foarte lent — întârzierea crește peste ce mai poate plafonul de +30%
+  w.condu(1.40, 18);
+  const cuPlafon = w.said.filter(s => /mai prinzi doar/.test(s.t));
+  ok('mesajul spune cât mai prinzi, nu doar „ține 52"', cuPlafon.length >= 1,
+     JSON.stringify(w.said.filter(s => /urmă/.test(s.t)).slice(-3).map(s => s.t)));
+}
+
 console.log(`\n──────── ${pass} trecute, ${fail} căzute ────────`);
 process.exit(fail ? 1 : 0);

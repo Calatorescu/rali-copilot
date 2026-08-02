@@ -326,7 +326,18 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
       // cuvinte doar când devierea depășește pragul — și scurt
       if (a > (def.voiceThr || 3)) {
         const rec = recoverySpeed(dev, rt.distKm, def.distKm, segs);
-        say(`${secRo(a)} ${dev >= 0 ? 'în urmă' : 'în avans'}${rec ? `, ține ${Math.round(rec.kmh)}` : ''}`, 3, 'pace');
+        let fraza = `${secRo(a)} ${dev >= 0 ? 'în urmă' : 'în avans'}`;
+        if (rec) {
+          // SINCERITATE la plafon (02.08: „ține 52" identic la 20 și la 40 de secunde
+          // suna absurd): viteza de recuperare e plafonată la ±30% din motive de
+          // siguranță — când plafonul nu mai poate recupera tot, se spune CÂT prinzi.
+          const remKm = Math.max(0, def.distKm - rt.distKm);
+          const castigS = Math.abs(remKm * 3600 * (1 / def.kmh - 1 / rec.kmh));
+          fraza += (castigS + 3 < a)
+            ? `, ține ${Math.round(rec.kmh)} — mai prinzi doar ${secRo(castigS)}`
+            : `, ține ${Math.round(rec.kmh)}`;
+        }
+        say(fraza, 3, 'pace');
       }
       // banca de timp: zonele lente din față cer avans acum
       if (rt.zonesAdvised !== false && def.zones && def.zones.length && clock.mono() - M._lastBank > 15000) {
@@ -524,8 +535,12 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
     const proc = (M.calFactor - 1) * 100;
     log('calibrare', { factor: r3(M.calFactor), procent: r3(proc), dinMasuratori: M._calN,
                        segmentOficial: r3(oficial), segmentMasurat: r3(masurat) });
-    if (Math.abs(proc) >= 0.8 && M._calN <= 3)
+    // „plus 1 virgulă 5 la sută" s-a auzit „5 la sută" la volan (02.08) — corecțiile
+    // mici se anunță ca „mică", fără cifră; cifra rămâne doar la corecții mari.
+    if (Math.abs(proc) >= 2 && M._calN <= 3)
       say(`Odometru calibrat: ${proc > 0 ? 'plus' : 'minus'} ${Math.abs(proc).toFixed(1)} la sută.`, 2, 'cal');
+    else if (Math.abs(proc) >= 0.8 && M._calN <= 3)
+      say('Calibrare mică făcută. E bine.', 1, 'cal');
   }
 
   function turnDetect(fix) {
