@@ -51,8 +51,10 @@ console.log('\n═══ Jurnal local mai MIC decât cel urcat: se salvează al�
   const st = [];
   await mk(jurnal(12), s => st.push(s)).pushNow('auto');
   ok('fișierul zilei NU a fost atins', gh.fisiere[`jurnale/${azi}.json`] === b64(jurnal(500)));
+  // numele are și un timestamp (audit 02.08, P5): al doilea salvat-alături din aceeași
+  // zi nu mai lovește un fișier existent fără SHA (409 → sync căzut până seara)
   ok('varianta mică s-a salvat separat',
-     gh.puts.length === 1 && gh.puts[0].path === `jurnale/${azi}-partial-12.json`,
+     gh.puts.length === 1 && new RegExp(`^jurnale/${azi}-partial-12-\\d+\\.json$`).test(gh.puts[0].path),
      JSON.stringify(gh.puts.map(p => p.path)));
   ok('fără sha → nu poate suprascrie din greșeală', gh.puts[0].sha === undefined);
   ok('anomalia e semnalată cu cifre', st.some(s => /12/.test(s) && /500/.test(s)), JSON.stringify(st));
@@ -75,13 +77,20 @@ console.log('\n═══ Prima urcare a zilei (nu există fișier) ═══');
      gh.puts[0].path === `jurnale/${azi}.json` && gh.puts[0].sha === undefined);
 }
 
-console.log('\n═══ Fișier urcat corupt: necunoscutul nu blochează ziua ═══');
+console.log('\n═══ Fișier urcat corupt: nu se blochează ziua, dar nici NU se scrie peste ═══');
 {
-  const gh = fakeGitHub({ [`jurnale/${azi}.json`]: Buffer.from('}{nu e json', 'utf8').toString('base64') });
-  await mk(jurnal(30)).pushNow('auto');
-  ok('urcarea continuă pe calea normală',
-     gh.puts.length === 1 && gh.puts[0].path === `jurnale/${azi}.json`,
+  // Versiunea veche a acestui test consfințea comportamentul vulnerabil: „nu-l pot citi"
+  // era tratat ca „e în regulă să suprascriu". Auditul din 02.08 (P5) a arătat că asta e
+  // exact scenariul din 01.08, doar declanșat altfel. Acum: necunoscutul se ocolește.
+  const corupt = Buffer.from('}{nu e json', 'utf8').toString('base64');
+  const gh = fakeGitHub({ [`jurnale/${azi}.json`]: corupt });
+  const st = [];
+  ok('urcarea reușește', await mk(jurnal(30), s => st.push(s)).pushNow('auto') === true);
+  ok('dar ALĂTURI, nu peste fișierul necitibil',
+     gh.puts.length === 1 && new RegExp(`^jurnale/${azi}-partial-30-\\d+\\.json$`).test(gh.puts[0].path),
      JSON.stringify(gh.puts.map(p => p.path)));
+  ok('fișierul necitibil e intact', gh.fisiere[`jurnale/${azi}.json`] === corupt);
+  ok('motivul e spus', st.some(s => /nu pot citi/i.test(s)), JSON.stringify(st));
 }
 
 console.log('\n═══ Fără token: nu se încearcă nimic ═══');

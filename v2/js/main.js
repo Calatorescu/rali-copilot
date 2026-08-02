@@ -5,7 +5,7 @@ import { buildTrace } from './geo.js';
 import { makeStore, exportDay, importDay, resumeStateFromJournal } from './store.js';
 import { makeVoice, makeEars, secRo } from './voice.js';
 import { makeLiveGps, makeSyntheticGps, makeReplayGps } from './gps.js';
-import { buildPlan, detectRts } from './route.js';
+import { buildPlan, detectRts, sanitizeBoxes } from './route.js';
 import { makeMachine } from './machine.js';
 import { makeDriverModel } from './learn.js';
 import { makeUi, startHeaderClock } from './ui.js';
@@ -32,7 +32,10 @@ async function init() {
   if (!localStorage.getItem('r2_key') && localStorage.getItem('rali_key'))
     localStorage.setItem('r2_key', localStorage.getItem('rali_key'));
 
-  boxesRaw = (await store.get('plan_raw')) || [];
+  // Sanitizat la ÎNCĂRCARE, nu doar la scanare: planul poate veni și din import
+  // (fișier de pe alt telefon = conținut extern) sau dintr-un IndexedDB scris de o
+  // versiune veche. Singurul punct prin care trec toate căile. (Audit 02.08.2026, P3.)
+  boxesRaw = sanitizeBoxes((await store.get('plan_raw')) || []);
   await rebuildPlan();
   sync = makeSync({
     getToken: () => localStorage.getItem('r2_gh_token'),
@@ -288,7 +291,10 @@ function doImport() {
         const dump = JSON.parse(r.result);
         if (!confirm('Import + PRELUARE cursă? Datele locale se înlocuiesc.')) return;
         await importDay(store, dump);
-        boxesRaw = (await store.get('plan_raw')) || [];
+        // Sanitizat la ÎNCĂRCARE, nu doar la scanare: planul poate veni și din import
+  // (fișier de pe alt telefon = conținut extern) sau dintr-un IndexedDB scris de o
+  // versiune veche. Singurul punct prin care trec toate căile. (Audit 02.08.2026, P3.)
+  boxesRaw = sanitizeBoxes((await store.get('plan_raw')) || []);
         await rebuildPlan();
         const st = resumeStateFromJournal(await store.journalAll());
         startDay();
@@ -337,10 +343,18 @@ function bind() {
       const semn = c.deltaM >= 0 ? '+' : '−';
       const dist = Math.abs(c.deltaM) >= 1000
         ? (Math.abs(c.deltaM) / 1000).toFixed(2) + ' km' : Math.abs(c.deltaM) + ' m';
+      // textContent, nu innerHTML: `comment` vine din scanarea Vision a unui roadbook —
+      // document EXTERN. Un comentariu cu HTML (ajung 44 de caractere pentru un overlay
+      // fullscreen pe style inline, pe care CSP-ul îl permite) s-ar randa fix în modalul
+      // de corecție, fix când e deschis în probă. Confirmat la auditul din 02.08.2026, P2.
       const btn = document.createElement('button');
       btn.className = 'btn bp-item' + (c.idx === urm ? ' pri' : ' sec');
-      btn.innerHTML = `<b>box ${c.box.num}</b> · ${semn}${dist}` +
-        `<span class="bp-com">${(c.box.comment || '').split('/')[0].trim().slice(0, 44)}</span>`;
+      const nume = document.createElement('b');
+      nume.textContent = 'box ' + (c.box.num != null ? c.box.num : '?');
+      const com = document.createElement('span');
+      com.className = 'bp-com';
+      com.textContent = (c.box.comment || '').split('/')[0].trim().slice(0, 44);
+      btn.append(nume, document.createTextNode(` · ${semn}${dist}`), com);
       btn.addEventListener('click', () => bpAlege(c.box.num));
       lista.appendChild(btn);
     }

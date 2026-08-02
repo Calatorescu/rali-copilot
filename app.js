@@ -68,6 +68,9 @@ const S = {
     // trece de JSON.parse fără excepție, apoi aruncă abia în bindUI (ex. presets.forEach),
     // iar bindUI oprit la jumătate lasă aplicația fără butoane — inclusiv fără Import,
     // deci fără cale de reparare din interior.
+    // Se sanitizează în init() cu navCleanBoxes — aici nu se poate: DIR_ARROW (const,
+    // linia ~970) e încă în TDZ când se construiește S, iar apelul ar muri cu
+    // ReferenceError. Exact genul de spargere la pornire care a stricat v17.
     all: (() => { try { const v = JSON.parse(ls('rali_road') || '[]'); return Array.isArray(v) ? v : []; } catch(e) { return []; } })(),
     leg: ls('rali_road_leg') || null,   // cheia leg-ului activ (vezi navLegKey), null = neales
     boxes: [],
@@ -1183,19 +1186,27 @@ async function navScanImage(b64, mime) {
 //    text ostil din pagină ar deveni comandă falsă spusă cu autoritate șoferului.
 // De aceea: numerele se convertesc sau devin null, dir/flag doar din lista închisă,
 // comentariul se taie la 120, iar boxurile fără kilometraj se resping cu mesaj clar.
-function navSanitizeBoxes(boxes) {
+// Maparea de sanitizare, fără să arunce — bună pentru căile unde lista goală e stare
+// normală (încărcarea din localStorage, importul). Sanitizarea nu mai rulează doar la
+// scanare: planul poate veni și din import (fișier de pe alt telefon = conținut extern)
+// sau dintr-un localStorage scris de o versiune veche. (Audit 02.08.2026, P3.)
+function navCleanBoxes(boxes) {
   const okNum = v => {
     const n = typeof v === 'string' ? parseFloat(v.replace(',', '.')) : v;
     return (typeof n === 'number' && isFinite(n)) ? n : null;
   };
   const okDir = v => (typeof v === 'string' &&
     Object.prototype.hasOwnProperty.call(DIR_ARROW, v)) ? v : null;
-  const clean = boxes.map(b => ({
+  return (Array.isArray(boxes) ? boxes : []).map(b => ({
     day: okNum(b.day), leg: okNum(b.leg), page: okNum(b.page), num: okNum(b.num),
     sumKm: okNum(b.sumKm), sectionKm: okNum(b.sectionKm),
     dir: okDir(b.dir), flag: okDir(b.flag),
     comment: typeof b.comment === 'string' ? b.comment.slice(0, 120) : ''
   })).filter(b => b.sumKm !== null);   // fără km, boxul nu e navigabil — mai bine refoto
+}
+
+function navSanitizeBoxes(boxes) {
+  const clean = navCleanBoxes(boxes);
   if (!clean.length) throw new Error('Boxuri fără kilometraj — refotografiază pagina');
   return clean;
 }
@@ -2592,10 +2603,16 @@ function navJumpToBox() {
     const semn = c.deltaM >= 0 ? '+' : '−';
     const a = Math.abs(c.deltaM);
     const dist = a >= 1000 ? (a / 1000).toFixed(2) + ' km' : a + ' m';
+    // textContent, nu innerHTML: `comment` vine din scanarea Vision — conținut EXTERN.
+    // Vezi auditul din 02.08.2026, P2 (aceeași reparație ca în v2).
     const b = document.createElement('button');
     b.className = 'btn jump-item ' + (c.idx === S.road.nextIdx ? 'btn-green' : 'btn-sec');
-    b.innerHTML = `<b>box ${c.box.num}</b> · ${semn}${dist}` +
-      `<span class="jump-com">${String(c.box.comment || '').split('/')[0].trim().slice(0, 44)}</span>`;
+    const nume = document.createElement('b');
+    nume.textContent = 'box ' + (c.box.num != null ? c.box.num : '?');
+    const com = document.createElement('span');
+    com.className = 'jump-com';
+    com.textContent = String(c.box.comment || '').split('/')[0].trim().slice(0, 44);
+    b.append(nume, document.createTextNode(` · ${semn}${dist}`), com);
     b.addEventListener('click', () => navJumpAlege(c.box.num));
     lista.appendChild(b);
   }
@@ -2896,9 +2913,14 @@ function exportData() {
     document.body.appendChild(a); a.click(); a.remove();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   } catch (e) {}
-  navigator.clipboard?.writeText(json).catch(() => {});
+  // În clipboard NU intră jurnalul: el conține de azi coordonate GPS, iar clipboard-ul
+  // e o suprafață partajată între aplicații, de unde lucrurile se lipesc din greșeală
+  // în chat-uri. Fișierul descărcat rămâne complet. (Audit 02.08.2026, P4.)
+  navigator.clipboard?.writeText(JSON.stringify(
+    { _app: 'RALI', _ver: BUILD, _at: new Date().toISOString(), data }, null, 2)).catch(() => {});
   const s = el('set-status');
-  if (s) { s.textContent = `Backup exportat ✓ (${jurn.length} intrări de jurnal, fără cheia API)`;
+  if (s) { s.textContent = `Backup exportat ✓ (${jurn.length} intrări de jurnal în fișier; ` +
+           `în clipboard doar setările, fără traseu și fără cheia API)`;
            setTimeout(() => { s.textContent = ''; }, 4000); }
 }
 
@@ -2959,6 +2981,11 @@ function importData() {
 //  INIT
 // ══════════════════════════════════════════════════════════════
 function init() {
+  // Sanitizarea planului la pornire (audit 02.08.2026, P3): rali_road poate veni din
+  // import — fișier de pe alt telefon, deci conținut extern — nu doar din scanare.
+  // Aici, nu în inițializatorul lui S: acolo DIR_ARROW e încă în TDZ.
+  try { S.road.all = navCleanBoxes(S.road.all); } catch (e) {}
+
   // Legările de UI sunt grupate într-un try: dacă vreun element lipsește
   // (ex. HTML vechi din cache), nu mai blocăm pornirea GPS-ului de mai jos.
   try { bindUI(); } catch (err) { showFatal('init/bindUI: ' + err.message); }

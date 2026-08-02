@@ -54,10 +54,11 @@ export function makeSync({ getToken, repo /* 'user/nume' */, exportFn, onStatus 
         'Content-Type': 'application/json'
       };
       // un fișier per zi, suprascris: PUT cere SHA-ul versiunii curente dacă există
-      let sha, remoteN = -1;
+      let sha, remoteN = -1, existaRemote = false;
       const probe = await fetch(`${API}/repos/${repo}/contents/${path}`,
         { headers: hdr, signal: AbortSignal.timeout(20000) });
       if (probe.ok) {
+        existaRemote = true;
         const meta = await probe.json();
         sha = meta.sha;
         remoteN = numaraIntrari(meta.content);
@@ -65,11 +66,17 @@ export function makeSync({ getToken, repo /* 'user/nume' */, exportFn, onStatus 
 
       // Jurnalul e append-only: ce e local ar trebui să fie SUPRASET peste ce e urcat.
       // Dacă e mai mic, ceva s-a resetat (reinstalare, alt telefon, IndexedDB golit).
-      // Atunci nu suprascriu — salvez alături, ca să nu pierd niciuna dintre versiuni.
-      if (remoteN > localN) {
-        path = `jurnale/${day}-partial-${localN}.json`;
+      // Iar dacă remote-ul există dar NU SE POATE CITI (remoteN = -1: base64 trunchiat,
+      // structură schimbată), „nu știu ce e acolo" se tratează ca „nu scriu peste" —
+      // altfel garda ceda exact în cazul pentru care a fost scrisă (audit 02.08, P5).
+      // Timestamp în numele fișierului separat: fără el, al doilea salvat-alături din
+      // aceeași zi lovea un fișier existent fără SHA → 409 → sync căzut până seara.
+      if (existaRemote && (remoteN < 0 || remoteN > localN)) {
+        path = `jurnale/${day}-partial-${localN}-${Date.now()}.json`;
         sha = undefined;
-        onStatus(`⚠ jurnal local mai mic (${localN} < ${remoteN}) — salvat separat`);
+        onStatus(remoteN < 0
+          ? '⚠ nu pot citi jurnalul deja urcat — salvez separat, nu peste'
+          : `⚠ jurnal local mai mic (${localN} < ${remoteN}) — salvat separat`);
       }
 
       const body = btoa(unescape(encodeURIComponent(JSON.stringify(dump))));
