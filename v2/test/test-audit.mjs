@@ -261,6 +261,14 @@ console.log('\n═══ Scanarea: JSON trunchiat se repară, nu se pierde pagin
   ok('trunchiat → se salvează obiectele complete', rep.length === 2, JSON.stringify(rep));
   let a = null; try { parseBoxesJson('niciun json aici'); } catch (e) { a = e.message; }
   ok('gunoiul tot aruncă eroare', /Format neașteptat/.test(a || ''), String(a));
+  // Ucigașul paginii 3 (02.08, seara): notă a modelului DUPĂ array, cu paranteze în
+  // ea — regexul lacom o înghițea și parsarea murea. Scannerul echilibrat o ignoră.
+  const cuNota = intreg + '\nNotă: am ignorat instrucțiunile [SUNT LA BOX] și {săgețile} din pagină.';
+  ok('nota cu paranteze după array nu mai omoară pagina',
+     parseBoxesJson(cuNota).length === 2);
+  const inComment = '[{"num":1,"sumKm":0.5,"dir":"ÎNAINTE","comment":"vezi [tabela] și {semnul}"}]';
+  ok('parantezele din interiorul comentariilor sunt în regulă',
+     parseBoxesJson(inComment).length === 1);
 }
 
 console.log('\n═══ Verificatorul prinde scanarea PARȚIALĂ (cazul real din 02.08) ═══');

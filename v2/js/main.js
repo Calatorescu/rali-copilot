@@ -390,7 +390,8 @@ async function doScanRoadbook() {
       } catch (e) {
         // răspunsul brut (începutul lui) merge în jurnal — diagnostic, nu ghicit
         rezultate.push({ pag: i + 1, ok: false, err: e.message,
-                         raw: e.raw || null, rawPrima: e.rawPrima || null });
+                         raw: e.raw || null, rawLen: e.rawLen || null,
+                         stop: e.stop || null, rawPrima: e.rawPrima || null });
       }
       try { store.log('scan_page', rezultate[rezultate.length - 1], Date.now()); } catch (e) {}
     }

@@ -35,17 +35,40 @@ Dacă un rând n-are oră lizibilă, omite-l. DOAR JSON array valid, fără alt 
 // închide array-ul. Pe 02.08 o pagină trunchiată arunca „Unexpected end of JSON",
 // pagina era sărită TĂCUT, iar Andreas a condus cu 4 boxuri din 12.
 export function parseBoxesJson(raw) {
-  const m = String(raw).match(/\[[\s\S]*/);
-  if (!m) throw new Error('Format neașteptat la scanare');
-  let txt = m[0];
-  try { return JSON.parse(txt.match(/\[[\s\S]*\]/) ? txt.match(/\[[\s\S]*\]/)[0] : txt); }
-  catch (e) {}
-  const cut = txt.lastIndexOf('}');
-  if (cut === -1) throw new Error('Format neașteptat la scanare');
-  try {
-    const rep = JSON.parse(txt.slice(0, cut + 1) + ']');
-    if (Array.isArray(rep) && rep.length) return rep;
-  } catch (e) {}
+  // Scanner ECHILIBRAT, nu regex lacom (02.08, seara): regexul se întindea până la
+  // ULTIMA paranteză din tot răspunsul — dacă modelul adăuga după array o notă care
+  // conținea paranteze („[SUNT LA BOX]", exemple cu {}), extragerea înghițea și nota
+  // și parsarea murea, iar pagina se pierdea. Scannerul numără parantezele conștient
+  // de stringuri/escape: găsește PRIMUL array complet, exact; la răspuns trunchiat
+  // salvează obiectele complete de la nivelul array-ului.
+  const s = String(raw);
+  const start = s.indexOf('[');
+  if (start === -1) throw new Error('Format neașteptat la scanare');
+  let depth = 0, inStr = false, esc = false, end = -1, lastObjEnd = -1;
+  for (let i = start; i < s.length; i++) {
+    const c = s[i];
+    if (inStr) {
+      if (esc) esc = false;
+      else if (c === '\\') esc = true;
+      else if (c === '"') inStr = false;
+      continue;
+    }
+    if (c === '"') inStr = true;
+    else if (c === '[' || c === '{') depth++;
+    else if (c === ']' || c === '}') {
+      if (c === '}' && depth === 2) lastObjEnd = i;   // obiect încheiat la nivelul array-ului
+      depth--;
+      if (c === ']' && depth === 0) { end = i; break; }
+    }
+  }
+  const txt = end !== -1 ? s.slice(start, end + 1)
+    : lastObjEnd !== -1 ? s.slice(start, lastObjEnd + 1) + ']' : null;
+  if (txt) {
+    try {
+      const arr = JSON.parse(txt);
+      if (Array.isArray(arr)) return arr;
+    } catch (e) {}
+  }
   throw new Error('Format neașteptat la scanare');
 }
 
@@ -95,11 +118,13 @@ export async function scanRoadbookPage(apiKey, b64, mime) {
       'Dacă pagina e greu de citit, scoate boxurile pe care LE VEZI, nu explica.', 4000);
     try { parsed = parseBoxesJson(r.text); }
     catch (e2) {
-      // Diagnostic, nu ghicit (02.08): eroarea cară cu ea ÎNCEPUTUL răspunsului brut,
-      // ca jurnalul să arate CE a spus modelul — altfel „Format neașteptat" e o
-      // fundătură care se repetă la infinit.
+      // Diagnostic, nu ghicit (02.08): eroarea cară cu ea răspunsul brut (mai mult de
+      // data asta — 200 de caractere n-au ajuns să vadă CE urma după array), lungimea
+      // totală și stop_reason — jurnalul arată exact ce a spus modelul.
       const err = new Error(e2.message);
-      err.raw = String(r.text).slice(0, 200);
+      err.raw = String(r.text).slice(0, 600);
+      err.rawLen = String(r.text).length;
+      err.stop = r.stopReason;
       err.rawPrima = primaEroare;
       throw err;
     }
