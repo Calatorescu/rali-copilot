@@ -18,8 +18,16 @@ const $ = id => document.getElementById(id);
 let store, clock, voice, ui, driver, machine = null, gps = null, plan = null, sync = null;
 let boxesRaw = [], reconRec = null;
 
+// Versiunea build-ului — se ține SINCRON cu CACHE din sw.js la fiecare deploy.
+// Vizibilă în antet și scrisă în jurnal la fiecare pornire: „ce versiune rulează
+// telefonul?" se citește, nu se ghicește (02.08, seara — nu se putea ști).
+const BUILD = 'v23';
+
 async function init() {
   store = await makeStore();
+  const av = document.getElementById('app-ver');
+  if (av) av.textContent = BUILD;
+  try { store.log('app_ver', { v: BUILD }, Date.now()); } catch (e) {}
   clock = makeClock();
   const off = parseFloat(localStorage.getItem('r2_clockoff') || '0');
   clock.setOffsetMs(off * 1000);

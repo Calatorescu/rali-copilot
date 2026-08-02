@@ -1,7 +1,7 @@
 // RALI 2 · service worker — offline-first, scope /v2/.
 // ATENȚIE la deploy: CACHE se urcă MANUAL aici (scriptul deploy-pwa urcă doar sw-ul
 // din rădăcină). Fără bump, telefonul servește versiunea veche.
-const CACHE = 'rali2-v22';
+const CACHE = 'rali2-v23';
 const ASSETS = ['./', './index.html', './app.css', './manifest.json', './icon.svg',
   './js/main.js', './js/machine.js', './js/ui.js', './js/voice.js', './js/gps.js',
   './js/geo.js', './js/pace.js', './js/route.js', './js/store.js', './js/scan.js',
