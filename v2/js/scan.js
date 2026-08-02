@@ -83,8 +83,28 @@ async function callVision(apiKey, b64, mime, prompt, maxTokens) {
 export async function scanRoadbookPage(apiKey, b64, mime) {
   // 4000, nu 1200: comentariile lungi din roadbook depășeau limita, JSON-ul ieșea
   // trunchiat și toată pagina se pierdea (02.08 — 2 pagini din 3, tăcut).
-  const r = await callVision(apiKey, b64, mime, ROADBOOK_PROMPT, 4000);
-  const boxes = sanitizeBoxes(parseBoxesJson(r.text));
+  let r = await callVision(apiKey, b64, mime, ROADBOOK_PROMPT, 4000);
+  let parsed = null, primaEroare = null;
+  try { parsed = parseBoxesJson(r.text); }
+  catch (e) {
+    primaEroare = { err: e.message, raw: String(r.text).slice(0, 200) };
+    // O reîncercare, cu instrucțiune mai apăsată: uneori modelul răspunde cu proză
+    // („nu disting clar...") în loc de array — a doua întrebare, mai strictă, trece des.
+    r = await callVision(apiKey, b64, mime,
+      ROADBOOK_PROMPT + '\nRăspunde EXCLUSIV cu array-ul JSON. Fără nicio propoziție. ' +
+      'Dacă pagina e greu de citit, scoate boxurile pe care LE VEZI, nu explica.', 4000);
+    try { parsed = parseBoxesJson(r.text); }
+    catch (e2) {
+      // Diagnostic, nu ghicit (02.08): eroarea cară cu ea ÎNCEPUTUL răspunsului brut,
+      // ca jurnalul să arate CE a spus modelul — altfel „Format neașteptat" e o
+      // fundătură care se repetă la infinit.
+      const err = new Error(e2.message);
+      err.raw = String(r.text).slice(0, 200);
+      err.rawPrima = primaEroare;
+      throw err;
+    }
+  }
+  const boxes = sanitizeBoxes(parsed);
   if (!boxes.length) throw new Error('Niciun box cu kilometraj — refotografiază pagina');
   if (r.stopReason === 'max_tokens')
     throw new Error(`Pagina e prea densă — au intrat doar ${boxes.length} boxuri, refotografiaz-o pe bucăți`);
