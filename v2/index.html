@@ -51,17 +51,14 @@
 
     <button class="btn pri big" id="btn-start">▶ START ZIUA</button>
 
+    <!-- A.R.E.S. art. 6.3: (declarat − realizat) × 2. Bateria și km-ii nu mai intră. -->
     <div class="card">
-      <p class="lbl">EFICIENȚĂ (punctele se scad din penalizări)</p>
+      <p class="lbl">EFICIENȚĂ — A.R.E.S. art. 6.3</p>
       <div class="row">
-        <button class="btn sec" id="eff-d1">Ziua 1 · ×1</button>
-        <button class="btn sec" id="eff-d2">Ziua 2 · ×2</button>
+        <input type="number" id="eff-decl" placeholder="declarat de producător" inputmode="numeric">
+        <input type="number" id="eff-cons" placeholder="realizat, de pe bord" inputmode="numeric">
       </div>
-      <div class="row">
-        <input type="number" id="eff-cons" placeholder="Wh/km de pe bord" inputmode="numeric">
-        <input type="number" id="eff-km" placeholder="km zi" inputmode="decimal">
-      </div>
-      <p id="eff-out" class="line dim">Alege ziua, pune consumul.</p>
+      <p id="eff-out" class="line dim">Declaratul se confirmă la administrative; până atunci 153 (WLTP).</p>
     </div>
 
     <div class="card">
@@ -164,8 +161,11 @@
       <p id="sync-st" class="line dim"></p>
     </div>
     <div class="card">
-      <p class="lbl">BATERIA MAȘINII (kWh) — pentru punctele de eficiență</p>
+      <p class="lbl">BATERIA MAȘINII (kWh) — utilizabil, pentru autonomie</p>
       <input type="number" id="set-batt" step="1" inputmode="numeric">
+      <p class="line dim">Model Y Juniper AWD LR: 75 utilizabil (78,1-78,4 nominal).
+        Pentru „îmi ajunge?" contează utilizabilul. Nu mai intră în punctele de
+        eficiență — A.R.E.S. art. 6.3 nu folosește capacitatea bateriei.</p>
     </div>
     <div class="card">
       <p class="lbl">VITEZĂ DIN MAȘINĂ (EXPERIMENTAL)</p>

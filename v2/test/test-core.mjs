@@ -2,7 +2,7 @@
 import { makeClock, parseRallyTime } from '../js/time.js';
 import { haversineM, buildTrace, projectOnTrace, makeOdometer, angDiff } from '../js/geo.js';
 import { idealTimeS, deviationS, recoverySpeed, slowZones, zoneLossS, bankingAdvice,
-         devProfile, worstSlices, efficiencyPoints } from '../js/pace.js';
+         devProfile, worstSlices, efficiencyPoints, efficiencyGap } from '../js/pace.js';
 import { sanitizeBoxes, detectRts, makeAnchorMap, buildPlan } from '../js/route.js';
 import { parseCommand, secRo } from '../js/voice.js';
 import { makeDriverModel } from '../js/learn.js';
@@ -87,7 +87,15 @@ console.log('═══ pace: ideal, bancă, profil ═══');
   ok('profilul pune pierderea în prima felie', prof[0].deltaS >= 2 && Math.abs(prof[3].deltaS) < 0.2,
      JSON.stringify(prof));
   ok('worstSlices o alege pe prima', worstSlices(prof, 1)[0] === prof[0]);
-  ok('eficiență Sibiu ziua 2', near(efficiencyPoints(264.79, 200, 82, 2), -53.21, 0.01));
+  // Eficiența, A.R.E.S. art. 6.3 — exemplul chiar din regulament:
+  // „Model 3 Sr 2021 are 156 wh/km consum - 100wh/km obtinuti = 56 x 2 = 112 puncte"
+  ok('exemplul oficial din regulament', near(efficiencyPoints(156, 100), 112, 0.01));
+  // Cazul real al lui Andreas pe munte: consumă mai mult decât declaratul → negativ
+  ok('consum peste declarat → puncte negative', near(efficiencyPoints(153, 200), -94, 0.01));
+  ok('cât îi lipsește până la zero', efficiencyGap(153, 200) === 47);
+  ok('când e pe plus, lipsa e zero', efficiencyGap(153, 140) === 0);
+  ok('1 Wh/km valorează exact 2 puncte',
+     near(efficiencyPoints(153, 179) - efficiencyPoints(153, 180), 2, 1e-9));
 }
 
 console.log('═══ route: sanitizare, probe, ancore ═══');

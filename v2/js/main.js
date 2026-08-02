@@ -12,6 +12,7 @@ import { makeUi, startHeaderClock } from './ui.js';
 import { scanRoadbookPage, scanTimeCard } from './scan.js';
 import { makeBleSpeed } from './ble.js';
 import { makeSync } from './sync.js';
+import { efficiencyPoints, efficiencyGap } from './pace.js';
 
 const $ = id => document.getElementById(id);
 let store, clock, voice, ui, driver, machine = null, gps = null, plan = null, sync = null;
@@ -430,31 +431,35 @@ function bind() {
       charUuid: $('ble-chr').value.trim() || undefined
     });
   });
-  // eficiența — formula Sibiu (art. 6.3.2), cu bateria din setări
+  // Bateria — acum doar pentru autonomie. Implicit 75 (utilizabil), nu 82: cifra de 82
+  // era a mea și nu e susținută de nicio sursă pentru Model Y Juniper AWD LR.
   const battInp = $('set-batt');
-  battInp.value = localStorage.getItem('r2_batt') || '82';
+  battInp.value = localStorage.getItem('r2_batt') || '75';
   battInp.addEventListener('change', () => localStorage.setItem('r2_batt', battInp.value));
-  let effMult = 1;
+
+  // Eficiența — A.R.E.S. art. 6.3. Cifra declarată se ține minte: se află o dată,
+  // la verificările administrative, și nu e sigură (sursele publice dau 148-166).
+  const declInp = $('eff-decl');
+  declInp.value = localStorage.getItem('r2_eff_decl') || '153';
   const effCalc = () => {
-    const cons = parseFloat(String($('eff-cons').value).replace(',', '.'));
-    const km = parseFloat(String($('eff-km').value).replace(',', '.'));
-    const batt = parseFloat(battInp.value) || 82;
-    if (!isFinite(cons) || !isFinite(km)) { $('eff-out').textContent = 'Alege ziua, pune consumul și km-ii.'; return; }
-    const pts = km - effMult * cons + batt;
-    $('eff-out').textContent = `${km} − ${effMult > 1 ? effMult + '×' : ''}${cons} + ${batt} = ` +
-      `${pts.toFixed(1)} → ${pts >= 0 ? 'BONUS ' + pts.toFixed(1) + ' puncte' : Math.abs(pts).toFixed(1) + ' puncte ÎN PLUS'}.` +
-      ` 1 Wh/km = ${effMult} punct${effMult > 1 ? 'e' : ''}.`;
+    const num = v => parseFloat(String(v).replace(',', '.'));
+    const decl = num(declInp.value), real = num($('eff-cons').value);
+    if (!isFinite(decl)) { $('eff-out').textContent = 'Pune consumul declarat de producător.'; return; }
+    localStorage.setItem('r2_eff_decl', String(decl));
+    if (!isFinite(real)) {
+      $('eff-out').textContent = `Declarat ${decl} Wh/km. Pune realizatul, din tabul A.R.C (meniul Trips).`;
+      return;
+    }
+    const pef = efficiencyPoints(decl, real);
+    const gap = efficiencyGap(decl, real);
+    $('eff-out').textContent = `(${decl} − ${real}) × 2 = ` +
+      (pef >= 0 ? `+${pef.toFixed(0)} puncte CÂȘTIGATE. ` : `${pef.toFixed(0)} puncte, te trag ÎN JOS. `) +
+      (gap ? `Până la zero îți trebuie ${gap} Wh/km mai puțin. ` : '') +
+      `1 Wh/km = 2 puncte. Clasament: eficiență − penalizări + bonus, câștigă cine are mai mult.`;
   };
-  const selDay = (m, kmDefault) => {
-    effMult = m;
-    $('eff-d1').classList.toggle('pri', m === 1); $('eff-d2').classList.toggle('pri', m === 2);
-    if (!$('eff-km').value) $('eff-km').value = kmDefault;
-    effCalc();
-  };
-  $('eff-d1').addEventListener('click', () => selDay(1, '173.1'));
-  $('eff-d2').addEventListener('click', () => selDay(2, '264.79'));
+  declInp.addEventListener('change', effCalc);
   $('eff-cons').addEventListener('change', effCalc);
-  $('eff-km').addEventListener('change', effCalc);
+  effCalc();
 
   window.addEventListener('beforeunload', async () => {
     await store.put('driver_model', driver.toJSON());

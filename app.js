@@ -427,6 +427,8 @@ function rtStart() {
   S.rt.segments  = rtReadSegments();
   S.rt.targetSpd = S.rt.segments[0].speed;
   S.rt.distFactor = 1 + ((parseFloat(el('rt-distcorr').value) || 0) / 100);
+  jurnal('rt_start', { dist: S.rt.totalDist, tip: S.rt.type, viteza: S.rt.targetSpd,
+                       km: Math.round(S.road.legDistKm * 100) / 100 });
   ls('rali_distcorr', String(parseFloat(el('rt-distcorr').value) || 0));
   S.rt.voiceThresh = Math.max(1, parseFloat(el('rt-voicethr').value) || 3);
   ls('rali_voicethr', String(S.rt.voiceThresh));
@@ -511,6 +513,8 @@ function rtStop(auto) {
   const measured = S.rt.distKm;
   const official = S.rt.totalDist;
   const wasActive = S.rt.active;
+  if (wasActive) jurnal('rt_stop', { auto: !!auto, masurat: Math.round(measured * 1000) / 1000,
+                                     oficial: official, km: Math.round(S.road.legDistKm * 100) / 100 });
   // STOP manual în timpul unei probe orchestrate: curăță starea de cursă,
   // altfel cockpitul rămânea pe deviere și proba se relua singură.
   if (S.road.raceRunning) {
@@ -1491,6 +1495,7 @@ function navClear() {
 function navStart() {
   if (!S.road.boxes.length) return;
   S.road.active = true; S.road.legDistKm = 0; S.road.announced = {};
+  jurnal('leg_start', { leg: S.road.leg, boxuri: S.road.boxes.length });
   // Planul de cursă: probele detectate din roadbook, cu vitezele lor.
   // De aici, orchestratorul (raceTick) conduce singur — pornire, deviere, finish, scris.
   S.road.racePlan = navDetectRts();
@@ -1529,7 +1534,51 @@ function navGpsTick(pos) {
   const acc = pos.coords.accuracy;
   // Același tratament ca la RT: precizia slabă taie doar haversine, nu tot odometrul.
   S.road.legDistKm += gpsDistKm(S.road, pos, !!(acc && acc > 60));
+  jurnal('pos', {
+    km: Math.round(S.road.legDistKm * 100) / 100,
+    kmh: pos.coords.speed != null ? Math.round(pos.coords.speed * 3.6) : null,
+    lat: r6(pos.coords.latitude), lng: r6(pos.coords.longitude),
+    accM: acc != null ? Math.round(acc) : null
+  }, 5000);
   navTurnDetect(pos);
+}
+
+// ══════════════════════════════════════════════════════════════
+//  JURNAL (portat din RALI 2, 02.08.2026)
+// ══════════════════════════════════════════════════════════════
+// v1 n-avea niciun jurnal. După tura ratată de pe bucla de la birou n-am putut
+// spune UNDE era mașina când s-a apăsat greșit un box — doar ce credea aplicația.
+// Concluzia a ieșit prin deducție, nu prin măsurătoare. Un raliu de două zile fără
+// jurnal înseamnă că orice merge prost rămâne nedemonstrabil.
+// Scris în localStorage, plafonat, exportabil din Setări.
+const JURNAL_KEY = 'rali_jurnal';
+const JURNAL_MAX = 4000;              // ~2 zile de cursă la o intrare la 5 s
+let _jurnal = null, _jurnalUlt = {};
+
+function r6(x) { return typeof x === 'number' && isFinite(x) ? Math.round(x * 1e6) / 1e6 : null; }
+
+function jurnalIncarca() {
+  if (_jurnal) return _jurnal;
+  try { const v = JSON.parse(ls(JURNAL_KEY) || '[]'); _jurnal = Array.isArray(v) ? v : []; }
+  catch (e) { _jurnal = []; }
+  return _jurnal;
+}
+
+// `throttleMs` — pentru evenimente dese (poziția). Evenimentele rare se scriu mereu.
+function jurnal(tip, date, throttleMs) {
+  try {
+    const acum = Date.now();
+    if (throttleMs) {
+      if (_jurnalUlt[tip] && acum - _jurnalUlt[tip] < throttleMs) return;
+      _jurnalUlt[tip] = acum;
+    }
+    const j = jurnalIncarca();
+    j.push(Object.assign({ t: acum, tip }, date || {}));
+    // Plafon: tăiem din față, nu oprim scrierea. Un jurnal plin care refuză să mai
+    // scrie pierde exact partea care contează — finalul zilei.
+    if (j.length > JURNAL_MAX) j.splice(0, j.length - JURNAL_MAX);
+    ls(JURNAL_KEY, JSON.stringify(j));
+  } catch (e) {}
 }
 
 // ── Resincronizare AUTOMATĂ pe viraje ──────────────────────────
@@ -1600,6 +1649,7 @@ function navTurnSnap(accDeg) {
   if (S.rt.active && Math.abs(deltaKm) < 0.5) S.rt.distKm = Math.max(0, S.rt.distKm + deltaKm);
   const key = `${box.num}_${Math.round(box.sumKm * 100)}`;
   for (let tt = 0; tt < NAV_TIERS.length; tt++) S.road.announced[key + '_t' + tt] = true;
+  jurnal('sync', { how: 'viraj', boxNum: box.num, deltaM: Math.round(deltaKm * 1000) });
   const sta = el('nav-sync-status');
   if (sta) {
     const m = Math.round(Math.abs(deltaKm) * 1000);
@@ -2519,23 +2569,78 @@ function navPrepRt() {
 // Repornire la mijloc de leg — „sunt la box N". navStart pleacă mereu de la km 0, deci
 // după o oprire (pauza de la Orlat) navigarea era inutilizabilă pentru restul leg-ului:
 // navBoxPassed acceptă doar boxul curent ±1, iar butoanele mută 10-100 m per apăsare.
+// Portat din RALI 2 (02.08.2026). Vechea versiune deschidea un prompt() gol — „La ce
+// număr de box ești acum?" — fără să spună unde crede aplicația că ești și fără nicio
+// verificare a saltului. Pe teren, o apăsare greșită a mutat poziția cu 1330 m înapoi,
+// în plină probă, tăcut: proba s-a închis retroactiv cu un rezultat fără nicio legătură
+// cu cursa. Odometrul măsurase corect sub 1%; butonul l-a stricat.
+const JUMP_PRAG_M = 400;   // peste atât, nu se execută fără confirmare
+
 function navJumpToBox() {
   if (!S.road.active || !S.road.boxes.length) return;
-  const v = prompt('La ce număr de box ești acum?');
-  if (v == null) return;
-  const n = parseInt(String(v).replace(/\D/g, ''), 10);
-  const st = el('nav-sync-status');
-  const idx = S.road.boxes.findIndex(b => b.num === n);
-  if (idx === -1) {
-    if (st) { st.textContent = `Box ${isFinite(n) ? n : '?'} nu există în leg-ul ăsta.`; st.classList.remove('hidden'); }
+  const m = el('jump-modal');
+  if (!m) return;                                   // HTML vechi din cache
+  el('jump-confirm').classList.add('hidden');
+  el('jump-now').textContent = S.road.legDistKm.toFixed(2) + ' km';
+  const urm = S.road.boxes[S.road.nextIdx];
+  el('jump-ctx').textContent = urm
+    ? `următorul box așteptat: ${urm.num}, la ${Math.round((urm.sumKm - S.road.legDistKm) * 1000)} m`
+    : 'după ultimul box din leg';
+  const lista = el('jump-list');
+  lista.textContent = '';
+  for (const c of navBoxuriApropiate(7)) {
+    const semn = c.deltaM >= 0 ? '+' : '−';
+    const a = Math.abs(c.deltaM);
+    const dist = a >= 1000 ? (a / 1000).toFixed(2) + ' km' : a + ' m';
+    const b = document.createElement('button');
+    b.className = 'btn jump-item ' + (c.idx === S.road.nextIdx ? 'btn-green' : 'btn-sec');
+    b.innerHTML = `<b>box ${c.box.num}</b> · ${semn}${dist}` +
+      `<span class="jump-com">${String(c.box.comment || '').split('/')[0].trim().slice(0, 44)}</span>`;
+    b.addEventListener('click', () => navJumpAlege(c.box.num));
+    lista.appendChild(b);
+  }
+  m.classList.remove('hidden');
+}
+
+// Boxurile plauzibile pentru poziția de acum, în ordinea din roadbook.
+function navBoxuriApropiate(n) {
+  return S.road.boxes
+    .map((box, idx) => ({ box, idx, deltaM: Math.round((box.sumKm - S.road.legDistKm) * 1000) }))
+    .sort((a, z) => Math.abs(a.deltaM) - Math.abs(z.deltaM))
+    .slice(0, n || 7)
+    .sort((a, z) => a.idx - z.idx);
+}
+
+function navJumpAlege(num, confirmat) {
+  const idx = S.road.boxes.findIndex(b => b.num === num);
+  if (idx === -1) return;
+  const box = S.road.boxes[idx];
+  const deltaM = Math.round((box.sumKm - S.road.legDistKm) * 1000);
+  // Ar rupe o probă în curs?
+  let rupe = null;
+  if (S.rt && S.rt.active) {
+    if (box.sumKm < S.road.legDistKm) rupe = 'ar da înapoi peste proba în curs';
+    else rupe = 'ar sări înainte peste proba în curs';
+  }
+  if ((Math.abs(deltaM) > JUMP_PRAG_M || rupe) && confirmat !== true) {
+    el('jump-warn').textContent =
+      `Te mută ${deltaM >= 0 ? 'ÎNAINTE' : 'ÎNAPOI'} ${Math.abs(deltaM)} m` +
+      (rupe ? ` și ${rupe}` : '') + '.';
+    el('jump-confirm').classList.remove('hidden');
+    jurnal('sync_refuzat', { boxNum: num, deltaM, rupe: rupe || null });
+    el('jump-yes').onclick = () => navJumpAlege(num, true);
+    el('jump-no').onclick = () => el('jump-confirm').classList.add('hidden');
     return;
   }
-  const box = S.road.boxes[idx];
+  jurnal('sync', { how: 'manual', boxNum: box.num, deltaM, confirmat: confirmat === true });
   S.road.legDistKm = box.sumKm;
   S.road.nextIdx = idx + 1;
   S.road.announced = {};
   S.road.lastPos = null; S.road.lastT = null;
-  if (st) { st.textContent = `✓ Poziție setată la Box ${box.num} (km ${box.sumKm.toFixed(2)})`; st.classList.remove('hidden'); }
+  const st = el('nav-sync-status');
+  if (st) { st.textContent = `✓ Poziție setată la Box ${box.num} (km ${box.sumKm.toFixed(2)}, ${deltaM >= 0 ? '+' : ''}${deltaM} m)`; st.classList.remove('hidden'); }
+  el('jump-modal').classList.add('hidden');
+  el('jump-confirm').classList.add('hidden');
   navRender();
   navPersistSession(true);
   speak(`Poziție setată la box ${box.num}.`, 2);
@@ -2779,7 +2884,10 @@ const EXPORT_KEYS = ['rali_presets', 'rali_road', 'rali_pen', 'rali_distcorr',
 function exportData() {
   const data = {};
   EXPORT_KEYS.forEach(k => { const v = ls(k); if (v != null) data[k] = v; });
-  const json = JSON.stringify({ _app: 'RALI', _ver: BUILD, _at: new Date().toISOString(), data }, null, 2);
+  // Jurnalul iese ca listă, nu ca șir în `data`: se citește direct la debrief.
+  const jurn = jurnalIncarca();
+  const json = JSON.stringify({ _app: 'RALI', _ver: BUILD, _at: new Date().toISOString(),
+                                jurnal: jurn, data }, null, 2);
   try {
     const blob = new Blob([json], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
@@ -2790,7 +2898,8 @@ function exportData() {
   } catch (e) {}
   navigator.clipboard?.writeText(json).catch(() => {});
   const s = el('set-status');
-  if (s) { s.textContent = 'Backup exportat ✓ (fără cheia API)'; setTimeout(() => { s.textContent = ''; }, 3000); }
+  if (s) { s.textContent = `Backup exportat ✓ (${jurn.length} intrări de jurnal, fără cheia API)`;
+           setTimeout(() => { s.textContent = ''; }, 4000); }
 }
 
 function importData() {
@@ -2941,6 +3050,10 @@ function bindUI() {
   // NAV offset
   el('btn-nav-passed').addEventListener('click', navBoxPassed);
   el('btn-nav-jump')?.addEventListener('click', navJumpToBox);
+  el('jump-close')?.addEventListener('click', () => {
+    el('jump-modal').classList.add('hidden');
+    el('jump-confirm').classList.add('hidden');
+  });
   el('btn-off-m100').addEventListener('click', () => navOffset(-100));
   el('btn-off-m10').addEventListener('click',  () => navOffset(-10));
   el('btn-off-p10').addEventListener('click',  () => navOffset(10));

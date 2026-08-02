@@ -288,6 +288,24 @@
         <!-- Repornire la mijloc de leg (ex. după pauza de la Orlat): fără asta, singura
              cale era 200 de apăsări pe +100m -->
         <button class="btn btn-sec" id="btn-nav-jump">⏩ Sunt la box…</button>
+        <!-- Selectorul de box (portat din RALI 2, 02.08.2026). Înainte era un prompt()
+             gol. Într-un test pe teren o apăsare greșită a mutat poziția cu 1330 m
+             înapoi, în plină probă, tăcut. Acum: poziția curentă sus, lista boxurilor
+             din jur cu distanța fiecăruia, iar corecțiile mari cer confirmare. -->
+        <div id="jump-modal" class="jump-modal hidden">
+          <div class="jump-box">
+            <span class="section-label" style="margin:0">APLICAȚIA CREDE CĂ EȘTI LA</span>
+            <p class="jump-now" id="jump-now">—</p>
+            <p class="jump-ctx" id="jump-ctx"></p>
+            <div id="jump-list"></div>
+            <div id="jump-confirm" class="hidden">
+              <p class="jump-warn" id="jump-warn"></p>
+              <button class="btn btn-red" id="jump-yes">DA, corectează</button>
+              <button class="btn btn-sec" id="jump-no">Renunț</button>
+            </div>
+            <button class="btn btn-sec" id="jump-close">Închide</button>
+          </div>
+        </div>
 
         <!-- RT direct din roadbook: scanarea recunoaște RT_START/RT_FINISH — distanța
              probei = diferența de km dintre ele, fără tastare în cursă -->

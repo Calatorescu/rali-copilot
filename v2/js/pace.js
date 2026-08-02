@@ -121,7 +121,22 @@ export function worstSlices(profile, k = 2) {
     .slice(0, k);
 }
 
-// Punctele de eficiență (Sibiu, art. 6.3.2): km − mult×Wh/km + baterie
-export function efficiencyPoints(km, whPerKm, batteryKwh, mult = 1) {
-  return km - mult * whPerKm + batteryKwh;
+// Punctele de eficiență — Regulament A.R.E.S. Rally 2026, art. 6.3.
+// Andreas a întrebat organizatorul (02.08.2026): la Sibiu se aplică regulamentul
+// A.R.E.S., NU cel particular de pe site. Formula veche era `km − mult×Wh/km + baterie`;
+// capacitatea bateriei nu mai intră deloc, iar km-ii parcurși nici atât.
+//
+//     PEF = (Wh/km declarați de producător − Wh/km realizați) × 2
+//     Clasament = PEF − penalizări + bonus  →  numărul MAI MARE câștigă
+//
+// Fiecare 1 Wh/km valorează 2 puncte, în ambele zile.
+export function efficiencyPoints(declaratWhKm, realizatWhKm) {
+  return (declaratWhKm - realizatWhKm) * 2;
+}
+
+// Câți Wh/km îți mai trebuie ca să ajungi de la punctaj negativ la zero.
+// Pe munte Model Y face 180-220 Wh/km față de 148-166 declarați, deci punctajul
+// va fi cel mai probabil negativ — cifra asta spune cât de mult, în termeni de condus.
+export function efficiencyGap(declaratWhKm, realizatWhKm) {
+  return Math.max(0, Math.round(realizatWhKm - declaratWhKm));
 }

@@ -329,6 +329,24 @@ html, body { height: 100%; overflow: hidden; background: var(--bg); color: var(-
   color: var(--green); }
 .sync-status.warn { color: var(--yellow); }
 
+/* ── SELECTOR DE BOX (portat din RALI 2) ──
+   Se apasă la volan, singur, uneori în probă: ținte mari, cifre citibile dintr-o
+   privire, iar corecțiile mari spun ce strică înainte s-o facă. */
+.jump-modal { position: fixed; inset: 0; background: rgba(0,0,0,.8); z-index: 60;
+  display: flex; align-items: center; justify-content: center; padding: 14px; }
+.jump-box { background: var(--card, #16161a); border-radius: 16px; padding: 14px;
+  width: 100%; max-width: 460px; max-height: 90vh; overflow-y: auto; }
+.jump-now { font-size: 40px; font-weight: 800; text-align: center; margin: 4px 0 2px;
+  font-variant-numeric: tabular-nums; }
+.jump-ctx { font-size: 13px; opacity: .7; text-align: center; margin-bottom: 10px; }
+.jump-item { display: block; width: 100%; text-align: left; padding: 13px 14px;
+  margin-bottom: 7px; font-size: 16px; }
+.jump-item .jump-com { display: block; font-size: 12px; font-weight: 500;
+  opacity: .65; margin-top: 3px; }
+.jump-warn { background: var(--red); color: #fff; border-radius: 10px; padding: 9px 12px;
+  font-size: 14px; font-weight: 700; text-align: center; margin: 4px 0 8px; }
+.btn-red { background: var(--red); color: #fff; }
+
 /* ── RT PRESETS ── */
 .preset-row { display: flex; gap: 8px; overflow-x: auto; scrollbar-width: none; padding-bottom: 2px; }
 .preset-row::-webkit-scrollbar { display: none; }
