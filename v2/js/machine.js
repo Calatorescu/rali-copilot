@@ -429,9 +429,14 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
       .sort((a, z) => a.idx - z.idx);
   }
 
-  function snapToBox(i, how) {
+  // `lagM` = cât a mers mașina de la locul fizic al boxului până la momentul snapului
+  // (întârzierea detectorului de viraje). Poziția devine box + lag, iar invariantul
+  // „ancora e kilometrul poziției de ACUM" ține. La apăsarea manuală lag = 0: contractul
+  // butonului e „apeși EXACT la box".
+  function snapToBox(i, how, lagM = 0) {
     const b = plan.boxes[i];
     const before = M.routeKm;
+    const snapKm = b.sumKm + lagM / 1000;
     // Boxul confirmat rămâne confirmat: desyncCheck nu mai are voie să se plângă de
     // el. La testul din 02.08 (după-amiaza), virajul de la boxul 5 a fost detectat și
     // sincronizat, apoi la 20 s — fix cât fereastra de tăcere — mașina făcuse 278 m pe
@@ -439,18 +444,18 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
     // Alarmă falsă prin construcție: distanța de la box nu spune nimic dacă virajul
     // ăla a fost DEJA făcut.
     M._confirmedIdx = Math.max(M._confirmedIdx != null ? M._confirmedIdx : -1, i);
-    // Poziția devine EXACT kilometrul boxului — fără vechiul +20 m „ca să fii după box".
-    // Cei 20 m artificiali intrau în riglă și calibrarea învăța un bias de +2,5% pe un
-    // odometru PERFECT — fix în mecanismul care există ca să scoată biasul (audit, #13).
-    // Avansarea peste box o face nextBoxIdx, nu kilometrajul mințit.
-    calibreaza(b.sumKm);                 // ÎNAINTE de a rescrie poziția
-    M.routeKm = b.sumKm;
+    // Poziția devine kilometrul boxului + lag-ul REAL de detectare (zero la apăsare
+    // manuală). Fără constante inventate (vechiul +20 m umbla la riglă — audit #13),
+    // dar și fără să te tragă în urmă cu întârzierea detectorului (tura 5).
+    calibreaza(snapKm);                  // ÎNAINTE de a rescrie poziția
+    M.routeKm = snapKm;
     if (plan.anchorMap) M.traceM = plan.anchorMap.traceM(M.routeKm);
     M.nextBoxIdx = i + 1;
     const deltaKm = M.routeKm - before;
     // rt.distKm nu se mai corectează aici: se derivă din routeKm la fiecare fix.
     driver.turnDone(b.num, clock.wall());
-    log('sync', { how, boxNum: b.num, deltaM: Math.round(deltaKm * 1000) });
+    log('sync', Object.assign({ how, boxNum: b.num, deltaM: Math.round(deltaKm * 1000) },
+                              lagM ? { lagM: Math.round(lagM) } : {}));
     tone('tick');
     // Din DAY_END se poate ieși: un salt de poziție (podea GPS, snap greșit) putea
     // declara ziua terminată fără cale de întoarcere (audit, #18).
@@ -555,7 +560,12 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
       M._quietMs += dt;
       if (M._quietMs > 2500 && Math.abs(M._turnAcc) >= 55) { trySnapTurn(M._turnAcc); M._turnAcc = 0; }
       else if (M._quietMs > 2500) M._turnAcc = 0;
-    } else { M._turnAcc += d; M._quietMs = 0; }
+    } else {
+      M._turnAcc += d; M._quietMs = 0;
+      // ultima poziție în care direcția ÎNCĂ se schimba = sfârșitul fizic al virajului;
+      // de aici se măsoară cât ai mers până când detectorul se hotărăște (vezi snapul)
+      M._turnMovePos = { lat: fix.lat, lng: fix.lng };
+    }
   }
 
   // Snap pe viraj — REGULI STRÂNSE (rescrise 2026-08-01, după testul din Dumbrăvița).
@@ -586,8 +596,19 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
       return;
     }
     M._lastSnapT = clock.mono();
-    const deltaM = Math.round((plan.boxes[best].sumKm + 0.02 - M.routeKm) * 1000);
-    snapToBox(best, 'turn');
+    // ÎNTÂRZIEREA DETECTĂRII (tura 5, 02.08): virajul se confirmă abia la ~2,5 s după
+    // ce s-a terminat — timp în care mașina a mai mers 60-130 m. Snapul care punea
+    // poziția FIX la box te trăgea sistematic în urmă cu distanța aia (−99/−133/−121 m
+    // în jurnal, la fiecare viraj), iar segmentul de calibrare pierdea aceleași bucăți
+    // (+5,2% fals la box 12). Boxul e locul VIRAJULUI; tu ești la box + cât ai mers
+    // de la terminarea lui.
+    let lagM = M._turnMovePos && M._lastPos
+      ? haversineM(M._turnMovePos.lat, M._turnMovePos.lng, M._lastPos.lat, M._lastPos.lng)
+      : (M.speedKmh / 3.6) * 2.5;
+    lagM = Math.max(0, Math.min(200, lagM));
+    const before = M.routeKm;
+    snapToBox(best, 'turn', lagM);
+    const deltaM = Math.round((M.routeKm - before) * 1000);
     if (Math.abs(deltaM) > 60)
       say(`Corectat ${deltaM > 0 ? 'înainte' : 'înapoi'} ${Math.abs(deltaM)} metri, box ${plan.boxes[best].num}.`, 2, 'sync');
   }

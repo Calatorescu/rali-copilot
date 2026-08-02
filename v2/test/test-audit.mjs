@@ -385,5 +385,41 @@ console.log('\n═══ Tura 4: recuperarea dă viteza REALĂ, fără plafon (c
      JSON.stringify(w2.said.slice(-3).map(s => s.t)));
 }
 
+console.log('\n═══ Tura 5: snapul pe viraj ține cont de întârzierea detectării ═══');
+{
+  // Jurnalul turei 5: corecții mereu ÎNAPOI și cam la fel (−99/−133/−121) — detectorul
+  // confirmă virajul la ~2,5 s după ce s-a terminat, iar snapul care punea poziția FIX
+  // la box te trăgea în urmă cu distanța parcursă între timp, la fiecare viraj.
+  const boxes = sanitizeBoxes([
+    { num: 1, sumKm: 0.00, dir: 'ÎNAINTE', flag: 'TC', comment: 'Start' },
+    { num: 2, sumKm: 0.29, dir: 'DREAPTA', comment: 'colț' },
+    { num: 3, sumKm: 1.50, dir: 'ÎNAINTE', flag: 'TC', comment: 'final' }
+  ]);
+  const { makeClock } = await import('../js/time.js');
+  let wall = 0;
+  const clock = makeClock({ now: () => wall, mono: () => wall });
+  const store = makeMemStore();
+  const m = makeMachine({ plan: buildPlan(boxes, {}, null), clock, store,
+    driver: makeDriverModel(), voice: { say() {}, tone() {}, flush() {} }, ui: { render() {} } });
+  m.start();
+  let lat = 45, lng = 21;
+  const fix = (dLatM, dLngM, hdg, spd = 12) => {
+    lat += dLatM / 111320; lng += dLngM / (111320 * Math.cos(45 * Math.PI / 180));
+    wall += 1000;
+    m.onFix({ lat, lng, tMs: wall, speedMs: spd, headingDeg: hdg, accM: 8 });
+  };
+  fix(0, 0, 0, 0);                                   // warm-up staționar
+  for (let i = 0; i < 24; i++) fix(12, 0, 0);        // 288 m spre nord, drept
+  fix(6, 6, 30); fix(4, 8, 60); fix(2, 10, 90);      // virajul de dreapta la colț
+  for (let i = 0; i < 8; i++) fix(0, 12, 90);        // ~96 m după viraj → detectorul decide
+  const sy = store.journal.find(e => e.type === 'sync' && e.how === 'turn');
+  ok('snapul pe viraj a avut loc', !!sy, JSON.stringify(store.journal.filter(e => e.type === 'sync')));
+  ok('poziția e box + distanța de după viraj, NU fix boxul',
+     m.M.routeKm > 0.29 + 0.05, m.M.routeKm.toFixed(3));
+  // detectorul decide după ~2,5 s de direcție stabilă → 3 fixuri × 12 m ≈ 36 m
+  ok('lag-ul de detectare e în jurnal, de ordinul corect', sy && sy.lagM >= 25 && sy.lagM <= 60,
+     sy && String(sy.lagM));
+}
+
 console.log(`\n──────── ${pass} trecute, ${fail} căzute ────────`);
 process.exit(fail ? 1 : 0);
