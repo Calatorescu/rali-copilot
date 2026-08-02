@@ -65,6 +65,16 @@ input { background: var(--bg); border: 1px solid var(--border); border-radius: 1
 .nx-box { font-size: 12px; color: var(--dim); }
 .nx-after { font-size: 13px; color: var(--dim); margin-top: 6px; border-top: 1px solid var(--border); padding-top: 6px; }
 
+/* Selectorul de box — se apasă la volan, deci ținte mari și cifre citibile dintr-o privire */
+.modal { position: fixed; inset: 0; background: #000c; display: flex; align-items: center;
+  justify-content: center; padding: 14px; z-index: 50; }
+.modal-box { background: var(--surf); border-radius: 16px; padding: 14px; width: 100%;
+  max-width: 460px; max-height: 90vh; overflow-y: auto; }
+.bp-item { text-align: left; padding: 13px 14px; margin-bottom: 7px; font-size: 16px; }
+.bp-item .bp-com { display: block; font-size: 12px; font-weight: 500; color: var(--dim);
+  margin-top: 3px; }
+#bp-list .btn.pri { outline: 2px solid #fff6; }
+
 .debrief { background: #0a84ff22; border-radius: 10px; padding: 9px 12px; font-size: 13px; margin-bottom: 8px; }
 .rts-line { font-size: 13px; color: var(--dim); text-align: center; margin-bottom: 8px; font-variant-numeric: tabular-nums; }
 .bignum { font-size: 44px; font-weight: 800; font-variant-numeric: tabular-nums; padding: 8px 0; }

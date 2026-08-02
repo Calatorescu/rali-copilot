@@ -87,7 +87,11 @@ console.log('\n═══ Snap greșit: nu se învață o prostie ═══');
 {
   const w = lume(1.0);
   w.condu(3.00);
-  w.m.atBox(14);            // sărim la boxul de final: raport 5,43/3,00 = absurd
+  // Sărim la boxul de final: raport 5,43/3,00 = absurd. Saltul e mare, deci de la
+  // 02.08.2026 cere confirmare — o dăm explicit, ca să testăm ce ne interesează aici:
+  // chiar și când omul confirmă o prostie, calibrarea nu are voie s-o învețe.
+  ok('un salt de 2,4 km nu se face fără confirmare', w.m.atBox(14) !== true);
+  w.m.atBox(14, true);
   ok('raportul aberant e refuzat', w.m.M.calFactor === 1, w.m.M.calFactor.toFixed(4));
   ok('refuzul e scris în jurnal, cu cifre',
      w.store.journal.some(e => e.type === 'cal_refuzat'),

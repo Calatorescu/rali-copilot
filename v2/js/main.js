@@ -315,12 +315,63 @@ function bind() {
     }
     if (sync) sync.pushNow('day_stop');
   });
-  $('btn-atbox').addEventListener('click', () => {
-    const n = prompt('La ce box ești?'); if (n != null) machine.atBox(parseInt(n, 10));
-  });
+  // ── Selectorul de box ────────────────────────────────────────────────────
+  // Se apasă la volan, singur, uneori în probă. Deci: zero tastare, poziția
+  // curentă vizibilă, distanța până la fiecare box, iar corecțiile mari spun
+  // ce strică înainte s-o facă.
+  const bp = $('boxpick');
+  const bpInchide = () => { bp.classList.add('hidden'); $('bp-confirm').classList.add('hidden'); };
+
+  function bpDeschide() {
+    const M = machine.M;
+    $('bp-now').textContent = M.routeKm.toFixed(2) + ' km';
+    const urm = machine.M.nextBoxIdx;
+    const b = plan.boxes[urm];
+    $('bp-ctx').textContent = b
+      ? `următorul box așteptat: ${b.num}, la ${Math.round((b.sumKm - M.routeKm) * 1000)} m`
+      : 'după ultimul box';
+    const lista = $('bp-list');
+    lista.textContent = '';
+    for (const c of machine.boxuriApropiate(7)) {
+      const semn = c.deltaM >= 0 ? '+' : '−';
+      const dist = Math.abs(c.deltaM) >= 1000
+        ? (Math.abs(c.deltaM) / 1000).toFixed(2) + ' km' : Math.abs(c.deltaM) + ' m';
+      const btn = document.createElement('button');
+      btn.className = 'btn bp-item' + (c.idx === urm ? ' pri' : ' sec');
+      btn.innerHTML = `<b>box ${c.box.num}</b> · ${semn}${dist}` +
+        `<span class="bp-com">${(c.box.comment || '').split('/')[0].trim().slice(0, 44)}</span>`;
+      btn.addEventListener('click', () => bpAlege(c.box.num));
+      lista.appendChild(btn);
+    }
+    bp.classList.remove('hidden');
+  }
+
+  function bpAlege(num, confirmat) {
+    const r = machine.atBox(num, confirmat);
+    if (r === true) { bpInchide(); return; }
+    if (!r) return;
+    // corecție mare sau probă în joc — se cere confirmarea, cu cifra pe ecran
+    const semn = r.deltaM >= 0 ? 'ÎNAINTE' : 'ÎNAPOI';
+    $('bp-warn').textContent =
+      `Te mută ${semn} ${Math.abs(r.deltaM)} m` + (r.rupeRt ? ` și ${r.rupeRt}` : '') + '.';
+    $('bp-confirm').classList.remove('hidden');
+    $('bp-yes').onclick = () => bpAlege(num, true);
+    $('bp-no').onclick = () => $('bp-confirm').classList.add('hidden');
+  }
+
+  $('btn-atbox').addEventListener('click', bpDeschide);
+  $('bp-close').addEventListener('click', bpInchide);
   $('btn-talk').addEventListener('click', () => {
     const ears = makeEars({ onCommand: c => {
-      if (c.cmd === 'at_box') machine.atBox(c.num);
+      if (c.cmd === 'at_box') {
+        // Pe voce nu se execută corecții mari: recunoașterea vocală greșește un
+        // număr mult mai ușor decât un deget greșește un buton dintr-o listă.
+        const r = machine.atBox(c.num);
+        if (r !== true && r) {
+          voice.say(`Boxul ${c.num} te-ar muta ${Math.abs(r.deltaM)} metri. ` +
+                    `Confirmă pe ecran, la SUNT LA BOX.`, 3, 'sync');
+        }
+      }
       else if (c.cmd === 'status') {
         const M = machine.M;
         if (M.rt) voice.say(`${secRo(Math.abs(M.rt.lastDev || 0))} ${((M.rt.lastDev || 0) >= 0) ? 'în urmă' : 'în avans'}.`, 3);

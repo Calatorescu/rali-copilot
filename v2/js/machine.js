@@ -147,7 +147,13 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
     // fiecare scriere e o tranzacție IndexedDB, iar telefonul s-a blocat.
     if (!M._lastPosLog || clock.mono() - M._lastPosLog >= 5000) {
       M._lastPosLog = clock.mono();
-      log('pos', { routeKm: r2(M.routeKm), kmh: Math.round(M.speedKmh) });
+      // Coordonatele intră în jurnal, nu doar kilometrajul. Fără ele, un debrief nu
+      // poate verifica NIMIC — pe 02.08.2026 n-am putut spune unde era mașina când
+      // s-a apăsat greșit un box, doar ce credea aplicația. Deducție, nu măsurătoare.
+      // 6 zecimale = ~0,1 m, mai mult decât precizia oricărui GPS de telefon.
+      log('pos', { routeKm: r2(M.routeKm), kmh: Math.round(M.speedKmh),
+                   lat: r6(fix.lat), lng: r6(fix.lng),
+                   accM: fix.accM != null ? Math.round(fix.accM) : null });
     }
     ui.render(M, plan);
   }
@@ -331,12 +337,45 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
   }
 
   // ── resincronizarea: butonul/vocea „sunt la box N" + virajele detectate ──
-  function atBox(num) {
+  // Ce s-ar întâmpla dacă am sări la boxul `num` — CALCULAT, nu executat.
+  // Interfața cere confirmare pe baza asta. Lecția din 02.08.2026: o apăsare greșită
+  // a mutat poziția cu 1330 m înapoi, în plină probă, tăcut. Odometrul era corect;
+  // butonul l-a stricat. O corecție mare trebuie să spună CE strică, înainte s-o facă.
+  function previzualizeazaBox(num) {
     const i = plan.boxes.findIndex(b => b.num === num);
-    if (i === -1) { say(`Boxul ${num} nu există.`, 2); return false; }
-    snapToBox(i, 'manual');
+    if (i === -1) return null;
+    const b = plan.boxes[i];
+    const deltaM = Math.round(((b.sumKm + 0.02) - M.routeKm) * 1000);
+    // Ar închide o probă în curs? (saltul ar trece peste linia de finiș)
+    let rupeRt = null;
+    if (M.rt) {
+      const fin = M.rt.def.finishKm;
+      if (M.routeKm < fin && b.sumKm + 0.02 >= fin) rupeRt = `ar ÎNCHIDE ${M.rt.def.name}`;
+      else if (b.sumKm + 0.02 < M.rt.def.startKm) rupeRt = `ar scoate mașina din ${M.rt.def.name}`;
+    }
+    return { idx: i, box: b, deltaM, mare: Math.abs(deltaM) > 400, rupeRt };
+  }
+
+  function atBox(num, confirmat) {
+    const p = previzualizeazaBox(num);
+    if (!p) { say(`Boxul ${num} nu există.`, 2); return false; }
+    // Peste 400 m sau cu o probă în joc: nu se execută fără confirmare explicită.
+    if ((p.mare || p.rupeRt) && confirmat !== true) {
+      log('sync_refuzat', { boxNum: num, deltaM: p.deltaM, rupeRt: p.rupeRt || null });
+      return p;                      // interfața primește datele și întreabă
+    }
+    snapToBox(p.idx, 'manual');
     say(`Setat box ${num}.`, 2);
     return true;
+  }
+
+  // Boxurile plauzibile pentru poziția de acum, cel mai apropiat primul.
+  function boxuriApropiate(n = 6) {
+    return plan.boxes
+      .map((b, i) => ({ box: b, idx: i, deltaM: Math.round((b.sumKm - M.routeKm) * 1000) }))
+      .sort((a, z) => Math.abs(a.deltaM) - Math.abs(z.deltaM))
+      .slice(0, n)
+      .sort((a, z) => a.idx - z.idx);
   }
 
   function snapToBox(i, how) {
@@ -499,7 +538,7 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
 
   // ── API public ────────────────────────────────────────────────────────────
   return {
-    M, onFix, atBox, setTcSchedule,
+    M, onFix, atBox, setTcSchedule, previzualizeazaBox, boxuriApropiate,
     start() {
       M.state = 'LIAISON';
       odo.reset();
@@ -556,3 +595,4 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
 
 function r2(x) { return Math.round(x * 100) / 100; }
 function r3(x) { return Math.round(x * 1000) / 1000; }
+function r6(x) { return typeof x === 'number' && isFinite(x) ? Math.round(x * 1e6) / 1e6 : null; }

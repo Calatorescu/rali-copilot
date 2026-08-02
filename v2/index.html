@@ -107,6 +107,26 @@
 
     <div class="row">
       <button class="btn ok big grow" id="btn-atbox">✓ SUNT LA BOX…</button>
+      <!-- Selectorul de box. Înainte era un prompt() gol: „La ce box ești?", fără
+           să spună unde crede aplicația că ești. Pe 02.08.2026 o apăsare greșită a
+           mutat poziția cu 1330 m, în probă, tăcut. Acum: poziția curentă sus, lista
+           boxurilor din jur cu distanța fiecăruia, iar corecțiile mari cer confirmare. -->
+      <div id="boxpick" class="modal hidden">
+        <div class="modal-box">
+          <p class="lbl center">APLICAȚIA CREDE CĂ EȘTI LA</p>
+          <p class="bignum center" id="bp-now">—</p>
+          <p class="line dim center" id="bp-ctx"></p>
+          <div id="bp-list"></div>
+          <div id="bp-confirm" class="hidden">
+            <p class="warnband" id="bp-warn"></p>
+            <div class="row">
+              <button class="btn danger grow" id="bp-yes">DA, corectează</button>
+              <button class="btn sec grow" id="bp-no">Renunț</button>
+            </div>
+          </div>
+          <button class="btn sec" id="bp-close">Închide</button>
+        </div>
+      </div>
       <button class="btn sec big" id="btn-talk">🎤</button>
     </div>
     <button class="btn danger" id="btn-stop">■ STOP ZIUA</button>
