@@ -63,8 +63,10 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
   }
 
   function tcTick() {
+    let urmator = null;
     for (const tc of M.tcs) {
       if (tc.rallyMs == null || tc.km == null || tc.km <= M.routeKm) continue;
+      if (!urmator || tc.rallyMs < urmator.rallyMs) urmator = tc;
       const minLeft = (tc.rallyMs - clock.rally()) / 60000;
       const kmLeft = tc.km - M.routeKm;
       const v = Math.max(15, M.speedKmh || 25);
@@ -78,10 +80,22 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
         }
       }
     }
+    // Banda permanentă de pe ecran (propunerea 4): avertizările vocale se pot pierde
+    // în coadă — cifra de TC trebuie să existe și vizual, tot timpul.
+    if (urmator) {
+      const minLeft = (urmator.rallyMs - clock.rally()) / 60000;
+      const kmLeft = urmator.km - M.routeKm;
+      const v = Math.max(15, M.speedKmh || 25);
+      M.tcBand = { name: urmator.name, minLeft, kmLeft, ok: (kmLeft / v) * 60 <= minLeft - 0.3 };
+    } else M.tcBand = null;
   }
 
   // ── poziția ───────────────────────────────────────────────────────────────
   function onFix(fix) {
+    // După o gaură lungă de GPS, tick() a avansat deja poziția pe estimare —
+    // odometrul NU are voie să adune și el aceeași gaură (fixul nou vs. cel vechi).
+    if (M._lastFixMono != null && clock.mono() - M._lastFixMono > 15000) odo.reset();
+    M._lastFixMono = clock.mono();
     M._lastPos = { lat: fix.lat, lng: fix.lng };
     // Prima ancoră geografică = primul fix după START. La start() poziția încă nu e
     // cunoscută (n-a venit niciun fix), deci se pune aici — altfel poziția absolută
@@ -138,6 +152,11 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
       M.rt.distKm = Math.max(0, M.routeKm - M.rt.def.startKm);
       rtTick();
     }
+    // Navigația vorbește în TOATE stările active — inclusiv în probă. Versiunea veche
+    // anunța virajele doar în legătură: în RT_RUN pilotul ținea viteza pe drum
+    // necunoscut și nimeni nu-i mai spunea unde se virează, iar ecranul îngheța pe
+    // boxul de start toată proba. (Audit 02.08, #2.)
+    if (M.state !== 'PREP' && M.state !== 'DAY_END') { announceBoxes(); desyncCheck(); }
     // STAGED e tot „legătură" din punctul de vedere al tick-ului: fără el aici,
     // plecarea de pe linia standing n-ar mai porni proba niciodată (prins de teste).
     if (M.state === 'LIAISON' || M.state === 'STAGED') liaisonTick();
@@ -159,10 +178,8 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
   }
 
   // ── legătura ──────────────────────────────────────────────────────────────
+  // (announceBoxes/desyncCheck au urcat în onFix — rulează în toate stările active)
   function liaisonTick() {
-    announceBoxes();
-    desyncCheck();
-
     const rt = plan.rts[M.rtIdx];
     if (!rt) {
       if (plan.totalKm && M.routeKm >= plan.totalKm - 0.03 && M.state !== 'DAY_END') dayEnd();
@@ -186,7 +203,9 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
     }
 
     if (rt.type === 'standing') {
-      if (!M._staged && Math.abs(dTo) <= 0.04 && M.speedKmh < 5) {
+      // fereastra de armare: ±100 m, nu ±40 — poziția crezută poate fi cu zeci de metri
+      // pe lângă la sosirea la linie, iar o linie ne-armată = cronometrul pornește greșit
+      if (!M._staged && Math.abs(dTo) <= 0.10 && M.speedKmh < 5) {
         M._staged = true; M.state = 'STAGED';
         say('La linie. Pornesc când pleci.', 3, 'race');
         ui.render(M, plan);
@@ -208,16 +227,24 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
     const nowM = Math.max(25, driver.leadM(M.speedKmh || 30));  // anticipare personalizată
 
     const tiers = [...TIERS_M, nowM].sort((a, b2) => b2 - a);
-    for (let ti = 0; ti < tiers.length; ti++) {
-      const isNow = ti === tiers.length - 1;
-      if (dM <= tiers[ti] && !M._ann[key + '_' + ti]) {
-        for (let j = ti; j < tiers.length; j++) M._ann[key + '_' + j] = true;
-        if (!silent) {
-          say(turnText(b, dM, isNow), (isNow || M.rt) ? 3 : 2, 'turn');
-          if (isNow) { driver.cueGiven(b.num, clock.wall()); log('cue', { boxNum: b.num }); }
-        }
-        break;
-      }
+    // Se alege treapta cea mai APROPIATĂ care se aplică și nu s-a rostit — dacă apari
+    // direct lângă box (repornire, salt) primești „acum", nu „în 300" (#23).
+    let ti = -1;
+    for (let j = tiers.length - 1; j >= 0; j--) {
+      if (dM <= tiers[j] && !M._ann[key + '_' + j]) { ti = j; break; }
+    }
+    if (ti === -1) return;
+    const isNow = ti === tiers.length - 1;
+    // Se marchează treapta aleasă și cele mai DEPĂRTATE — nu cele apropiate. Versiunea
+    // veche le bifa pe cele apropiate: fiecare box era anunțat O DATĂ, la ~290 m, iar
+    // „acum" nu se rostea NICIODATĂ — la 50 km/h, 21 de secunde de tăcere în care
+    // pilotul trebuia să țină minte. Și modelul șoferului era mort: cueGiven nu se
+    // apela deloc. (Audit 02.08, #3.)
+    for (let j = 0; j <= ti; j++) M._ann[key + '_' + j] = true;
+    if (!silent) {
+      // „acum" = prio 4: întrerupe orice și nu expiră repede (audit, #9)
+      say(turnText(b, dM, isNow), isNow ? 4 : (M.rt ? 3 : 2), 'turn');
+      if (isNow) { driver.cueGiven(b.num, clock.wall()); log('cue', { boxNum: b.num }); }
     }
   }
 
@@ -253,15 +280,25 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
     M.rt = { def: rt, t0Mono: clock.mono(), t0Rally: clock.rally(), distKm: 0, log: [], frozen: null };
     // Retro-datarea CEASULUI la linie: GPS-ul bate la ~1 s, deci trecerea se observă
     // cu câțiva metri întârziere. Distanța nu se mai atinge — se derivă din routeKm.
+    // PLAFONAT (audit 02.08, #14): după o gaură de GPS, „podeaua" poate împinge poziția
+    // cu sute de metri într-un singur fix — retro-datarea aia nu mai e o corecție de
+    // sampling, e o fabricație de 16 secunde. Peste plafon, proba pornește de ACUM și
+    // pilotul e anunțat că startul e estimat.
     if (overshootKm > 0.001 && M.speedKmh > 10) {
-      M.rt.t0Mono -= (overshootKm * 1000 / (M.speedKmh / 3.6)) * 1000;
+      const backMs = (overshootKm * 1000 / (M.speedKmh / 3.6)) * 1000;
+      if (overshootKm <= 0.15 && backMs <= 5000) M.rt.t0Mono -= backMs;
+      else {
+        log('rt_start_estimat', { overshootM: Math.round(overshootKm * 1000), backMs: Math.round(backMs) });
+        say('Start estimat — am pierdut linia, verifică.', 3, 'race');
+      }
     }
-    // Linia de start devine ancoră GEOGRAFICĂ: pe probă, unde precizia decide puncte,
-    // poziția pleacă de aproape de zero eroare. Dar NU e ancoră de calibrare — linia e
-    // o poziție DEDUSĂ (din odometru), nu un box confirmat fizic. Dacă am reseta și
-    // rigla aici, am măsura odometrul cu o riglă tăiată chiar de el.
-    ancoreazaGeo(rt.startKm);
-    say(`Start. Ține ${rt.kmh}.`, 3, 'race');
+    // Poziția de ACUM devine ancoră GEOGRAFICĂ. Invariantul e „_anchorKm este
+    // kilometrul din _anchorPos" — versiunea veche punea kilometrul LINIEI pe poziția
+    // de DUPĂ linie, iar regula „drum drept" încuia proba cu ~25 m în urmă permanent:
+    // +2,2 s de deviere fabricată la 40 km/h, la fiecare start din mers (audit, #7).
+    // Ancora de calibrare NU se atinge: linia e poziție dedusă, nu box confirmat.
+    ancoreazaGeo(M.routeKm);
+    say(`Start. Ține ${rt.kmh}.`, 4, 'race');
     tone('ok');
     log('rt_start', { rtIdx: M.rtIdx, name: rt.name, kmh: rt.kmh });
     ui.render(M, plan);
@@ -278,7 +315,7 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
     // linia calculată: îngheață devierea (nu opri lângă tabele — doar cifra îngheață)
     if (rt.frozen == null && rt.distKm >= def.distKm) {
       rt.frozen = dev;
-      say(`Finish. ${secRo(Math.abs(dev))} ${dev >= 0 ? 'în urmă' : 'în avans'}. Nu opri lângă tabelă.`, 3, 'race');
+      say(`Finish. ${secRo(Math.abs(dev))} ${dev >= 0 ? 'în urmă' : 'în avans'}. Nu opri lângă tabelă.`, 4, 'race');
     }
 
     // starea continuă prin TONURI, nu prin propoziții: la fiecare ~4 s, un semn scurt
@@ -308,7 +345,7 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
     const deb = makeDebrief(def, rt.log, finalDev);
     M.results[def.name] = deb.pts;
     log('rt_result', { rtIdx: M.rtIdx, name: def.name, pts: deb.pts, finalDevS: deb.finalDevS, worst: deb.lines });
-    say(`Gata. ${secRo(Math.abs(finalDev))} ${finalDev >= 0 ? 'în urmă' : 'în avans'}.`, 3, 'race');
+    say(`Gata. ${secRo(Math.abs(finalDev))} ${finalDev >= 0 ? 'în urmă' : 'în avans'}.`, 4, 'race');
     M.lastDebrief = deb;
 
     // indexul sare pe boxul de după linia de finish — virajul următor se anunță IMEDIAT
@@ -359,8 +396,11 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
   function atBox(num, confirmat) {
     const p = previzualizeazaBox(num);
     if (!p) { say(`Boxul ${num} nu există.`, 2); return false; }
-    // Peste 400 m sau cu o probă în joc: nu se execută fără confirmare explicită.
-    if ((p.mare || p.rupeRt) && confirmat !== true) {
+    // Confirmare la: salt peste 400 m, salt care atinge liniile probei, sau ORICE salt
+    // cu proba în curs (audit, #8) — un −112 m tăcut în probă schimbă devierea afișată
+    // cu zeci de secunde și pilotul reacționează la o cifră falsă. v1 era deja strict
+    // aici; v2 devine la fel.
+    if ((p.mare || p.rupeRt || M.rt) && confirmat !== true) {
       log('sync_refuzat', { boxNum: num, deltaM: p.deltaM, rupeRt: p.rupeRt || null });
       return p;                      // interfața primește datele și întreabă
     }
@@ -381,9 +421,12 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
   function snapToBox(i, how) {
     const b = plan.boxes[i];
     const before = M.routeKm;
-    const target = b.sumKm + 0.02;
-    calibreaza(target);                  // ÎNAINTE de a rescrie poziția
-    M.routeKm = target;
+    // Poziția devine EXACT kilometrul boxului — fără vechiul +20 m „ca să fii după box".
+    // Cei 20 m artificiali intrau în riglă și calibrarea învăța un bias de +2,5% pe un
+    // odometru PERFECT — fix în mecanismul care există ca să scoată biasul (audit, #13).
+    // Avansarea peste box o face nextBoxIdx, nu kilometrajul mințit.
+    calibreaza(b.sumKm);                 // ÎNAINTE de a rescrie poziția
+    M.routeKm = b.sumKm;
     if (plan.anchorMap) M.traceM = plan.anchorMap.traceM(M.routeKm);
     M.nextBoxIdx = i + 1;
     const deltaKm = M.routeKm - before;
@@ -391,6 +434,13 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
     driver.turnDone(b.num, clock.wall());
     log('sync', { how, boxNum: b.num, deltaM: Math.round(deltaKm * 1000) });
     tone('tick');
+    // Din DAY_END se poate ieși: un salt de poziție (podea GPS, snap greșit) putea
+    // declara ziua terminată fără cale de întoarcere (audit, #18).
+    if (M.state === 'DAY_END') M.state = 'LIAISON';
+    // Starea de probă se re-evaluează imediat: dacă snapul te-a pus chiar pe linia
+    // unei probe standing și stai pe loc, intri în STAGED acum, nu „poate la fixul
+    // următor" — altfel cronometrul pornea cu ~4 s înaintea mașinii (audit, #15).
+    if (M.state === 'LIAISON' || M.state === 'STAGED') liaisonTick();
     ui.render(M, plan);
   }
 
@@ -540,8 +590,16 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
   return {
     M, onFix, atBox, setTcSchedule, previzualizeazaBox, boxuriApropiate,
     start() {
+      // ZI (sau leg) NOUĂ, explicit și complet — nu jumătate de reset. Versiunea veche
+      // reseta ancorele dar NU și routeKm: după STOP la km 3,18 + START, ancora spunea
+      // „km 0 e aici", iar regula „drum drept" teleporta mașina înapoi la 0,25 și o
+      // încuia acolo (audit 02.08, #4). Contractul lui START e „ești fizic la boxul 1".
       M.state = 'LIAISON';
       odo.reset();
+      M.routeKm = 0; M.traceM = null; M._projMiss = 0;
+      M.rtIdx = 0; M.rt = null; M.nextBoxIdx = 0; M.results = {}; M.lastDebrief = null;
+      M._ann = {}; M._staged = false; M._warnedRt = {}; M._desyncSaid = null;
+      M._lastFixMono = null; M._gpsLostSaid = false;
       M.calFactor = 1; M._rawSinceAnchor = 0; M._calAnchorKm = 0; M._anchorKm = 0;
       M._calN = 0; M._calOficial = 0; M._calMasurat = 0;
       // linia de start e prima ancoră geografică: de aici încolo poziția absolută lucrează
@@ -556,10 +614,49 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
       ui.render(M, plan);
     },
     stop() {
-      if (M.rt) rtFinish();
+      // O probă întreruptă cu STOP nu se „închide" cu un rezultat — ar intra în
+      // clasament o cifră care descrie apăsarea butonului, nu condusul (audit, #12).
+      // Se abandonează explicit, marcat în jurnal.
+      if (M.rt) {
+        log('rt_abandon', { rtIdx: M.rtIdx, name: M.rt.def.name,
+                            laKm: r2(M.rt.distKm), dinKm: M.rt.def.distKm });
+        say(`${M.rt.def.name} abandonată.`, 2);
+        M.rt = null;
+      }
       M.state = 'PREP';
       voice.flush();
       log('day_stop', {});
+      ui.render(M, plan);
+    },
+    // Bătaia de inimă INDEPENDENTĂ de GPS (audit, #5). Tot ceasul intern bătea doar pe
+    // fixuri: în tunel sau cu fluxul GPS mort, proba nu se mai închidea niciodată, iar
+    // TC-urile nu mai avertizau nici cu mașina oprită lângă control. main.js o apelează
+    // la fiecare secundă; testele o pot apela direct.
+    tick() {
+      if (M.state === 'PREP') return;
+      const now = clock.mono();
+      const stale = M._lastFixMono != null && now - M._lastFixMono > 15000;
+      if (stale && !M._gpsLostSaid) {
+        M._gpsLostSaid = true;
+        say(M.rt ? 'GPS pierdut în probă. Merg pe estimare.' : 'GPS pierdut.', 3, 'gps');
+        log('gps_stale', { deS: Math.round((now - M._lastFixMono) / 1000), inRt: !!M.rt });
+      }
+      if (!stale) M._gpsLostSaid = false;
+      if (M.rt) {
+        // fără fixuri, poziția avansează pe ESTIMARE cu viteza țintă a probei — marcat
+        // în jurnal; altfel proba rămânea deschisă pe vecie și restul zilei era mut
+        if (stale) {
+          const dtS = (now - (M._lastEstMono || M._lastFixMono)) / 1000;
+          M._lastEstMono = now;
+          if (dtS > 0 && dtS < 10 && M.rt.def.kmh) {
+            M.routeKm += (M.rt.def.kmh / 3600) * dtS;
+            M.rt.distKm = Math.max(0, M.routeKm - M.rt.def.startKm);
+            log('pos_estimat', { routeKm: r2(M.routeKm) });
+          }
+        } else M._lastEstMono = null;
+        rtTick();
+      }
+      tcTick();
       ui.render(M, plan);
     },
     extSpeed(kmh) { M._extSpeedKmh = kmh; M._extSpeedT = clock.mono(); },   // priza BLE

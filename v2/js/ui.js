@@ -64,6 +64,26 @@ export function makeUi() {
         (plan.rts[M.rtIdx] === r && M.state === 'RT_RUN') ? `▶${r.name}` : r.name
       ).join('  ');
 
+      // banda TC — permanentă cât există un control orar în față (propunerea 4)
+      const tb = $('cp-tcband');
+      if (tb) {
+        if (M.tcBand) {
+          const m = Math.max(0, M.tcBand.minLeft);
+          const mm = Math.floor(m), ss = String(Math.floor((m - mm) * 60)).padStart(2, '0');
+          tb.textContent = `${M.tcBand.name} în ${mm}:${ss} · ${M.tcBand.kmLeft.toFixed(1)} km · ` +
+                           (M.tcBand.ok ? 'ești bine' : 'STRÂNGE');
+          tb.className = 'tcband ' + (M.tcBand.ok ? 'ok' : 'bad');
+        } else tb.className = 'tcband hidden';
+      }
+
+      // final de leg: dacă mai există un leg, butonul de trecere apare chiar aici
+      const nl = $('cp-nextleg-btn') || $('btn-nextleg');
+      if (nl) {
+        const arata = M.state === 'DAY_END' && plan.nextLegKey;
+        nl.classList.toggle('hidden', !arata);
+        if (arata) nl.textContent = `▶ ${plan.nextLegLabel || 'LEG URMĂTOR'}`;
+      }
+
       // debrief după probă
       const deb = $('cp-debrief');
       if (M.lastDebrief && M.state !== 'RT_RUN') {

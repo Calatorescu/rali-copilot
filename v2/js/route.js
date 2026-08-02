@@ -18,6 +18,35 @@ export function legKey(b) {
   return `${d}|${l}`;
 }
 
+export function legLabel(key) {
+  const [d, l] = String(key).split('|');
+  if (d === '?' && l === '?') return 'fără antet';
+  return (d !== '?' ? `Ziua ${d} · ` : '') + (l !== '?' ? `Leg ${l}` : 'leg necunoscut');
+}
+
+// Gruparea pe leg-uri — lecția plătită de v1 și pierdută la rescrierea v2 (audit, #1):
+// numerotarea boxurilor ȘI kilometrajul REPORNESC la fiecare leg (măsurat pe Reșița:
+// Leg 2 are boxurile 28-36 la 7-8 km, Leg 3 are 28-30 la 35-36 km). Sortate global pe
+// sumKm, două leg-uri ies împletite: probele se împerechează între leg-uri, totalKm e
+// al altui leg, iar aplicația conduce pe un traseu care nu există. Planul se face pe
+// UN SINGUR leg; grupurile de aici alimentează selectorul și trecerea la leg-ul următor.
+export function groupByLeg(boxes) {
+  const map = new Map();
+  for (const b of (Array.isArray(boxes) ? boxes : [])) {
+    const k = legKey(b);
+    if (!map.has(k)) map.set(k, []);
+    map.get(k).push(b);
+  }
+  const rank = k => { const [d, l] = String(k).split('|');
+    return [d === '?' ? 1e6 : +d, l === '?' ? 1e6 : +l]; };
+  return [...map.entries()]
+    .sort((a, z) => { const ra = rank(a[0]), rz = rank(z[0]); return ra[0] - rz[0] || ra[1] - rz[1]; })
+    .map(([key, list]) => ({
+      key, label: legLabel(key),
+      boxes: [...list].sort((a, b) => a.sumKm - b.sumKm)
+    }));
+}
+
 // Sanitizarea ieșirii din scanare — granița de încredere (răspunsul AI = conținut
 // extern derivat dintr-o poză a unui document tipărit de altcineva).
 const DIR_OK = new Set([...TURN_DIRS, 'ÎNAINTE', 'STOP-CFR']);
@@ -37,6 +66,48 @@ export function sanitizeBoxes(raw) {
   })).filter(b => b.sumKm !== null);
   out.sort((a, b) => a.sumKm - b.sumKm);
   return out;
+}
+
+// ── Verificatorul de roadbook (propunerea 1 din audit, 02.08.2026) ──────────
+// Erorile scanării se prind PARCAT, nu la 40 km/h: primul test de teren a eșuat
+// din distanțe greșite pe care nimeni nu le-a verificat înainte de plecare.
+// Primește TOATE boxurile scanate; verifică fiecare leg separat.
+export function verifyRoadbook(allBoxes) {
+  const probleme = [];
+  const grupuri = groupByLeg(allBoxes);
+  for (const g of grupuri) {
+    const b = g.boxes, unde = g.label;
+    // km-ul trebuie să crească strict — dubluri sau regresii = boxuri citite greșit
+    for (let i = 1; i < b.length; i++) {
+      const sec = b[i].sumKm - b[i - 1].sumKm;
+      if (sec <= 0)
+        probleme.push(`${unde}: boxurile ${b[i - 1].num} și ${b[i].num} au același km (${b[i].sumKm}) sau merg înapoi`);
+      else if (sec > 8)
+        probleme.push(`${unde}: salt de ${sec.toFixed(1)} km între boxurile ${b[i - 1].num} și ${b[i].num} — pagină lipsă?`);
+    }
+    // numerele de box: o gaură în serie = o pagină sau un rând nescanat
+    const nums = b.map(x => x.num).filter(n => n != null);
+    for (let i = 1; i < nums.length; i++) {
+      const gol = nums[i] - nums[i - 1];
+      if (gol > 1) probleme.push(`${unde}: lipsesc boxurile ${nums[i - 1] + 1}–${nums[i] - 1} (între ${nums[i - 1]} și ${nums[i]})`);
+      else if (gol < 0) probleme.push(`${unde}: boxul ${nums[i]} vine după ${nums[i - 1]} — numerotare încurcată`);
+    }
+    // box mut: fără direcție și fără flag — scanarea n-a înțeles căsuța
+    for (const x of b) {
+      if (!x.dir && !x.flag) probleme.push(`${unde}: boxul ${x.num} n-are nici direcție, nici semn — verifică pagina`);
+    }
+    // probele: fiecare START își are FINISH-ul?
+    let deschise = 0;
+    for (const x of b) {
+      if (x.flag === 'RT_START_AUTO' || x.flag === 'RT_START_STANDING') deschise++;
+      else if (x.flag === 'RT_FINISH') {
+        if (deschise === 0) probleme.push(`${unde}: FINISH de probă (box ${x.num}) fără START înaintea lui`);
+        else deschise--;
+      }
+    }
+    if (deschise > 0) probleme.push(`${unde}: ${deschise} probă/e cu START fără FINISH`);
+  }
+  return { probleme, legs: grupuri.map(g => ({ key: g.key, label: g.label, boxuri: g.boxes.length })) };
 }
 
 // Probele, detectate din flag-uri; viteza din comentariu dacă organizatorul a scris-o.

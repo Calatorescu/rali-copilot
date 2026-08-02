@@ -10,42 +10,69 @@
 //  • URECHI — push-to-talk: „sunt la box 12", „cât am", „viteza".
 // Tot modulul e injectabil: testele îi dau un difuzor fals și citesc ce s-ar fi spus.
 
-export function makeVoice({ tts = null, audio = null, now = () => Date.now() } = {}) {
+// Treptele de prioritate (audit 02.08, #9):
+//   1-2 = context (debrief, sfaturi) · 3 = important (TC, pacing, desync)
+//   4 = IMEDIAT: manevre „acum", rezultatul probei — întrerupe orice și nu expiră
+//       repede. Înainte, totul important era 3, iar mesajele de 3 se ucideau între
+//       ele: un „dreapta acum" pus în spatele unui anunț lung de TC era ARUNCAT.
+export function makeVoice({ tts = null, audio = null, now = () => Date.now(), onDrop = null } = {}) {
   const q = [];
-  let cur = null, curAt = 0;
+  let cur = null, curAt = 0, last = null;
 
   const T = tts || defaultTts();
   const A = audio;   // AudioContext factory — null în teste
+
+  const drop = (m, de) => { if (onDrop) try { onDrop(m.text, de); } catch (e) {} };
+
+  function ttl(m) {
+    if (m.prio >= 4) return 12000;          // manevrele imediate nu se aruncă ușor
+    if (m.cat === 'turn') return 8000;      // un viraj „stătut" tot e mai bun decât tăcerea
+    return m.prio >= 3 ? 3500 : 5000;
+  }
 
   function pump() {
     if (cur || !q.length) return;
     const nowMs = now();
     for (let i = q.length - 1; i >= 0; i--) {
-      if (nowMs - q[i].at > (q[i].prio >= 3 ? 3500 : 5000)) q.splice(i, 1);
+      if (nowMs - q[i].at > ttl(q[i])) drop(q.splice(i, 1)[0], 'expirat');
     }
     if (!q.length) return;
     let idx = 0;
     for (let i = 1; i < q.length; i++) if (q[i].prio > q[idx].prio) idx = i;
     cur = q.splice(idx, 1)[0];
     curAt = nowMs;
+    last = { text: cur.text, at: nowMs };    // pentru butonul REPETĂ
     T.speak(cur.text, () => { cur = null; pump(); });
   }
 
-  // watchdog: pe Android, onend poate să nu vină; nu lăsăm vocea să moară pe zi
+  // Watchdog: pe Android, onend poate să nu vină. Iar `speechSynthesis.speaking`
+  // poate rămâne true LA NESFÂRȘIT (bug cunoscut) — condiția veche `!T.busy()`
+  // însemna că un TTS agățat amuțea vocea pe tot restul zilei (audit, #17).
+  // După 2× durata estimată se taie forțat, indiferent ce pretinde difuzorul.
   const wdId = setInterval(() => {
-    if (cur && now() - curAt > Math.max(6000, cur.text.length * 90) && !T.busy()) {
-      cur = null; pump();
-    }
+    if (!cur) { T.keepAlive && T.keepAlive(); return; }
+    const estMs = Math.max(6000, cur.text.length * 90);
+    const varsta = now() - curAt;
+    if (varsta > estMs && !T.busy()) { cur = null; pump(); }
+    else if (varsta > estMs * 2) { T.cancel(); cur = null; pump(); }
     T.keepAlive && T.keepAlive();
   }, 2000);
 
   return {
     say(text, prio = 2, cat = null) {
       if (!text) return;
-      if (cat) for (let i = q.length - 1; i >= 0; i--) if (q[i].cat === cat) q.splice(i, 1);
-      if (cur && prio > cur.prio) { T.cancel(); cur = null; }
+      if (cat) for (let i = q.length - 1; i >= 0; i--)
+        if (q[i].cat === cat) drop(q.splice(i, 1)[0], 'inlocuit');
+      if (cur && prio > cur.prio) { T.cancel(); drop(cur, 'intrerupt'); cur = null; }
       q.push({ text, prio, cat, at: now() });
       pump();
+    },
+    // ultimul mesaj rostit — butonul REPETĂ de pe cockpit (propunerea 5)
+    repeat() {
+      if (!last) return false;
+      q.push({ text: last.text, prio: 4, cat: null, at: now() });
+      pump();
+      return true;
     },
     flush() { q.length = 0; cur = null; T.cancel(); },
     // tonuri — starea continuă, fără cuvinte
@@ -95,8 +122,15 @@ export function secRo(x) {
 }
 
 export function distRo(m) {
-  const r = m >= 950 ? Math.round(m / 100) / 10 : m >= 400 ? Math.round(m / 50) * 50 : Math.round(m / 10) * 10;
-  return m >= 950 ? `${String(r).replace('.', ' virgulă ')} kilometri` : `${r}`;
+  // (audit, #22): „1 kilometri" era agramat, iar sub 950 m se rostea doar cifra goală
+  // („Time Control în 20") — de-acum toate distanțele au unitate.
+  if (m >= 950) {
+    const km = Math.round(m / 100) / 10;
+    const txt = String(km).replace('.', ' virgulă ');
+    return km === 1 ? 'un kilometru' : `${txt} kilometri`;
+  }
+  const r = m >= 400 ? Math.round(m / 50) * 50 : Math.round(m / 10) * 10;
+  return r < 20 ? `${r} metri` : `${r} de metri`;   // „10 metri", dar „20 DE metri"
 }
 
 // ── comenzile vocale (push-to-talk) ─────────────────────────────────────────

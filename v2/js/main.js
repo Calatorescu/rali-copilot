@@ -2,10 +2,10 @@
 
 import { makeClock } from './time.js';
 import { buildTrace } from './geo.js';
-import { makeStore, exportDay, importDay, resumeStateFromJournal } from './store.js';
+import { makeStore, makeMemStore, exportDay, importDay, resumeStateFromJournal } from './store.js';
 import { makeVoice, makeEars, secRo } from './voice.js';
 import { makeLiveGps, makeSyntheticGps, makeReplayGps } from './gps.js';
-import { buildPlan, detectRts, sanitizeBoxes } from './route.js';
+import { buildPlan, detectRts, sanitizeBoxes, groupByLeg, verifyRoadbook } from './route.js';
 import { makeMachine } from './machine.js';
 import { makeDriverModel } from './learn.js';
 import { makeUi, startHeaderClock } from './ui.js';
@@ -23,10 +23,17 @@ async function init() {
   clock = makeClock();
   const off = parseFloat(localStorage.getItem('r2_clockoff') || '0');
   clock.setOffsetMs(off * 1000);
-  voice = makeVoice({ audio: audioCtx() });
+  // Mesajele ARUNCATE din coadă intră în jurnal (audit, #9): la debrief se vede și
+  // ce nu s-a auzit, nu doar ce s-a spus — altfel „de ce nu mi-a zis de viraj?"
+  // rămânea fără răspuns.
+  voice = makeVoice({ audio: audioCtx(),
+    onDrop: (text, de) => { try { store.log('voce_aruncata', { text, de }, clock.rally()); } catch (e) {} } });
   ui = makeUi();
   driver = makeDriverModel(await store.get('driver_model') || {});
   startHeaderClock(clock);
+  // Modelul șoferului se salvează periodic, nu doar la beforeunload — pe mobil pagina
+  // moare adesea înainte ca tranzacția din beforeunload să apuce să se încheie (#26).
+  setInterval(() => { try { store.put('driver_model', driver.toJSON()); } catch (e) {} }, 60000);
 
   // cheia API: o refolosim pe cea a aplicației vechi dacă există (aceeași origine)
   if (!localStorage.getItem('r2_key') && localStorage.getItem('rali_key'))
@@ -67,7 +74,19 @@ function audioCtx() { return () => (_audioCtx = _audioCtx || new (window.AudioCo
 async function rebuildPlan() {
   const speeds = (await store.get('rt_speeds')) || {};
   const recon = await store.get('recon');
-  plan = buildPlan(boxesRaw, speeds, recon || null);
+  // Planul se construiește pe UN SINGUR leg (audit, #1) — km-ii și numerele de box
+  // repornesc la fiecare leg, deci amestecul lor global era un traseu inexistent.
+  const grupuri = groupByLeg(boxesRaw);
+  let cheia = await store.get('leg_activ');
+  if (!grupuri.some(g => g.key === cheia)) cheia = grupuri.length ? grupuri[0].key : null;
+  const g = grupuri.find(x => x.key === cheia);
+  plan = buildPlan(g ? g.boxes : [], speeds, recon || null);
+  plan.legKey = cheia;
+  plan.legGroups = grupuri;
+  const idx = grupuri.findIndex(x => x.key === cheia);
+  plan.legLabel = g ? g.label : null;
+  plan.nextLegKey = idx >= 0 && idx + 1 < grupuri.length ? grupuri[idx + 1].key : null;
+  plan.nextLegLabel = plan.nextLegKey ? grupuri[idx + 1].label : null;
   machine = makeMachine({ plan, clock, voice, store, ui, driver });
   // programul TC scanat ieri nu se pierde la repornire — se reîncarcă din stocare
   const tcs = await store.get('tc_schedule');
@@ -78,7 +97,23 @@ async function rebuildPlan() {
 
 function renderPrep() {
   $('prep-boxes').textContent = boxesRaw.length
-    ? `${boxesRaw.length} boxuri · 0–${plan.totalKm.toFixed(2)} km` : 'niciun box scanat';
+    ? `${plan.boxes.length} boxuri în ${plan.legLabel || 'leg'} · 0–${plan.totalKm.toFixed(2)} km` +
+      (plan.legGroups.length > 1 ? ` · ${plan.legGroups.length} leg-uri scanate` : '')
+    : 'niciun box scanat';
+  // selectorul de leg: apare doar când sunt mai multe
+  const lw = $('prep-legs'); lw.textContent = '';
+  if (plan.legGroups.length > 1) {
+    for (const g of plan.legGroups) {
+      const b = document.createElement('button');
+      b.className = 'btn sm ' + (g.key === plan.legKey ? 'pri' : 'sec');
+      b.textContent = `${g.label} · ${g.boxes.length} boxuri`;
+      b.addEventListener('click', async () => {
+        await store.put('leg_activ', g.key);
+        await rebuildPlan();
+      });
+      lw.appendChild(b);
+    }
+  }
   const rts = plan.rts;
   const wrap = $('prep-rts'); wrap.textContent = '';
   rts.forEach(rt => {
@@ -102,14 +137,52 @@ function renderPrep() {
     ok.style.color = rt.kmh != null ? 'var(--ok)' : 'var(--bad)';
     row.append(lbl, inp, ok); wrap.appendChild(row);
   });
+  // verificatorul: erorile scanării se prind parcat, nu la 40 km/h (propunerea 1)
+  const vf = $('prep-verif');
+  if (vf) {
+    vf.textContent = '';
+    if (boxesRaw.length) {
+      const v = verifyRoadbook(boxesRaw);
+      if (!v.probleme.length) {
+        const p = document.createElement('p');
+        p.className = 'line'; p.style.color = 'var(--ok)';
+        p.textContent = '✓ roadbook coerent: km crescători, numere în serie, probele împerecheate';
+        vf.appendChild(p);
+      } else {
+        for (const txt of v.probleme.slice(0, 12)) {
+          const p = document.createElement('p');
+          p.className = 'line'; p.style.color = 'var(--warn)';
+          p.textContent = '⚠ ' + txt;
+          vf.appendChild(p);
+        }
+        if (v.probleme.length > 12) {
+          const p = document.createElement('p');
+          p.className = 'line dim';
+          p.textContent = `…și încă ${v.probleme.length - 12}`;
+          vf.appendChild(p);
+        }
+      }
+    }
+  }
   $('prep-recon').textContent = plan.trace
     ? `urmă: ${(plan.trace.totalM / 1000).toFixed(2)} km · ${plan.anchorMap ? plan.anchorMap.anchors.length + ' ancore' : 'fără ancore'}`
     : 'fără recunoaștere (merg pe odometru + viraje)';
 }
 
 // ── GPS live + cursă ────────────────────────────────────────────────────────
-function startDay() {
+let tickId = null;
+function startDay(dinPreluare) {
   if (!plan.boxes.length) { alert('Scanează întâi roadbook-ul.'); return; }
+  // „AZI PLECI DE LA…" (propunerea 2, după testul 3 din teren): contractul lui START
+  // e „ești fizic la boxul 1 al leg-ului" — dar nimeni nu-i spunea pilotului DE UNDE
+  // pleacă, iar ziua a pornit din alt punct și totul a fost decalat. Confirmarea e
+  // obligatorie; la preluare (import) nu are sens — acolo poziția vine din jurnal.
+  if (!dinPreluare) {
+    const b0 = plan.boxes[0];
+    const unde = `box ${b0.num}` + (b0.comment ? ` — ${b0.comment.slice(0, 90)}` : '');
+    if (!confirm(`${plan.legLabel ? plan.legLabel + '\n' : ''}PLECI DE LA: ${unde}\n\n` +
+                 `Ești fizic în punctul ăsta, gata de plecare?`)) return;
+  }
   stopGps();
   gps = makeLiveGps({
     onFix: f => machine.onFix(f),
@@ -118,10 +191,29 @@ function startDay() {
   });
   if (!gps.start()) { alert('GPS indisponibil.'); return; }
   machine.start();
+  // Bătaia de inimă independentă de GPS (audit, #5): cronometrul probei, avertizările
+  // TC și închiderea pe estimare NU mai depind de sosirea fixurilor. `machine` e citit
+  // la fiecare bătaie, deci schimbarea de leg (mașină nouă) nu rupe nimic.
+  clearInterval(tickId);
+  tickId = setInterval(() => { try { machine.tick(); } catch (e) {} }, 1000);
   showScreen('run');
 }
 
-function stopGps() { if (gps) { gps.stop(); gps = null; } }
+function stopGps() {
+  if (gps) { gps.stop(); gps = null; }
+  clearInterval(tickId); tickId = null;
+}
+
+// Leg-ul următor: aceeași zi, kilometraj care repornește de la 0. START curat pe
+// mașina nouă — exact contractul lui start() („ești fizic la boxul 1 al leg-ului").
+async function legUrmator() {
+  if (!plan.nextLegKey) return;
+  const numeNou = plan.nextLegLabel;
+  await store.put('leg_activ', plan.nextLegKey);
+  await rebuildPlan();
+  voice.say(`${numeNou}. Apasă START când ești la boxul 1.`, 2);
+  showScreen('prep');
+}
 
 // ── recunoașterea: înregistrează urma + ancorele ────────────────────────────
 function startRecon() {
@@ -177,7 +269,10 @@ function rehearse() {
   // Mașină SEPARATĂ pentru repetiție: cea de cursă nu se atinge. La final se revine
   // la ea prin rebuildPlan() — altfel un START ZIUA de după repetiție ar fi pornit
   // pe mașina-fantomă, cu starea ei.
-  const mach = makeMachine({ plan, clock, voice, store, ui, driver, opts: { ghost: true } });
+  // Și STORE separat, în memorie (audit, #10): repetiția scria day_start/rt_result în
+  // jurnalul REAL al zilei, nemarcat — resumeStateFromJournal l-ar fi luat drept cursă,
+  // iar sync-ul l-ar fi urcat pe GitHub ca ziua adevărată.
+  const mach = makeMachine({ plan, clock, voice, store: makeMemStore(), ui, driver, opts: { ghost: true } });
   const speedPlan = cumM => {
     const km = plan.anchorMap ? plan.anchorMap.officialKm(cumM) : cumM / 1000;
     const rt = plan.rts.find(r => km >= r.startKm - 0.05 && km <= r.finishKm + 0.05);
@@ -186,6 +281,10 @@ function rehearse() {
   const gata = async () => {
     voice.say('Repetiție încheiată.', 2);
     stopGps();
+    // _rehearsing se stinge și la finalul NATURAL, nu doar la STOP manual (audit, #11):
+    // altfel primul STOP al cursei reale intra pe ramura de repetiție și jurnalul
+    // zilei nu mai pleca la sfârșit.
+    _rehearsing = false;
     await rebuildPlan();     // înapoi la mașina de cursă, curată
     showScreen('prep');
   };
@@ -212,6 +311,35 @@ function rehearse() {
   }
 }
 let _rehearsing = false;
+
+// ── replay-ul zilei, ×20 (propunerea 3) ─────────────────────────────────────
+// Jurnalul are de azi coordonate, deci ziua se poate REDA prin aceeași mașină de
+// stări: debriefingul de seară devine o măsurătoare, nu o discuție din memorie.
+// Rulează pe store în memorie și pe mașină-fantomă — jurnalul real nu se atinge.
+async function replayDay() {
+  const j = await store.journalAll();
+  const poz = j.filter(e => e.type === 'pos' && typeof e.lat === 'number' && typeof e.lng === 'number');
+  if (poz.length < 10) { alert('Jurnalul nu are destule poziții cu coordonate — se strâng din prima zi condusă cu versiunea asta.'); return; }
+  const min = Math.round((poz[poz.length - 1].t - poz[0].t) / 60000 / 20);
+  if (!confirm(`Redau ziua din jurnal: ${poz.length} poziții, la viteză ×20 (~${min} min). Pornim?`)) return;
+  stopGps();
+  const mach = makeMachine({ plan, clock, voice, store: makeMemStore(), ui, driver, opts: { ghost: true } });
+  const fixes = poz.map(e => ({ lat: e.lat, lng: e.lng, tMs: e.t,
+    speedMs: e.kmh != null ? e.kmh / 3.6 : null, accM: e.accM != null ? e.accM : 10 }));
+  gps = makeReplayGps(fixes, { rate: 20, onFix: f => mach.onFix(f) });
+  try {
+    gps.start();
+    mach.start();
+    machine = mach;
+    _rehearsing = true;             // STOP ZIUA îl oprește exact ca pe repetiție
+    showScreen('run');
+    voice.say('Redau ziua, de douăzeci de ori mai repede.', 2);
+  } catch (e) {
+    stopGps();
+    alert('Replay eșuat: ' + (e && e.message ? e.message : e));
+    rebuildPlan();
+  }
+}
 
 // ── scanări ─────────────────────────────────────────────────────────────────
 function pickImages(multiple, cb) {
@@ -242,7 +370,10 @@ async function doScanRoadbook() {
       try {
         const boxes = await scanRoadbookPage(key, imgs[i].b64, imgs[i].mime);
         for (const b of boxes) {
-          const dupe = all.find(x => x.num === b.num && Math.abs(x.sumKm - b.sumKm) < 0.005);
+          // dedup DOAR în interiorul aceluiași leg: numerele și km-ii repornesc la
+          // fiecare leg, deci „box 1 la 0,00" există legitim în toate leg-urile
+          const dupe = all.find(x => x.day === b.day && x.leg === b.leg &&
+            x.num === b.num && Math.abs(x.sumKm - b.sumKm) < 0.005);
           if (!dupe) all.push(b);
         }
       } catch (e) { st.textContent = '✗ ' + e.message; }
@@ -297,7 +428,7 @@ function doImport() {
   boxesRaw = sanitizeBoxes((await store.get('plan_raw')) || []);
         await rebuildPlan();
         const st = resumeStateFromJournal(await store.journalAll());
-        startDay();
+        startDay(true);          // preluare: poziția vine din jurnal, nu de la boxul 1
         machine.resume(st);
       } catch (e) { alert('Import eșuat: ' + e.message); }
     };
@@ -313,7 +444,20 @@ function showScreen(name) {
 
 function bind() {
   $('btn-start').addEventListener('click', startDay);
+  $('btn-nextleg')?.addEventListener('click', legUrmator);
+  // STOP cu DOUĂ atingeri (audit, #12): butonul stă sub SUNT LA BOX, în mașină în
+  // mers — o atingere greșită oprea ziua și închidea proba cu un rezultat fals.
+  let stopArmatLa = 0;
   $('btn-stop').addEventListener('click', async () => {
+    const acum = Date.now();
+    if (acum - stopArmatLa > 3000) {
+      stopArmatLa = acum;
+      $('btn-stop').textContent = '■ SIGUR? apasă iar pentru STOP';
+      setTimeout(() => { $('btn-stop').textContent = '■ STOP ZIUA'; }, 3200);
+      return;
+    }
+    stopArmatLa = 0;
+    $('btn-stop').textContent = '■ STOP ZIUA';
     machine.stop(); stopGps(); showScreen('prep');
     if (_rehearsing) {              // repetiție oprită din mers: înapoi la mașina de cursă
       _rehearsing = false;
@@ -339,7 +483,14 @@ function bind() {
       : 'după ultimul box';
     const lista = $('bp-list');
     lista.textContent = '';
-    for (const c of machine.boxuriApropiate(7)) {
+    const apropiate = machine.boxuriApropiate(7);
+    if (apropiate.length) {
+      let mi = 0;
+      apropiate.forEach((c, i) => { if (Math.abs(c.deltaM) < Math.abs(apropiate[mi].deltaM)) mi = i; });
+      apropiate[mi].celMaiApropiat = true;
+    }
+    $('bp-num').value = '';
+    for (const c of apropiate) {
       const semn = c.deltaM >= 0 ? '+' : '−';
       const dist = Math.abs(c.deltaM) >= 1000
         ? (Math.abs(c.deltaM) / 1000).toFixed(2) + ' km' : Math.abs(c.deltaM) + ' m';
@@ -348,7 +499,10 @@ function bind() {
       // fullscreen pe style inline, pe care CSP-ul îl permite) s-ar randa fix în modalul
       // de corecție, fix când e deschis în probă. Confirmat la auditul din 02.08.2026, P2.
       const btn = document.createElement('button');
-      btn.className = 'btn bp-item' + (c.idx === urm ? ' pri' : ' sec');
+      // Evidențiat = boxul cel mai APROPIAT, nu „următorul așteptat" (audit, #16):
+      // butonul se apasă când ești LA un box; dacă poziția a driftat înainte,
+      // nextBoxIdx a trecut deja mai departe și recomanda un salt în direcția greșită.
+      btn.className = 'btn bp-item' + (c.celMaiApropiat ? ' pri' : ' sec');
       const nume = document.createElement('b');
       nume.textContent = 'box ' + (c.box.num != null ? c.box.num : '?');
       const com = document.createElement('span');
@@ -364,7 +518,11 @@ function bind() {
   function bpAlege(num, confirmat) {
     const r = machine.atBox(num, confirmat);
     if (r === true) { bpInchide(); return; }
-    if (!r) return;
+    if (!r) {
+      // box inexistent: feedback pe loc, nu modal mut (audit, #24)
+      $('bp-ctx').textContent = `boxul ${num} nu există în leg-ul ăsta`;
+      return;
+    }
     // corecție mare sau probă în joc — se cere confirmarea, cu cifra pe ecran
     const semn = r.deltaM >= 0 ? 'ÎNAINTE' : 'ÎNAPOI';
     $('bp-warn').textContent =
@@ -376,6 +534,15 @@ function bind() {
 
   $('btn-atbox').addEventListener('click', bpDeschide);
   $('bp-close').addEventListener('click', bpInchide);
+  $('bp-go')?.addEventListener('click', () => {
+    const n = parseInt($('bp-num').value, 10);
+    if (isFinite(n)) bpAlege(n);
+  });
+  // REPETĂ (propunerea 5): re-rostește ultimul anunț — remediul ieftin pentru
+  // „n-am auzit ce-a zis", care la un pilot singur e momentul în care se greșește.
+  $('btn-repeat')?.addEventListener('click', () => {
+    if (!voice.repeat()) voice.say('Nimic de repetat încă.', 2);
+  });
   $('btn-talk').addEventListener('click', () => {
     const ears = makeEars({ onCommand: c => {
       if (c.cmd === 'at_box') {
@@ -383,8 +550,12 @@ function bind() {
         // număr mult mai ușor decât un deget greșește un buton dintr-o listă.
         const r = machine.atBox(c.num);
         if (r !== true && r) {
-          voice.say(`Boxul ${c.num} te-ar muta ${Math.abs(r.deltaM)} metri. ` +
-                    `Confirmă pe ecran, la SUNT LA BOX.`, 3, 'sync');
+          // corecție mare pe voce: se deschide DIRECT modalul cu bannerul de
+          // confirmare pentru boxul cerut — versiunea veche trimitea „confirmă pe
+          // ecran" către un ecran care nu conținea boxul (audit, #6, fundătura)
+          voice.say(`Boxul ${c.num} te-ar muta ${Math.abs(r.deltaM)} metri. Confirmă pe ecran.`, 3, 'sync');
+          bpDeschide();
+          bpAlege(c.num);
         }
       }
       else if (c.cmd === 'status') {
@@ -410,6 +581,7 @@ function bind() {
   $('btn-rehearse').addEventListener('click', rehearse);
   $('btn-export').addEventListener('click', doExport);
   $('btn-import').addEventListener('click', doImport);
+  $('btn-replay')?.addEventListener('click', replayDay);
   $('btn-set').addEventListener('click', () => showScreen('set'));
   $('btn-set-back').addEventListener('click', () => showScreen('prep'));
   $('btn-journal-clear').addEventListener('click', async () => {

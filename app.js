@@ -1576,6 +1576,25 @@ function jurnalIncarca() {
 }
 
 // `throttleMs` — pentru evenimente dese (poziția). Evenimentele rare se scriu mereu.
+// Persistarea e SEPARATĂ de acumulare (audit, #25): serializarea a 4000 de intrări
+// (~360 KB) la fiecare poziție, sincron, dădea un „hopa" regulat pe telefon. În
+// memorie se scrie mereu; pe disc — imediat la evenimente rare (alea contează la
+// diagnostic), dar cel mult o dată la 15 s pentru pozițiile de rutină.
+let _jurnalScrisLa = 0;
+function jurnalPersista(fortat) {
+  const acum = Date.now();
+  if (!fortat && acum - _jurnalScrisLa < 15000) return;
+  _jurnalScrisLa = acum;
+  try { ls(JURNAL_KEY, JSON.stringify(_jurnal || [])); } catch (e) {}
+}
+
+// La ascundere/închidere, ce e în memorie se scrie pe disc — altfel ultimele
+// 15 secunde de jurnal mureau cu pagina.
+if (typeof document !== 'undefined')
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') jurnalPersista(true);
+  });
+
 function jurnal(tip, date, throttleMs) {
   try {
     const acum = Date.now();
@@ -1588,7 +1607,7 @@ function jurnal(tip, date, throttleMs) {
     // Plafon: tăiem din față, nu oprim scrierea. Un jurnal plin care refuză să mai
     // scrie pierde exact partea care contează — finalul zilei.
     if (j.length > JURNAL_MAX) j.splice(0, j.length - JURNAL_MAX);
-    ls(JURNAL_KEY, JSON.stringify(j));
+    jurnalPersista(tip !== 'pos');
   } catch (e) {}
 }
 
@@ -1633,14 +1652,21 @@ function navTurnSnap(accDeg) {
   const now = Date.now();
   if (now - st.snapT < 10000) return;   // max un snap la 10 s
   const dist = S.road.legDistKm;
+  // Regulile STRÂNSE, portate din v2 (audit 02.08, #19) — v1 avea încă versiunea care
+  // a stricat testul din Dumbrăvița: fereastră ±350 m pe TOATE boxurile, fără gardă la
+  // început de leg, fără anunț vocal. Dacă v2 cedează la Sibiu și se trece pe rezervă,
+  // rezerva nu are voie să reintre fix în bugul ăla:
+  //  • niciun snap în primii 150 m de leg (ieșirea din parcare nu e box);
+  //  • doar boxul pe care CHIAR îl aștepți (nextIdx ± 1), nu orice viraj din zonă;
+  //  • fereastră 150 m, nu 350;
+  //  • corecțiile peste 60 m se spun cu voce — la volan nu se citesc texte de pe ecran.
+  if (dist < 0.15) { jurnal('snap_refuzat', { motiv: 'start_leg', km: Math.round(dist * 1000) / 1000 }); return; }
   const right = accDeg > 0;             // heading crește în sensul acelor = viraj dreapta
-  // Candidați: boxuri de VIRAJ din fereastra ±350 m, cu sensul potrivit.
-  // Giratoriile se acceptă indiferent de semn (rotația netă depinde de ieșire).
-  // Conservator: fără candidat potrivit → NICIUN snap; un snap greșit e mai rău decât driftul.
-  let best = -1, bestGap = 0.35;
-  for (let i = 0; i < S.road.boxes.length; i++) {
+  let best = -1, bestGap = 0.15;
+  const de = Math.max(0, S.road.nextIdx - 1), pana = Math.min(S.road.boxes.length - 1, S.road.nextIdx + 1);
+  for (let i = de; i <= pana; i++) {
     const b = S.road.boxes[i];
-    if (typeof b.sumKm !== 'number' || !isFinite(b.sumKm)) continue;
+    if (!b || typeof b.sumKm !== 'number' || !isFinite(b.sumKm)) continue;
     const gap = Math.abs(b.sumKm - dist);
     if (gap > bestGap) continue;
     const dir = b.dir || '';
@@ -1650,7 +1676,7 @@ function navTurnSnap(accDeg) {
     if (!isTurn) continue;
     best = i; bestGap = gap;
   }
-  if (best === -1) return;
+  if (best === -1) { jurnal('snap_refuzat', { motiv: 'fara_candidat', km: Math.round(dist * 1000) / 1000, spreDreapta: right }); return; }
   const box = S.road.boxes[best];
   const target = box.sumKm + 0.02;      // virajul se încheie puțin după box
   const deltaKm = target - dist;
@@ -1661,6 +1687,9 @@ function navTurnSnap(accDeg) {
   const key = `${box.num}_${Math.round(box.sumKm * 100)}`;
   for (let tt = 0; tt < NAV_TIERS.length; tt++) S.road.announced[key + '_t' + tt] = true;
   jurnal('sync', { how: 'viraj', boxNum: box.num, deltaM: Math.round(deltaKm * 1000) });
+  // corecțiile mari se AUD — textul de pe ecran nu se citește la volan
+  if (Math.abs(deltaKm) > 0.06)
+    speak(`Corectat ${deltaKm > 0 ? 'înainte' : 'înapoi'} ${Math.round(Math.abs(deltaKm) * 1000)} metri, box ${box.num}.`, 2, 'sync');
   const sta = el('nav-sync-status');
   if (sta) {
     const m = Math.round(Math.abs(deltaKm) * 1000);
@@ -2650,10 +2679,18 @@ function navJumpAlege(num, confirmat) {
     return;
   }
   jurnal('sync', { how: 'manual', boxNum: box.num, deltaM, confirmat: confirmat === true });
+  const deltaKm = box.sumKm - S.road.legDistKm;
   S.road.legDistKm = box.sumKm;
   S.road.nextIdx = idx + 1;
   S.road.announced = {};
   S.road.lastPos = null; S.road.lastT = null;
+  // (audit, #20) Saltul manual corectează și proba în curs cu ACELAȘI delta — exact ca
+  // navBoxPassed. Altfel navigația și proba ajungeau pe kilometraje diferite, iar
+  // raceTick închidea proba pe care apuca prima.
+  if (S.rt && S.rt.active && Math.abs(deltaKm) < 0.5) S.rt.distKm = Math.max(0, S.rt.distKm + deltaKm);
+  // Și starea de linie se re-armează: un salt înapoi, înaintea unei probe standing,
+  // lăsa _staged pe vechea valoare și cronometrul pornea la prima mișcare, oriunde.
+  if (S.road.racePlan && S.road.racePlan[S.road.raceIdx]) S.road.racePlan[S.road.raceIdx]._staged = false;
   const st = el('nav-sync-status');
   if (st) { st.textContent = `✓ Poziție setată la Box ${box.num} (km ${box.sumKm.toFixed(2)}, ${deltaM >= 0 ? '+' : ''}${deltaM} m)`; st.classList.remove('hidden'); }
   el('jump-modal').classList.add('hidden');

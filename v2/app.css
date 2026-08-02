@@ -65,6 +65,12 @@ input { background: var(--bg); border: 1px solid var(--border); border-radius: 1
 .nx-box { font-size: 12px; color: var(--dim); }
 .nx-after { font-size: 13px; color: var(--dim); margin-top: 6px; border-top: 1px solid var(--border); padding-top: 6px; }
 
+/* banda TC — permanentă, verde/roșu dintr-o privire */
+.tcband { text-align: center; font-size: 15px; font-weight: 800; padding: 7px;
+  border-radius: 10px; margin-bottom: 8px; font-variant-numeric: tabular-nums; }
+.tcband.ok { background: #30d15822; color: var(--ok); }
+.tcband.bad { background: var(--bad); color: #fff; animation: blink 1s infinite; }
+
 /* Selectorul de box — se apasă la volan, deci ținte mari și cifre citibile dintr-o privire */
 .modal { position: fixed; inset: 0; background: #000c; display: flex; align-items: center;
   justify-content: center; padding: 14px; z-index: 50; }

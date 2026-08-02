@@ -31,7 +31,12 @@
         <button class="btn danger sm" id="btn-clear-rb">✕</button>
       </div>
       <p id="prep-scan-st" class="line dim"></p>
+      <!-- leg-urile detectate (numerotarea și km-ii repornesc la fiecare) — planul
+           rulează pe UNUL singur, ales aici -->
+      <div id="prep-legs" class="row" style="flex-wrap:wrap"></div>
       <div id="prep-rts"></div>
+      <!-- verdictul verificatorului: golurile scanării, prinse înainte de plecare -->
+      <div id="prep-verif"></div>
     </div>
 
     <div class="card">
@@ -68,11 +73,15 @@
         <button class="btn sec" id="btn-import">⬆ Preia cursa</button>
         <button class="btn sec" id="btn-journal-clear">🗑 Zi nouă</button>
       </div>
+      <!-- debriefingul de seară: ziua redată prin aceeași mașină de stări -->
+      <button class="btn sec" id="btn-replay">▶ Redă ziua din jurnal (×20)</button>
     </div>
   </section>
 
   <!-- ══ CURSĂ (un singur ecran, se transformă singur) ══ -->
   <section id="scr-run" class="hidden">
+    <!-- controlul orar, vizibil permanent — vocea se poate pierde, cifra nu -->
+    <p id="cp-tcband" class="tcband hidden"></p>
     <div class="posrow"><span id="cp-km">0.00</span><span class="dim">km traseu</span>
       <span id="cp-spd">0</span><span class="dim">km/h</span></div>
 
@@ -103,6 +112,8 @@
     <p id="cp-rts" class="rts-line"></p>
 
     <div class="row">
+      <!-- REPETĂ: re-rostește ultimul anunț (propunerea 5) -->
+      <button class="btn sec big" id="btn-repeat">🔁</button>
       <button class="btn ok big grow" id="btn-atbox">✓ SUNT LA BOX…</button>
       <!-- Selectorul de box. Înainte era un prompt() gol: „La ce box ești?", fără
            să spună unde crede aplicația că ești. Pe 02.08.2026 o apăsare greșită a
@@ -114,6 +125,14 @@
           <p class="bignum center" id="bp-now">—</p>
           <p class="line dim center" id="bp-ctx"></p>
           <div id="bp-list"></div>
+          <!-- Boxul care NU e în listă (audit, #6): după o repornire, poziția crezută
+               e 0 și lista arată boxurile 1-7, dar mașina poate fi la boxul 78.
+               Fără câmpul ăsta, selectorul era o fundătură completă. -->
+          <div class="row">
+            <input type="number" id="bp-num" placeholder="alt box, după număr"
+                   inputmode="numeric" min="1" max="999">
+            <button class="btn sec sm" id="bp-go">MERGI</button>
+          </div>
           <div id="bp-confirm" class="hidden">
             <p class="warnband" id="bp-warn"></p>
             <div class="row">
@@ -126,6 +145,8 @@
       </div>
       <button class="btn sec big" id="btn-talk">🎤</button>
     </div>
+    <!-- apare doar la final de leg, când mai există unul -->
+    <button class="btn pri big hidden" id="btn-nextleg">▶ LEG URMĂTOR</button>
     <button class="btn danger" id="btn-stop">■ STOP ZIUA</button>
   </section>
 

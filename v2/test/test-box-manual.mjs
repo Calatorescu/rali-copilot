@@ -66,7 +66,8 @@ console.log('\n═══ Confirmat explicit: se execută ═══');
   const w = lume();
   w.condu(1.69);
   ok('cu confirmare, se face', w.m.atBox(4, true) === true);
-  ok('poziția a sărit înapoi', Math.abs(w.m.M.routeKm - 0.37) < 0.01, w.m.M.routeKm.toFixed(3));
+  // snap la kilometrul EXACT al boxului (0,35), fără vechiul +20 m (audit #13)
+  ok('poziția a sărit înapoi', Math.abs(w.m.M.routeKm - 0.35) < 0.01, w.m.M.routeKm.toFixed(3));
 }
 
 console.log('\n═══ Corecția mică rămâne instantanee (fără confirmări inutile) ═══');
@@ -74,7 +75,7 @@ console.log('\n═══ Corecția mică rămâne instantanee (fără confirmăr
   const w = lume();
   w.condu(0.30);
   ok('boxul 3, la 20 m: se execută direct', w.m.atBox(3) === true);
-  ok('poziția e la box 3', Math.abs(w.m.M.routeKm - 0.34) < 0.01, w.m.M.routeKm.toFixed(3));
+  ok('poziția e la box 3', Math.abs(w.m.M.routeKm - 0.32) < 0.01, w.m.M.routeKm.toFixed(3));
 }
 
 console.log('\n═══ Saltul peste linia de finiș e semnalat ca atare ═══');

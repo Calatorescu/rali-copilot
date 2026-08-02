@@ -70,8 +70,11 @@ console.log('\n═══ Odometru care măsoară cu 4% MAI PUȚIN ═══');
 
 console.log('\n═══ Odometru care măsoară cu 3% MAI MULT ═══');
 {
+  // Contractul butonului (02.08): apeși EXACT când ești la box — deci mașina de test
+  // oprește la kilometrul boxului, nu la 20 m după. Snapul nu mai adaugă +20 m (audit
+  // #13), așa că cei 20 m de apăsare târzie ar intra, corect, ca eroare de odometru.
   const w = lume(1.03);
-  w.condu(3.00); w.m.atBox(9);
+  w.condu(2.98); w.m.atBox(9);
   ok('factorul scade sub 1', w.m.M.calFactor < 1 && Math.abs(w.m.M.calFactor - 1 / 1.03) < 0.004,
      w.m.M.calFactor.toFixed(4));
 }
@@ -79,7 +82,7 @@ console.log('\n═══ Odometru care măsoară cu 3% MAI MULT ═══');
 console.log('\n═══ Odometru corect: nu strica nimic ═══');
 {
   const w = lume(1.0);
-  w.condu(3.00); w.m.atBox(9);
+  w.condu(2.98); w.m.atBox(9);
   ok('factorul rămâne ≈ 1', Math.abs(w.m.M.calFactor - 1) < 0.003, w.m.M.calFactor.toFixed(4));
 }
 
