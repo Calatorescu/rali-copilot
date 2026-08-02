@@ -180,7 +180,11 @@ function startDay(dinPreluare) {
   if (!dinPreluare) {
     const b0 = plan.boxes[0];
     const unde = `box ${b0.num}` + (b0.comment ? ` — ${b0.comment.slice(0, 90)}` : '');
-    if (!confirm(`${plan.legLabel ? plan.legLabel + '\n' : ''}PLECI DE LA: ${unde}\n\n` +
+    // Rezumatul planului intră în confirmare: „0,35 km · 0 probe" (cum era pe 02.08,
+    // cu 4 boxuri dintr-o scanare parțială) trebuie să sară în ochi AICI, nu pe drum.
+    if (!confirm(`${plan.legLabel ? plan.legLabel + '\n' : ''}` +
+                 `${plan.boxes.length} boxuri · ${plan.totalKm.toFixed(2)} km · ${plan.rts.length} probe\n\n` +
+                 `PLECI DE LA: ${unde}\n\n` +
                  `Ești fizic în punctul ăsta, gata de plecare?`)) return;
   }
   stopGps();
@@ -365,24 +369,46 @@ async function doScanRoadbook() {
     if (!imgs.length) return;
     const st = $('prep-scan-st'); st.textContent = '';
     const all = [...boxesRaw];
+    // Rezultatul FIECĂREI pagini se ține minte și se arată la final. Pe 02.08, două
+    // pagini din trei au căzut, dar eroarea era suprascrisă de „Scanez pagina 3/3…"
+    // și finalul arăta „✓ 4 boxuri" — a arătat a succes și s-a condus cu o treime
+    // de roadbook. O scanare parțială e un EȘEC, nu un succes mai mic.
+    const rezultate = [];
     for (let i = 0; i < imgs.length; i++) {
       st.textContent = `Scanez pagina ${i + 1}/${imgs.length}…`;
       try {
         const boxes = await scanRoadbookPage(key, imgs[i].b64, imgs[i].mime);
+        let noi = 0;
         for (const b of boxes) {
           // dedup DOAR în interiorul aceluiași leg: numerele și km-ii repornesc la
           // fiecare leg, deci „box 1 la 0,00" există legitim în toate leg-urile
           const dupe = all.find(x => x.day === b.day && x.leg === b.leg &&
             x.num === b.num && Math.abs(x.sumKm - b.sumKm) < 0.005);
-          if (!dupe) all.push(b);
+          if (!dupe) { all.push(b); noi++; }
         }
-      } catch (e) { st.textContent = '✗ ' + e.message; }
+        rezultate.push({ pag: i + 1, ok: true, boxuri: boxes.length, noi });
+      } catch (e) {
+        rezultate.push({ pag: i + 1, ok: false, err: e.message });
+      }
+      try { store.log('scan_page', rezultate[rezultate.length - 1], Date.now()); } catch (e) {}
     }
     all.sort((a, b) => a.sumKm - b.sumKm);
     boxesRaw = all;
     await store.put('plan_raw', boxesRaw);
     await rebuildPlan();
-    st.textContent = `✓ ${boxesRaw.length} boxuri, ${detectRts(boxesRaw).length} probe`;
+    const cazute = rezultate.filter(r => !r.ok);
+    const detaliu = rezultate.map(r => r.ok ? `p${r.pag} ✓${r.boxuri}` : `p${r.pag} ✗`).join(' · ');
+    if (cazute.length) {
+      st.textContent = `⚠ AU CĂZUT ${cazute.length} PAGINI DIN ${imgs.length} — refotografiază-le! ` +
+        `${detaliu} · ${cazute.map(c => `p${c.pag}: ${c.err}`).join(' · ')}`;
+      st.style.color = 'var(--bad)';
+      alert(`Scanarea NU e completă: ${cazute.length} pagini din ${imgs.length} au căzut.\n\n` +
+            cazute.map(c => `pagina ${c.pag}: ${c.err}`).join('\n') +
+            `\n\nRefotografiază paginile căzute și scanează-le din nou — restul rămân.`);
+    } else {
+      st.textContent = `✓ ${detaliu} → ${boxesRaw.length} boxuri, ${detectRts(boxesRaw).length} probe`;
+      st.style.color = '';
+    }
   });
 }
 

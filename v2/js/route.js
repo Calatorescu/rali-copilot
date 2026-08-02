@@ -106,6 +106,15 @@ export function verifyRoadbook(allBoxes) {
       }
     }
     if (deschise > 0) probleme.push(`${unde}: ${deschise} probă/e cu START fără FINISH`);
+    // Un leg fără nicio probă sau fără TC de final e aproape sigur o scanare parțială —
+    // exact cazul din 02.08: doar pagina 1 intrase (4 boxuri, 0 probe, 0,35 km) și
+    // seria de numere 1-4 era „corectă", deci nimic nu urla. De-acum urlă asta.
+    if (b.length >= 2) {
+      if (!b.some(x => x.flag === 'RT_START_AUTO' || x.flag === 'RT_START_STANDING'))
+        probleme.push(`${unde}: NICIO probă în ${b.length} boxuri — sigur au intrat toate paginile?`);
+      if (b[b.length - 1].flag !== 'TC' && b[b.length - 1].flag !== 'PARKING')
+        probleme.push(`${unde}: ultimul box (${b[b.length - 1].num}) nu e TC/parcare — lipsește finalul?`);
+    }
   }
   return { probleme, legs: grupuri.map(g => ({ key: g.key, label: g.label, boxuri: g.boxes.length })) };
 }

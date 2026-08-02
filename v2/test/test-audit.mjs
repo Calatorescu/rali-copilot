@@ -248,6 +248,35 @@ console.log('\n═══ Verificatorul de roadbook (propunerea 1) ═══');
   ok('prinde START fără FINISH', rau.probleme.some(p => /START fără FINISH/.test(p)));
 }
 
+console.log('\n═══ Scanarea: JSON trunchiat se repară, nu se pierde pagina (02.08) ═══');
+{
+  const { parseBoxesJson } = await import('../js/scan.js');
+  const intreg = '[{"num":1,"sumKm":0.0,"dir":"ÎNAINTE","flag":"TC","comment":"a"},' +
+                 '{"num":2,"sumKm":0.29,"dir":"DREAPTA","comment":"b"}]';
+  ok('array-ul întreg se parsează', parseBoxesJson('bla ' + intreg).length === 2);
+  // trunchiat la mijlocul unui obiect — exact ce produce max_tokens
+  const trunchiat = '[{"num":1,"sumKm":0.0,"dir":"ÎNAINTE","flag":"TC","comment":"a"},' +
+                    '{"num":2,"sumKm":0.29,"dir":"DREAPTA","comment":"b"},{"num":3,"sumK';
+  const rep = parseBoxesJson(trunchiat);
+  ok('trunchiat → se salvează obiectele complete', rep.length === 2, JSON.stringify(rep));
+  let a = null; try { parseBoxesJson('niciun json aici'); } catch (e) { a = e.message; }
+  ok('gunoiul tot aruncă eroare', /Format neașteptat/.test(a || ''), String(a));
+}
+
+console.log('\n═══ Verificatorul prinde scanarea PARȚIALĂ (cazul real din 02.08) ═══');
+{
+  // exact ce a intrat atunci: doar pagina 1 — 4 boxuri, secvențiale, fără probe
+  const partial = sanitizeBoxes([
+    { day: 1, leg: 1, num: 1, sumKm: 0.00, dir: 'ÎNAINTE', flag: 'TC', comment: 'Start' },
+    { day: 1, leg: 1, num: 2, sumKm: 0.29, dir: 'DREAPTA', comment: 'spre József' },
+    { day: 1, leg: 1, num: 3, sumKm: 0.32, dir: 'STÂNGA', comment: 'imediat' },
+    { day: 1, leg: 1, num: 4, sumKm: 0.35, dir: 'STÂNGA-T', comment: 'la T' }
+  ]);
+  const v = verifyRoadbook(partial);
+  ok('urlă că nu există nicio probă', v.probleme.some(p => /NICIO probă/.test(p)), JSON.stringify(v.probleme));
+  ok('urlă că lipsește finalul', v.probleme.some(p => /lipsește finalul/.test(p)));
+}
+
 console.log('\n═══ Vocea: prio 4, TTL pe viraje, REPETĂ, watchdog, unități ═══');
 {
   let t = 0;

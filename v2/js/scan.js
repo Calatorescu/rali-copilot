@@ -30,6 +30,25 @@ Extrage toate controalele orare vizibile, în ordine, ca JSON array:
 - time: ora alocată HH:MM (24h). Fără secunde dacă nu apar.
 Dacă un rând n-are oră lizibilă, omite-l. DOAR JSON array valid, fără alt text.`;
 
+// Parsarea răspunsului, separată ca să fie testabilă. Repară și un array TRUNCHIAT
+// (răspuns tăiat de max_tokens sau de rețea): taie la ultimul obiect complet și
+// închide array-ul. Pe 02.08 o pagină trunchiată arunca „Unexpected end of JSON",
+// pagina era sărită TĂCUT, iar Andreas a condus cu 4 boxuri din 12.
+export function parseBoxesJson(raw) {
+  const m = String(raw).match(/\[[\s\S]*/);
+  if (!m) throw new Error('Format neașteptat la scanare');
+  let txt = m[0];
+  try { return JSON.parse(txt.match(/\[[\s\S]*\]/) ? txt.match(/\[[\s\S]*\]/)[0] : txt); }
+  catch (e) {}
+  const cut = txt.lastIndexOf('}');
+  if (cut === -1) throw new Error('Format neașteptat la scanare');
+  try {
+    const rep = JSON.parse(txt.slice(0, cut + 1) + ']');
+    if (Array.isArray(rep) && rep.length) return rep;
+  } catch (e) {}
+  throw new Error('Format neașteptat la scanare');
+}
+
 async function callVision(apiKey, b64, mime, prompt, maxTokens) {
   let res;
   try {
@@ -58,21 +77,23 @@ async function callVision(apiKey, b64, mime, prompt, maxTokens) {
     throw new Error(j.error?.message || `HTTP ${res.status}`);
   }
   const j = await res.json();
-  return j.content[0].text.trim();
+  return { text: j.content[0].text.trim(), stopReason: j.stop_reason };
 }
 
 export async function scanRoadbookPage(apiKey, b64, mime) {
-  const raw = await callVision(apiKey, b64, mime, ROADBOOK_PROMPT, 1200);
-  const m = raw.match(/\[[\s\S]*\]/);
-  if (!m) throw new Error('Format neașteptat la scanare');
-  const boxes = sanitizeBoxes(JSON.parse(m[0]));
+  // 4000, nu 1200: comentariile lungi din roadbook depășeau limita, JSON-ul ieșea
+  // trunchiat și toată pagina se pierdea (02.08 — 2 pagini din 3, tăcut).
+  const r = await callVision(apiKey, b64, mime, ROADBOOK_PROMPT, 4000);
+  const boxes = sanitizeBoxes(parseBoxesJson(r.text));
   if (!boxes.length) throw new Error('Niciun box cu kilometraj — refotografiază pagina');
+  if (r.stopReason === 'max_tokens')
+    throw new Error(`Pagina e prea densă — au intrat doar ${boxes.length} boxuri, refotografiaz-o pe bucăți`);
   return boxes;
 }
 
 export async function scanTimeCard(apiKey, b64, mime) {
-  const raw = await callVision(apiKey, b64, mime, TIMECARD_PROMPT, 500);
-  const m = raw.match(/\[[\s\S]*\]/);
+  const r = await callVision(apiKey, b64, mime, TIMECARD_PROMPT, 800);
+  const m = r.text.match(/\[[\s\S]*\]/);
   if (!m) throw new Error('Format neașteptat la time card');
   const arr = JSON.parse(m[0]);
   // granița de încredere: doar name-șir scurt + oră validă
