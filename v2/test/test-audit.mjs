@@ -354,7 +354,7 @@ console.log('\n═══ Tura 4 (02.08): jitterul de la stop nu mai intră în o
   ok('60 m reali cu viteza mută → tot haversine', inc > 50, inc.toFixed(1));
 }
 
-console.log('\n═══ Tura 4: recuperarea spune CÂT prinzi când plafonul nu ajunge ═══');
+console.log('\n═══ Tura 4: recuperarea dă viteza REALĂ, fără plafon (cerut 02.08) ═══');
 {
   const boxes = sanitizeBoxes([
     { num: 1, sumKm: 0.00, dir: 'ÎNAINTE', flag: 'TC', comment: 'Start' },
@@ -364,11 +364,25 @@ console.log('\n═══ Tura 4: recuperarea spune CÂT prinzi când plafonul nu
   const w = lume(boxes);
   w.condu(0.25, 40);
   ok('în probă', w.m.M.state === 'RT_RUN');
-  // condu foarte lent — întârzierea crește peste ce mai poate plafonul de +30%
+  // condu lent — devierea crește mult peste ce ar fi permis vechiul plafon de +30% (52)
   w.condu(1.40, 18);
-  const cuPlafon = w.said.filter(s => /mai prinzi doar/.test(s.t));
-  ok('mesajul spune cât mai prinzi, nu doar „ține 52"', cuPlafon.length >= 1,
-     JSON.stringify(w.said.filter(s => /urmă/.test(s.t)).slice(-3).map(s => s.t)));
+  const pace = w.said.filter(s => /în urmă, ține (\d+)/.test(s.t));
+  ok('mesajul există', pace.length >= 1, JSON.stringify(w.said.slice(-4).map(s => s.t)));
+  const viteze = pace.map(s => +s.t.match(/ține (\d+)/)[1]);
+  ok('viteza cerută DEPĂȘEȘTE vechiul plafon de 52 (e cea reală)',
+     viteze.some(v => v > 52), JSON.stringify(viteze));
+  // aritmetica pe ultimul mesaj: v = remKm*3600 / (remKm/40*3600 − dev)
+  const ultim = pace[pace.length - 1].t;
+  ok('cifrele diferă între mesaje (devierea crește → viteza crește)',
+     new Set(viteze).size > 1 || viteze.length === 1, JSON.stringify(viteze));
+
+  // devierea imposibilă: timpul disponibil s-a dus → spune direct, nu inventează cifre
+  const w2 = lume(boxes);
+  w2.condu(0.25, 40);
+  w2.condu(2.05, 8);            // atât de lent încât finishul pe timp e pierdut
+  ok('imposibilul se spune ca imposibil',
+     w2.said.some(s => /nu se mai prinde/.test(s.t)),
+     JSON.stringify(w2.said.slice(-3).map(s => s.t)));
 }
 
 console.log(`\n──────── ${pass} trecute, ${fail} căzute ────────`);

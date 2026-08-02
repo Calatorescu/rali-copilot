@@ -12,7 +12,7 @@
 // altfel din odometrul fuzionat; „AM TRECUT DE BOX" (buton sau voce) rămâne suveran.
 
 import { makeOdometer, projectOnTrace, angDiff, haversineM } from './geo.js';
-import { idealTimeS, deviationS, recoverySpeed, speedAt, bankingAdvice } from './pace.js';
+import { idealTimeS, deviationS, speedAt, bankingAdvice } from './pace.js';
 import { TURN_DIRS } from './route.js';
 import { secRo, distRo } from './voice.js';
 import { makeDebrief } from './debrief.js';
@@ -325,17 +325,17 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
       if (a <= 1) tone('ok'); else tone(dev < 0 ? 'ahead' : 'behind');
       // cuvinte doar când devierea depășește pragul — și scurt
       if (a > (def.voiceThr || 3)) {
-        const rec = recoverySpeed(dev, rt.distKm, def.distKm, segs);
+        // Viteza REALĂ care anulează devierea până la finish, FĂRĂ plafon (cerut de
+        // Andreas, 02.08, după tura 4): „ține 52" plafonat la +30% suna identic la 20
+        // și la 40 de secunde întârziere. Acum cifra e cea adevărată — 58, 65, cât
+        // iese din aritmetică — iar decizia dacă e prudentă îi aparține pilotului.
+        // Indicatoarele rutiere rămân oricum ale lui, nu ale aplicației.
+        const remKm = Math.max(0, def.distKm - Math.min(rt.distKm, def.distKm));
         let fraza = `${secRo(a)} ${dev >= 0 ? 'în urmă' : 'în avans'}`;
-        if (rec) {
-          // SINCERITATE la plafon (02.08: „ține 52" identic la 20 și la 40 de secunde
-          // suna absurd): viteza de recuperare e plafonată la ±30% din motive de
-          // siguranță — când plafonul nu mai poate recupera tot, se spune CÂT prinzi.
-          const remKm = Math.max(0, def.distKm - rt.distKm);
-          const castigS = Math.abs(remKm * 3600 * (1 / def.kmh - 1 / rec.kmh));
-          fraza += (castigS + 3 < a)
-            ? `, ține ${Math.round(rec.kmh)} — mai prinzi doar ${secRo(castigS)}`
-            : `, ține ${Math.round(rec.kmh)}`;
+        if (remKm > 0.03) {
+          const tDisponibilS = (remKm / def.kmh) * 3600 - dev;   // în urmă = timp mai puțin
+          if (tDisponibilS > 1) fraza += `, ține ${Math.round(remKm * 3600 / tDisponibilS)}`;
+          else fraza += ' — nu se mai prinde până la finish';
         }
         say(fraza, 3, 'pace');
       }
