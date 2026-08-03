@@ -11,7 +11,8 @@
 // de cod. Kilometrul de traseu vine din proiecția pe urmă când există recunoaștere,
 // altfel din odometrul fuzionat; „AM TRECUT DE BOX" (buton sau voce) rămâne suveran.
 
-import { makeOdometer, projectOnTrace, angDiff, haversineM } from './geo.js';
+import { makeOdometer, projectOnTrace, angDiff, haversineM,
+         bearingDeg, traceAheadPoint, directieRo } from './geo.js';
 import { idealTimeS, deviationS, speedAt, bankingAdvice } from './pace.js';
 import { TURN_DIRS } from './route.js';
 import { secRo, distRo } from './voice.js';
@@ -35,6 +36,7 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
     ghost: !!opts.ghost,
     _ann: {}, _staged: false, _warnedRt: {}, _lastBank: 0,
     _turnAcc: 0, _lastHdg: null, _lastHdgT: 0, _quietMs: 0, _lastSnapT: 0, _virajRefuzat: null,
+    _dirEtapa: 0, _dirStart: null, dirAlerta: null,
     _lastToneT: 0, _extSpeedKmh: null, _extSpeedT: 0,
     // auto-calibrarea odometrului (vezi calibreaza)
     calFactor: 1, _rawSinceAnchor: 0, _calAnchorKm: 0, _calN: 0, _calOficial: 0, _calMasurat: 0,
@@ -44,9 +46,12 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
   };
   const odo = makeOdometer();
 
-  const say = (txt, prio, cat) => {
+  // `cls` = clasa de anunț pentru coada de voce: 'manevra' (unde se virează) sau
+  // 'ritm' (secunde, viteze, bancă). Regula cerută de Andreas: ritmul nu taie niciodată
+  // manevra. Vezi voice.js.
+  const say = (txt, prio, cat, cls) => {
     if (M.shadow) { store.log('would_say', { txt }, clock.rally()); return; }
-    voice.say(txt, prio, cat);
+    voice.say(txt, prio, cat, cls);
   };
   const tone = k => { if (!M.shadow) voice.tone(k); };
   const log = (type, data) => store.log(type, data, clock.rally());
@@ -75,7 +80,7 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
         if (minLeft <= th && !tc.warned[th]) {
           tc.warned[th] = true;
           const ok = etaMin <= minLeft - 0.3;
-          say(`${tc.name} în ${th === 1 ? 'un minut' : th + ' minute'}, ${kmLeft.toFixed(1).replace('.', ' virgulă ')} kilometri. ${ok ? 'Ești bine.' : 'STRÂNGE.'}`, 3, 'tc');
+          say(`${tc.name} în ${th === 1 ? 'un minut' : th + ' minute'}, ${kmLeft.toFixed(1).replace('.', ' virgulă ')} kilometri. ${ok ? 'Ești bine.' : 'STRÂNGE.'}`, 3, 'tc', 'ritm');
           if (!ok) tone('alarm');
         }
       }
@@ -105,6 +110,8 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
       ancoreazaGeo(M.routeKm);
       M._calAnchorKm = M.routeKm; M._rawSinceAnchor = 0;
     }
+    // punctul de plecare al leg-ului, pentru paznicul de direcție
+    if (!M._dirStart && M.state !== 'PREP') M._dirStart = { lat: fix.lat, lng: fix.lng };
     // cât s-a curbat drumul de la ultima ancoră (sumă de valori ABSOLUTE: și un „S"
     // care revine la aceeași direcție e tot drum mai lung decât linia dreaptă)
     if (fix.headingDeg != null && M.speedKmh > 8) {
@@ -156,7 +163,7 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
     // anunța virajele doar în legătură: în RT_RUN pilotul ținea viteza pe drum
     // necunoscut și nimeni nu-i mai spunea unde se virează, iar ecranul îngheța pe
     // boxul de start toată proba. (Audit 02.08, #2.)
-    if (M.state !== 'PREP' && M.state !== 'DAY_END') { announceBoxes(); desyncCheck(); }
+    if (M.state !== 'PREP' && M.state !== 'DAY_END') { directieCheck(fix); announceBoxes(); desyncCheck(); }
     // STAGED e tot „legătură" din punctul de vedere al tick-ului: fără el aici,
     // plecarea de pe linia standing n-ar mai porni proba niciodată (prins de teste).
     if (M.state === 'LIAISON' || M.state === 'STAGED') liaisonTick();
@@ -177,6 +184,50 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
     ui.render(M, plan);
   }
 
+  // ── PAZNICUL DE DIRECȚIE ─────────────────────────────────────────────────
+  // 03.08.2026, Leg 2: roadbook-ul cerea la start o stângă peste linie dublă continuă —
+  // manevră ilegală. Andreas a făcut singura variantă legală (dreapta, spre nord-est),
+  // aplicația conducea traseul spre sud-vest, și NIMIC n-a spus nimic: proba a pornit
+  // singură după 370 m de mers în direcția opusă. Măsurat în jurnal: deplasarea față de
+  // punctul de plecare creștea monoton — 121 m la 11 s, 314 m la 34 s, 2897 m la capăt.
+  //
+  // Pragurile, alese din datele alea:
+  //  • 120 m deplasare în linie dreaptă — la 50 km/h vine în ~9 s, iar la 120 m mașina
+  //    e deja pe drum, nu în manevra de ieșire din parcare (sub 100 m, azimutul e
+  //    zgomotul unui fix de 4-8 m);
+  //  • 110° diferență — un viraj normal la prima intersecție schimbă direcția cu cel
+  //    mult 90°, deci 110° nu se mai poate atinge decât mergând în sens opus. La bucla
+  //    József, unde direcția se schimbă des, coarda primilor 120 m e NE și pentru mașină,
+  //    și pentru urmă — deci nu latră.
+  // Fără geometrie de recunoaștere, paznicul TACE: roadbook-ul n-are direcții absolute,
+  // iar a ghici din el ar însemna alarme inventate.
+  const DIR_PRAG_M = 120, DIR_PRAG_GRD = 110;
+
+  function directieCheck(fix) {
+    if (M._dirEtapa >= 2 || !M._dirStart) return;
+    if (!plan.trace || !plan.trace.pts || plan.trace.pts.length < 2) return;
+    const strM = haversineM(M._dirStart.lat, M._dirStart.lng, fix.lat, fix.lng);
+    if (strM < DIR_PRAG_M * (M._dirEtapa + 1)) return;
+    // de unde pleacă traseul: kilometrul primului box al leg-ului, tradus pe urmă
+    const m0 = plan.anchorMap && plan.boxes.length
+      ? plan.anchorMap.traceM(plan.boxes[0].sumKm) : 0;
+    const seg = traceAheadPoint(plan.trace, Math.max(0, m0), strM);
+    if (!seg) { M._dirEtapa = 2; return; }        // urma se termină — n-avem cu ce compara
+    const mers = bearingDeg(M._dirStart.lat, M._dirStart.lng, fix.lat, fix.lng);
+    const traseu = bearingDeg(seg.from.lat, seg.from.lng, seg.to.lat, seg.to.lng);
+    const dif = Math.abs(angDiff(mers, traseu));
+    M._dirEtapa++;
+    if (dif <= DIR_PRAG_GRD) { M._dirEtapa = 2; M.dirAlerta = null; return; }
+    M.dirAlerta = { text: `Direcție greșită — traseul pleacă spre ${directieRo(traseu)}`,
+                    difGrd: Math.round(dif) };
+    say(`Direcție greșită. Traseul pleacă spre ${directieRo(traseu)}. Verifică unde ești.`,
+        4, 'dir', 'manevra');
+    tone('alarm');
+    log('directie_gresita', { difGrd: Math.round(dif), azimutMers: Math.round(mers),
+                              azimutTraseu: Math.round(traseu), deplasareM: Math.round(strM),
+                              aDouaOara: M._dirEtapa >= 2 });
+  }
+
   // ── legătura ──────────────────────────────────────────────────────────────
   // (announceBoxes/desyncCheck au urcat în onFix — rulează în toate stările active)
   function liaisonTick() {
@@ -194,7 +245,7 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
       // pacing predictiv: dacă proba începe cu o zonă lentă, spune planul de-acum
       if (rt.kmh != null && rt.zones && rt.zones.length) {
         const adv = bankingAdvice(0, rt.kmh, rt.zones, { lookaheadM: 800 });
-        if (adv) say(`Plan: ia ${secRo(adv.bankS)} avans din start — zonă lentă la ${distRo(adv.inM)}.`, 2, 'bank');
+        if (adv) say(`Plan: ia ${secRo(adv.bankS)} avans din start — zonă lentă la ${distRo(adv.inM)}.`, 2, 'bank', 'ritm');
       }
     }
     if (rt.kmh == null) {
@@ -350,7 +401,7 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
     // linia calculată: îngheață devierea (nu opri lângă tabele — doar cifra îngheață)
     if (rt.frozen == null && rt.distKm >= def.distKm) {
       rt.frozen = dev;
-      say(`Finish. ${secRo(Math.abs(dev))} ${dev >= 0 ? 'în urmă' : 'în avans'}. Nu opri lângă tabelă.`, 4, 'race');
+      say(`Finish. ${secRo(Math.abs(dev))} ${dev >= 0 ? 'în urmă' : 'în avans'}. Nu opri lângă tabelă.`, 4, 'race', 'ritm');
     }
 
     // starea continuă prin TONURI, nu prin propoziții: la fiecare ~4 s, un semn scurt
@@ -372,12 +423,12 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
           if (tDisponibilS > 1) fraza += `, ține ${Math.round(remKm * 3600 / tDisponibilS)}`;
           else fraza += ' — nu se mai prinde până la finish';
         }
-        say(fraza, 3, 'pace');
+        say(fraza, 3, 'pace', 'ritm');
       }
       // banca de timp: zonele lente din față cer avans acum
       if (rt.zonesAdvised !== false && def.zones && def.zones.length && clock.mono() - M._lastBank > 15000) {
         const adv = bankingAdvice(rt.distKm * 1000, def.kmh, def.zones);
-        if (adv) { M._lastBank = clock.mono(); say(`Bancă: ia ${secRo(adv.bankS)} avans — zonă lentă în ${distRo(adv.inM)}.`, 3, 'bank'); }
+        if (adv) { M._lastBank = clock.mono(); say(`Bancă: ia ${secRo(adv.bankS)} avans — zonă lentă în ${distRo(adv.inM)}.`, 3, 'bank', 'ritm'); }
       }
     }
 
@@ -391,7 +442,7 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
     const deb = makeDebrief(def, rt.log, finalDev);
     M.results[def.name] = deb.pts;
     log('rt_result', { rtIdx: M.rtIdx, name: def.name, pts: deb.pts, finalDevS: deb.finalDevS, worst: deb.lines });
-    say(`Gata. ${secRo(Math.abs(finalDev))} ${finalDev >= 0 ? 'în urmă' : 'în avans'}.`, 4, 'race');
+    say(`Gata. ${secRo(Math.abs(finalDev))} ${finalDev >= 0 ? 'în urmă' : 'în avans'}.`, 4, 'race', 'ritm');
     M.lastDebrief = deb;
 
     // indexul sare pe boxul de după linia de finish — virajul următor se anunță IMEDIAT
@@ -402,10 +453,10 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
     if (nb) {
       const dTo = (nb.sumKm - M.routeKm) * 1000;
       if (dTo > -30 && dTo < 350 && (nb.dir !== 'ÎNAINTE' || nb.flag))
-        say(`Urmează: ${turnText(nb, Math.max(20, dTo), dTo < 60)}`, 3, 'turn');
+        say(`Urmează: ${turnText(nb, Math.max(20, dTo), dTo < 60)}`, 3, 'turn', 'manevra');
     }
     // debrieful vocal vine la 6 s după — întâi drumul, apoi lecția
-    if (!M.shadow) setTimeout(() => { if (M.state === 'LIAISON') say(deb.voiceTxt, 1, 'debrief'); }, 6000);
+    if (!M.shadow) setTimeout(() => { if (M.state === 'LIAISON') say(deb.voiceTxt, 1, 'debrief', 'ritm'); }, 6000);
 
     M.rt = null; M.rtIdx++; M.state = 'LIAISON';
     ui.render(M, plan);
@@ -700,13 +751,13 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
       if (M.rt) {
         // În probă poziția NU se atinge: o corecție de sute de metri schimbă devierea
         // afișată, iar pilotul reacționează la o cifră care sare (audit #8).
-        say(`Boxul ${prev.num}: virajul l-am văzut, dar poziția nu se potrivește. Continuă proba.`, 3, 'desync');
+        say(`Boxul ${prev.num}: virajul l-am văzut, dar poziția nu se potrivește. Continuă proba.`, 3, 'desync', 'manevra');
         tone('tick');
       } else {
         // În legătură se recalează, cu același contract ca la snap: ești la box + cât
         // ai mers de la virajul ăla, nu fix pe box.
         const lagAcum = Math.min(400, vz.lagM + Math.max(0, (M.routeKm - vz.routeKm) * 1000));
-        say(`Te-am prins la boxul ${prev.num} — recalez.`, 3, 'desync');
+        say(`Te-am prins la boxul ${prev.num} — recalez.`, 3, 'desync', 'manevra');
         M._lastSnapT = clock.mono();
         snapToBox(prevIdx, 'turn_tardiv', lagAcum);
       }
@@ -715,7 +766,7 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
     // În probă instrucțiunea e diferită: lista de boxuri NU se folosește la 50 km/h.
     say(M.rt
       ? `Atenție: virajul de la boxul ${prev.num} pare ratat. Continuă — corectezi când poți opri.`
-      : `Atenție: ar fi trebuit să virezi la boxul ${prev.num}. Dacă ești tot pe drept, apasă SUNT LA BOX.`, 3, 'desync');
+      : `Atenție: ar fi trebuit să virezi la boxul ${prev.num}. Dacă ești tot pe drept, apasă SUNT LA BOX.`, 3, 'desync', 'manevra');
     tone('alarm');
   }
 
@@ -733,6 +784,9 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
       M.rtIdx = 0; M.rt = null; M.nextBoxIdx = 0; M.results = {}; M.lastDebrief = null;
       M._ann = {}; M._staged = false; M._warnedRt = {}; M._desyncSaid = null; M._confirmedIdx = -1;
       M._virajRefuzat = null; M._turnAcc = 0; M._lastHdg = null; M._lastSnapT = 0;
+      // paznicul de direcție se re-armează la fiecare zi/leg nou
+      M._dirEtapa = 0; M.dirAlerta = null;
+      M._dirStart = M._lastPos ? { ...M._lastPos } : null;
       M._lastFixMono = null; M._gpsLostSaid = false;
       M.calFactor = 1; M._rawSinceAnchor = 0; M._calAnchorKm = 0; M._anchorKm = 0;
       M._calN = 0; M._calOficial = 0; M._calMasurat = 0;

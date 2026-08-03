@@ -30,6 +30,14 @@ export function makeVoice({ tts = null, audio = null, now = () => Date.now(), on
     return m.prio >= 3 ? 3500 : 5000;
   }
 
+  // CLASELE DE ANUNȚ (cerute de Andreas, 03.08.2026): „să aibă prioritate anunțul de
+  // schimbare a direcției, în fața anunțurilor de viteze/timp din probă, măcar primul
+  // și ultimul anunț de viraj". Prioritatea numerică nu era de ajuns: „Finish. 42 în
+  // avans. Nu opri lângă tabelă." e prio 4 și tăia un „150 de metri — dreapta" de prio 3.
+  // Acum manevra bate ritmul indiferent de cifră: ritmul așteaptă, iar dacă între timp
+  // se învechește, se aruncă — un ritm vechi e o cifră falsă oricum.
+  const MANEVRA = 'manevra', RITM = 'ritm';
+
   function pump() {
     if (cur || !q.length) return;
     const nowMs = now();
@@ -37,8 +45,13 @@ export function makeVoice({ tts = null, audio = null, now = () => Date.now(), on
       if (nowMs - q[i].at > ttl(q[i])) drop(q.splice(i, 1)[0], 'expirat');
     }
     if (!q.length) return;
+    // întâi clasa (manevra înaintea ritmului), apoi prioritatea
+    const rang = m => (m.cls === MANEVRA ? 1 : 0);
     let idx = 0;
-    for (let i = 1; i < q.length; i++) if (q[i].prio > q[idx].prio) idx = i;
+    for (let i = 1; i < q.length; i++) {
+      const a = q[i], b = q[idx];
+      if (rang(a) > rang(b) || (rang(a) === rang(b) && a.prio > b.prio)) idx = i;
+    }
     cur = q.splice(idx, 1)[0];
     curAt = nowMs;
     last = { text: cur.text, at: nowMs };    // pentru butonul REPETĂ
@@ -59,12 +72,18 @@ export function makeVoice({ tts = null, audio = null, now = () => Date.now(), on
   }, 2000);
 
   return {
-    say(text, prio = 2, cat = null) {
+    say(text, prio = 2, cat = null, cls = null) {
       if (!text) return;
       if (cat) for (let i = q.length - 1; i >= 0; i--)
         if (q[i].cat === cat) drop(q.splice(i, 1)[0], 'inlocuit');
-      if (cur && prio > cur.prio) { T.cancel(); drop(cur, 'intrerupt'); cur = null; }
-      q.push({ text, prio, cat, at: now() });
+      // Un anunț de RITM nu întrerupe niciodată o manevră care se rostește — nici măcar
+      // cu prioritate mai mare. Manevra e la 2 secunde de volan; secundele de deviere,
+      // nu. Restul rămâne ca înainte: prioritatea mai mare taie.
+      const taieRitmulManevra = cls === RITM && cur && cur.cls === MANEVRA;
+      if (cur && prio > cur.prio && !taieRitmulManevra) {
+        T.cancel(); drop(cur, 'intrerupt'); cur = null;
+      }
+      q.push({ text, prio, cat, cls, at: now() });
       pump();
     },
     // ultimul mesaj rostit — butonul REPETĂ de pe cockpit (propunerea 5)

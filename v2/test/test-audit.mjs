@@ -588,5 +588,153 @@ console.log('\n═══ 03.08: în probă, recalarea NU se execută (doar se sp
      JSON.stringify(w.said.map(s => s.t).slice(-4)));
 }
 
+// ── Paznicul de direcție (03.08.2026, sesiunea Leg 2) ───────────────────────
+// Ce s-a întâmplat: roadbook-ul de test cerea la startul Leg 2 o stângă peste linie
+// dublă continuă — ilegală. Andreas a făcut singura manevră legală (dreapta, spre NE),
+// aplicația conducea traseul spre SV, iar proba a pornit singură după 370 m în direcția
+// opusă. Măsurat: deplasarea față de plecare creștea monoton, 121 m la 11 s, 314 m la
+// 34 s, fără nicio revenire. Lanțurile de coordonate de mai jos sunt cele REALE.
+const LANT_NE = [[45.802871,21.250711,0],[45.803161,21.250729,12],[45.80358,21.251277,52],
+  [45.80421,21.252015,55],[45.804675,21.252602,42],[45.804886,21.252935,12],[45.80492,21.252973,0],
+  [45.804974,21.25305,17],[45.804882,21.253398,25],[45.804652,21.253767,27],[45.804575,21.254004,7],
+  [45.804532,21.253984,3],[45.804654,21.253826,22],[45.8049,21.253437,20],[45.804972,21.253339,0]];
+const LANT_SV = [[45.803844,21.251418,48],[45.803326,21.250782,46],[45.802799,21.250129,45],
+  [45.802439,21.249605,38],[45.802015,21.249051,39],[45.80162,21.248533,44],[45.801216,21.247961,47],
+  [45.800875,21.247533,43],[45.80036,21.246876,43],[45.799964,21.246343,36],[45.799678,21.24594,31],
+  [45.799329,21.245464,37]];
+const LANT_LEG2 = [[45.802826,21.250331,12],[45.803068,21.250603,42],[45.803662,21.251333,57],
+  [45.80431,21.252109,52],[45.804743,21.252668,30],[45.804925,21.252915,13],[45.804967,21.252969,0],
+  [45.804967,21.252971,0],[45.804967,21.252973,0],[45.804966,21.252971,0],[45.804969,21.252972,1],
+  [45.805235,21.253303,43],[45.805884,21.254025,59],[45.806447,21.254692,57]];
+
+async function lumeGeo(lant, boxes) {
+  const { buildTrace } = await import('../js/geo.js');
+  // urma de recunoaștere: densificată la 6 m, ca cea reală
+  const dens = [];
+  for (let i = 0; i < lant.length - 1; i++) {
+    const [la, ln] = lant[i], [lb, lnb] = lant[i + 1];
+    for (let k = 0; k < 12; k++)
+      dens.push({ lat: la + (lb - la) * k / 12, lng: ln + (lnb - ln) * k / 12 });
+  }
+  dens.push({ lat: lant[lant.length - 1][0], lng: lant[lant.length - 1][1] });
+  const trace = buildTrace(dens);
+  const anchors = [{ officialKm: 0, traceM: 0 },
+                   { officialKm: trace.totalM / 1000, traceM: trace.totalM }];
+  let wall = 0;
+  const clock = makeClock({ now: () => wall, mono: () => wall });
+  const store = makeMemStore(), said = [];
+  const m = makeMachine({ plan: buildPlan(boxes, {}, { trace, samples: [], anchors }),
+    clock, store, driver: makeDriverModel(),
+    voice: { say: (t, p, c) => said.push({ t, p, c }), tone() {}, flush() {} }, ui: { render() {} } });
+  m.start();
+  return { m, store, said,
+    conduPe(pts) {
+      for (const [lat, lng, kmh] of pts) {
+        wall += 5000;
+        m.onFix({ lat, lng, tMs: wall, speedMs: kmh / 3.6, headingDeg: null, accM: 6 });
+      }
+    } };
+}
+
+const BOX_LEG = sanitizeBoxes([
+  { num: 1, sumKm: 0.00, dir: 'ÎNAINTE', flag: 'TC', comment: 'START / TC' },
+  { num: 2, sumKm: 0.40, dir: 'ÎNAINTE', flag: 'RT_START_AUTO', comment: 'START RT 1 · 35 km/h' },
+  { num: 3, sumKm: 1.90, dir: 'ÎNAINTE', flag: 'RT_FINISH', comment: 'FINISH RT 1' }
+]);
+
+console.log('\n═══ Paznicul de direcție: NE pe un traseu care pleacă spre SV = alarmă ═══');
+{
+  const w = await lumeGeo(LANT_SV, BOX_LEG);       // recunoașterea zice: pleacă spre sud-vest
+  w.conduPe(LANT_LEG2);                            // mașina merge, real, spre nord-est
+  const dg = w.store.journal.filter(e => e.type === 'directie_gresita');
+  ok('alarma s-a dat', dg.length >= 1, JSON.stringify(w.store.journal.map(e => e.type)));
+  ok('spune direcția corectă a traseului, în cuvinte',
+     w.said.some(s => /Direcție greșită.*sud-vest/.test(s.t)),
+     JSON.stringify(w.said.map(s => s.t)));
+  ok('bannerul e pus pe stare, pentru ecran',
+     w.m.M.dirAlerta && /sud-vest/.test(w.m.M.dirAlerta.text), JSON.stringify(w.m.M.dirAlerta));
+  ok('diferența măsurată e categorică (>150°)', !!dg[0] && dg[0].difGrd > 150, JSON.stringify(dg[0]));
+  ok('a prins-o în primii ~150 m, nu după 400',
+     !!dg[0] && dg[0].deplasareM >= 120 && dg[0].deplasareM < 250,
+     dg[0] ? String(dg[0].deplasareM) : 'nicio alarmă');
+  ok('se repetă o singură dată, nu la fiecare fix', dg.length <= 2, String(dg.length));
+}
+
+console.log('\n═══ Paznicul TACE pe traseul corect (bucla József, unde direcția se schimbă des) ═══');
+{
+  const w = await lumeGeo(LANT_NE, BOX_LEG);       // recunoașterea Leg 1: NE, apoi bucla
+  w.conduPe(LANT_NE.map(p => [p[0] + 0.00002, p[1] + 0.00002, p[2]]));   // aceeași tură, cu 3 m zgomot
+  ok('niciun fals pozitiv pe traseul propriu',
+     !w.store.journal.some(e => e.type === 'directie_gresita'),
+     JSON.stringify(w.store.journal.filter(e => e.type === 'directie_gresita')));
+  ok('și nici vocal nu s-a plâns', !w.said.some(s => /Direcție greșită/.test(s.t)),
+     JSON.stringify(w.said.map(s => s.t)));
+}
+
+console.log('\n═══ Fără recunoaștere, paznicul tace (roadbook-ul n-are direcții absolute) ═══');
+{
+  let wall = 0;
+  const clock = makeClock({ now: () => wall, mono: () => wall });
+  const store = makeMemStore(), said = [];
+  const m = makeMachine({ plan: buildPlan(BOX_LEG, {}, null), clock, store,
+    driver: makeDriverModel(),
+    voice: { say: t => said.push(t), tone() {}, flush() {} }, ui: { render() {} } });
+  m.start();
+  for (const [lat, lng, kmh] of LANT_LEG2) {
+    wall += 5000;
+    m.onFix({ lat, lng, tMs: wall, speedMs: kmh / 3.6, headingDeg: null, accM: 6 });
+  }
+  ok('nicio alarmă inventată din roadbook',
+     !store.journal.some(e => e.type === 'directie_gresita') &&
+     !said.some(t => /Direcție greșită/.test(t)), JSON.stringify(said));
+}
+
+console.log('\n═══ Ritmul nu mai taie manevra (cazul 17:20:22 din jurnal) ═══');
+{
+  const { makeVoice } = await import('../js/voice.js');
+  let t = 0;
+  const spoken = [], taiate = [];
+  let busy = false;
+  const tts = { speak: (txt) => { spoken.push(txt); busy = true; },
+                cancel: () => { busy = false; }, busy: () => busy };
+  const v = makeVoice({ tts, now: () => t, onDrop: (txt, de) => taiate.push({ txt, de }) });
+  // exact secvența din jurnal: anunțul de finish (manevră) rostindu-se, iar peste el
+  // vine cifra de ritm — care în teren l-a scos din difuzor
+  v.say('Finish în 150 de metri', 3, 'turn', 'manevra');
+  ok('manevra a intrat în difuzor', spoken[spoken.length - 1] === 'Finish în 150 de metri');
+  t += 1000;
+  v.say('55 virgulă 3 în avans, ține 6', 4, 'race', 'ritm');
+  ok('ritmul NU a tăiat manevra',
+     !taiate.some(x => x.txt === 'Finish în 150 de metri' && x.de === 'intrerupt'),
+     JSON.stringify(taiate));
+  ok('ritmul a rămas în coadă, nu s-a rostit peste',
+     spoken[spoken.length - 1] === 'Finish în 150 de metri', JSON.stringify(spoken));
+
+  // coada: cu o manevră și un ritm în așteptare, manevra pleacă prima chiar dacă
+  // ritmul are prioritate numerică mai mare
+  const spoken2 = [];
+  let elibereaza = null;
+  const v2 = makeVoice({ now: () => t, tts: {
+    speak: (txt, onEnd) => { spoken2.push(txt); elibereaza = onEnd; },
+    cancel: () => { elibereaza = null; }, busy: () => !!elibereaza } });
+  v2.say('42 în avans, ține 12', 4, 'pace', 'ritm');    // pleacă imediat, coada e goală
+  v2.say('30 de metri — stânga', 2, 'turn', 'manevra'); // ambele rămân în coadă
+  v2.say('bancă: ia 3 avans', 3, 'bank', 'ritm');
+  const term = elibereaza; elibereaza = null; term();   // difuzorul s-a eliberat
+  ok('din coadă pleacă întâi manevra, deși ritmul e prio 3 vs 2',
+     spoken2[1] === '30 de metri — stânga', JSON.stringify(spoken2));
+
+  // iar o manevră „acum" tot are voie să taie o manevră veche (informația proaspătă bate)
+  const spoken3 = [];
+  let busy3 = false;
+  const v3 = makeVoice({ tts: { speak: txt => { spoken3.push(txt); busy3 = true; },
+                                cancel: () => { busy3 = false; }, busy: () => busy3 },
+                         now: () => t, onDrop: (txt, de) => taiate.push({ txt, de }) });
+  v3.say('150 de metri — dreapta', 3, 'turn', 'manevra');
+  v3.say('dreapta acum', 4, 'turn', 'manevra');
+  ok('„acum" taie avertizarea veche a aceleiași manevre',
+     spoken3.includes('dreapta acum'), JSON.stringify(spoken3));
+}
+
 console.log(`\n──────── ${pass} trecute, ${fail} căzute ────────`);
 process.exit(fail ? 1 : 0);

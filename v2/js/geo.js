@@ -114,3 +114,35 @@ export function makeOdometer() {
 
 // diferență unghiulară semnată, -180..180 (pentru detecția de viraje fără geometrie)
 export function angDiff(a, b) { return ((a - b + 540) % 360) - 180; }
+
+// Azimutul de la un punct la altul, 0..360 (0 = nord, 90 = est).
+export function bearingDeg(lat1, lng1, lat2, lng2) {
+  const r = Math.PI / 180;
+  const y = Math.sin((lng2 - lng1) * r) * Math.cos(lat2 * r);
+  const x = Math.cos(lat1 * r) * Math.sin(lat2 * r) -
+            Math.sin(lat1 * r) * Math.cos(lat2 * r) * Math.cos((lng2 - lng1) * r);
+  return (Math.atan2(y, x) / r + 360) % 360;
+}
+
+// Primul punct de pe urmă, pornind de la `fromCumM`, aflat la cel puțin `strM` metri
+// în LINIE DREAPTĂ de punctul de plecare. Comparația corectă pentru „încotro pleacă
+// traseul": aceeași depărtare ca a mașinii, deci aceeași bucată de drum — nu contează
+// dacă între timp drumul a cotit de trei ori. Întoarce null dacă urma se termină înainte.
+export function traceAheadPoint(trace, fromCumM, strM) {
+  const pts = trace && trace.pts;
+  if (!pts || pts.length < 2) return null;
+  let i = 0;
+  while (i < pts.length - 1 && pts[i].cum < fromCumM) i++;
+  const a = pts[i];
+  for (let j = i + 1; j < pts.length; j++) {
+    if (haversineM(a.lat, a.lng, pts[j].lat, pts[j].lng) >= strM)
+      return { from: a, to: pts[j] };
+  }
+  return null;
+}
+
+// „nord-est" etc. — direcția spusă cu voce tare, nu în grade
+export function directieRo(deg) {
+  const nume = ['nord', 'nord-est', 'est', 'sud-est', 'sud', 'sud-vest', 'vest', 'nord-vest'];
+  return nume[Math.round(((deg % 360) + 360) % 360 / 45) % 8];
+}

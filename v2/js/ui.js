@@ -77,6 +77,13 @@ export function makeUi() {
         (plan.rts[M.rtIdx] === r && M.state === 'RT_RUN') ? `▶${r.name}` : r.name
       ).join('  ');
 
+      // paznicul de direcție — banner cât timp alerta e în picioare (03.08.2026)
+      const db = $('cp-dirband');
+      if (db) {
+        if (M.dirAlerta) { db.textContent = '⚠ ' + M.dirAlerta.text; db.className = 'warnband'; }
+        else db.className = 'warnband hidden';
+      }
+
       // banda TC — permanentă cât există un control orar în față (propunerea 4)
       const tb = $('cp-tcband');
       if (tb) {
