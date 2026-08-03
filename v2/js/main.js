@@ -21,7 +21,7 @@ let boxesRaw = [], reconRec = null;
 // Versiunea build-ului — se ține SINCRON cu CACHE din sw.js la fiecare deploy.
 // Vizibilă în antet și scrisă în jurnal la fiecare pornire: „ce versiune rulează
 // telefonul?" se citește, nu se ghicește (02.08, seara — nu se putea ști).
-const BUILD = 'v26';
+const BUILD = 'v27';
 
 async function init() {
   store = await makeStore();
@@ -97,8 +97,18 @@ async function rebuildPlan() {
   plan.nextLegLabel = plan.nextLegKey ? grupuri[idx + 1].label : null;
   machine = makeMachine({ plan, clock, voice, store, ui, driver });
   // programul TC scanat ieri nu se pierde la repornire — se reîncarcă din stocare
+  // Time card-ul e al ZILEI (TC1..TCn în ordine), dar planul e al LEG-ului: fiecare
+  // leg consumă din listă atâtea TC-uri câte boxuri TC are. Offset-ul se DERIVĂ din
+  // poziția leg-ului activ (suma TC-urilor leg-urilor dinainte) — fără stare, corect
+  // și la trecerea normală, și la alegerea manuală a leg-ului. Fără felierea asta,
+  // după leg 1 orele TC1/TC2 se lipeau de boxurile leg-ului 2 (găsit 03.08, construind
+  // testul cu două leg-uri — la Sibiu ar fi lovit direct).
   const tcs = await store.get('tc_schedule');
-  if (tcs && tcs.length) machine.setTcSchedule(tcs);
+  if (tcs && tcs.length) {
+    const tcOff = grupuri.slice(0, Math.max(0, idx))
+      .reduce((n, gr) => n + gr.boxes.filter(b => b.flag === 'TC').length, 0);
+    machine.setTcSchedule(tcs.slice(tcOff));
+  }
   renderPrep();
   ui.render(machine.M, plan);
 }
@@ -222,7 +232,7 @@ async function legUrmator() {
   if (!plan.nextLegKey) return;
   const numeNou = plan.nextLegLabel;
   await store.put('leg_activ', plan.nextLegKey);
-  await rebuildPlan();
+  await rebuildPlan();      // offset-ul TC pe leg se derivă în rebuildPlan
   voice.say(`${numeNou}. Apasă START când ești la boxul 1.`, 2);
   showScreen('prep');
 }
@@ -432,7 +442,7 @@ async function doScanTimecard() {
     try {
       const tcs = await scanTimeCard(key, imgs[0].b64, imgs[0].mime);
       await store.put('tc_schedule', tcs);
-      machine.setTcSchedule(tcs);
+      await rebuildPlan();                  // maparea pe leg-ul activ, cu offset derivat
       st.textContent = '✓ ' + tcs.map(t => `${t.name} ${t.time}`).join(' · ');
     } catch (e) { st.textContent = '✗ ' + e.message; }
   });
