@@ -34,7 +34,7 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
     shadow: !!opts.shadow, // modul umbră: totul rulează, vocea tace, jurnalul ține minte
     ghost: !!opts.ghost,
     _ann: {}, _staged: false, _warnedRt: {}, _lastBank: 0,
-    _turnAcc: 0, _lastHdg: null, _lastHdgT: 0, _quietMs: 0, _lastSnapT: 0,
+    _turnAcc: 0, _lastHdg: null, _lastHdgT: 0, _quietMs: 0, _lastSnapT: 0, _virajRefuzat: null,
     _lastToneT: 0, _extSpeedKmh: null, _extSpeedT: 0,
     // auto-calibrarea odometrului (vezi calibreaza)
     calFactor: 1, _rawSinceAnchor: 0, _calAnchorKm: 0, _calN: 0, _calOficial: 0, _calMasurat: 0,
@@ -216,9 +216,35 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
     }
   }
 
+  // Kilometrul de la care boxul `i` se consideră TRECUT pentru ecran și pentru anunțuri:
+  // 80 m după el — dar niciodată dincolo de jumătatea distanței până la boxul următor.
+  // Bucla József (03.08.2026): boxurile 2, 3 și 4 sunt la 29 și 22 m unul de altul, iar
+  // regula fixă de 80 m ținea pe ecran cardul boxului deja trecut peste următoarele DOUĂ
+  // manevre. Măsurat în jurnal: 22 s de „0 m" pe boxul 2, apoi încă 23 s până când apărea
+  // boxul 4 — care era la 60 m de boxul 2. Pilotul afla de manevră după ce trecea de ea.
+  function pragTrecere(i) {
+    const b = plan.boxes[i], nb = plan.boxes[i + 1];
+    if (!b) return Infinity;
+    const prag = b.sumKm + 0.08;
+    return nb ? Math.min(prag, (b.sumKm + nb.sumKm) / 2) : prag;
+  }
+
+  // Boxul de DUPĂ cel curent, când e atât de aproape încât un anunț separat ar veni
+  // prea târziu (sub 60 m). Fraza lui intră în ACELAȘI anunț cu „acum".
+  function boxInlantuit(i) {
+    const b = plan.boxes[i], nb = plan.boxes[i + 1];
+    if (!b || !nb) return null;
+    const gapM = Math.round((nb.sumKm - b.sumKm) * 1000);
+    if (gapM > 60) return null;
+    if (nb.dir === 'ÎNAINTE' && !nb.flag) return null;      // „drept înainte" nu se rostește
+    return { box: nb, gapM,
+             text: nb.flag ? turnText(nb, gapM, false)
+                           : `${maneuver(nb.dir, false)} la ${distRo(Math.max(20, gapM))}` };
+  }
+
   function announceBoxes() {
     const boxes = plan.boxes;
-    while (M.nextBoxIdx < boxes.length && M.routeKm > boxes[M.nextBoxIdx].sumKm + 0.08) M.nextBoxIdx++;
+    while (M.nextBoxIdx < boxes.length && M.routeKm > pragTrecere(M.nextBoxIdx)) M.nextBoxIdx++;
     const b = boxes[M.nextBoxIdx];
     if (!b) return;
     const dM = (b.sumKm - M.routeKm) * 1000;
@@ -243,7 +269,16 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
     for (let j = 0; j <= ti; j++) M._ann[key + '_' + j] = true;
     if (!silent) {
       // „acum" = prio 4: întrerupe orice și nu expiră repede (audit, #9)
-      say(turnText(b, dM, isNow), isNow ? 4 : (M.rt ? 3 : 2), 'turn');
+      let txt = turnText(b, dM, isNow);
+      // Boxuri ÎNLĂNȚUITE: manevra următoare se spune ÎNAINTE de a o face pe asta.
+      // La 20-30 m între boxuri (bucla József), al doilea anunț ar veni oricum după
+      // ce virajul e ratat — deci intră în aceeași frază: „dreapta acum, apoi stânga
+      // la 30 de metri". (Plângerea lui Andreas, 03.08.2026.)
+      if (isNow) {
+        const inl = boxInlantuit(M.nextBoxIdx);
+        if (inl) txt += `, apoi ${inl.text}`;
+      }
+      say(txt, isNow ? 4 : (M.rt ? 3 : 2), 'turn');
       if (isNow) { driver.cueGiven(b.num, clock.wall()); log('cue', { boxNum: b.num }); }
     }
   }
@@ -581,21 +616,6 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
     if (clock.mono() - M._lastSnapT < 10000) return;
     if (M.routeKm < 0.15) { log('snap_refuzat', { motiv: 'start_leg', routeKm: r2(M.routeKm) }); return; }
     const right = acc > 0;
-    let best = -1, gap = 0.15;
-    for (let i = Math.max(0, M.nextBoxIdx - 1); i <= Math.min(plan.boxes.length - 1, M.nextBoxIdx + 1); i++) {
-      const b = plan.boxes[i];
-      if (!b || !TURN_DIRS.has(b.dir || '')) continue;
-      const g = Math.abs(b.sumKm - M.routeKm);
-      if (g > gap) continue;
-      const ok = /^GIRATORIU/.test(b.dir) || (right ? /^DREAPTA/.test(b.dir) : /^STÂNGA/.test(b.dir));
-      if (!ok) continue;
-      best = i; gap = g;
-    }
-    if (best === -1) {                     // conservator: fără candidat plauzibil, fără snap
-      log('snap_refuzat', { motiv: 'fara_candidat', routeKm: r2(M.routeKm), spreDreapta: right });
-      return;
-    }
-    M._lastSnapT = clock.mono();
     // ÎNTÂRZIEREA DETECTĂRII (tura 5, 02.08): virajul se confirmă abia la ~2,5 s după
     // ce s-a terminat — timp în care mașina a mai mers 60-130 m. Snapul care punea
     // poziția FIX la box te trăgea sistematic în urmă cu distanța aia (−99/−133/−121 m
@@ -606,6 +626,42 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
       ? haversineM(M._turnMovePos.lat, M._turnMovePos.lng, M._lastPos.lat, M._lastPos.lng)
       : (M.speedKmh / 3.6) * 2.5;
     lagM = Math.max(0, Math.min(200, lagM));
+    // …și de-aceea lag-ul se scade ÎNAINTE de căutarea candidatului, nu după (03.08.2026).
+    // Fereastra se măsura de unde s-a TREZIT detectorul, deși boxul e acolo unde s-a
+    // VIRAT. Măsurat în bucla József, în ambele ture identice: virajul de la boxul 4
+    // (stânga la T) s-a confirmat la routeKm 0,51 și 0,52, adică 160 și 170 m după
+    // kilometrul oficial al boxului (0,35) — fereastra de 150 m îl rata la 10-20 m și
+    // aplicația scria „fara_candidat" exact la virajul pe care pilotul tocmai îl făcuse.
+    const virajKm = M.routeKm - lagM / 1000;
+    // Cine poate fi candidat: orice box NEconfirmat până la unul peste cel așteptat.
+    // Înainte era o fereastră de trei indici în jurul lui nextBoxIdx, ceea ce mergea
+    // doar cât timp boxurile erau rare: la 22-30 m între ele, până se hotărăște
+    // detectorul (2,5 s + colțul propriu-zis), indicele a trecut deja de boxul virat,
+    // iar virajul rămânea fără candidat DEȘI era la 50 m de el. Înainte NU se sare
+    // niciodată mai mult de un box (regula care a oprit saltul de +238 m din 01.08);
+    // înapoi decide distanța, plafonată la 150 m mai jos.
+    const de = Math.max(0, (M._confirmedIdx != null ? M._confirmedIdx : -1) + 1);
+    const pana = Math.min(plan.boxes.length - 1, M.nextBoxIdx + 1);
+    let best = -1, gap = 0.15;
+    for (let i = de; i <= pana; i++) {
+      const b = plan.boxes[i];
+      if (!b || !TURN_DIRS.has(b.dir || '')) continue;
+      const g = Math.abs(b.sumKm - virajKm);
+      if (g > gap) continue;
+      const ok = /^GIRATORIU/.test(b.dir) || (right ? /^DREAPTA/.test(b.dir) : /^STÂNGA/.test(b.dir));
+      if (!ok) continue;
+      best = i; gap = g;
+    }
+    if (best === -1) {                     // conservator: fără candidat plauzibil, fără snap
+      // Virajul EXISTĂ, doar că nu i-am găsit box. Se ține minte: dacă imediat după
+      // asta desyncCheck vrea să-l acuze pe pilot că n-a virat, dovada asta îl contrazice.
+      M._virajRefuzat = { mono: clock.mono(), routeKm: M.routeKm, virajKm, right, lagM,
+                          prevIdx: M.nextBoxIdx - 1 };
+      log('snap_refuzat', { motiv: 'fara_candidat', routeKm: r2(M.routeKm),
+                            virajKm: r2(virajKm), lagM: Math.round(lagM), spreDreapta: right });
+      return;
+    }
+    M._lastSnapT = clock.mono();
     const before = M.routeKm;
     snapToBox(best, 'turn', lagM);
     const deltaM = Math.round((M.routeKm - before) * 1000);
@@ -628,12 +684,39 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
     if (past < 0.25 || M._desyncSaid === prev.num) return;
     if (clock.mono() - M._lastSnapT < 20000) return;   // tocmai am sincronizat, e în regulă
     M._desyncSaid = prev.num;
+    // Am VĂZUT virajul boxului ăstuia, dar l-am refuzat fiindcă poziția era prea departe?
+    // Atunci vinovată e poziția, nu pilotul — și se aude altfel. Măsurat 03.08, în ambele
+    // ture: „virajul de la boxul 4 pare ratat" a venit la 2 s după ce aplicația însăși
+    // detectase virajul de la boxul 4. Pilotul îl făcuse; aplicația i-a spus că nu.
+    const vz = M._virajRefuzat;
+    const potrivit = !!(vz && vz.prevIdx === prevIdx &&
+      clock.mono() - vz.mono <= 90000 &&
+      Math.abs(vz.virajKm - prev.sumKm) < 0.4 &&
+      (/^GIRATORIU/.test(prev.dir) || (vz.right ? /^DREAPTA/ : /^STÂNGA/).test(prev.dir)));
+    log('desync_warn', { boxNum: prev.num, pastM: Math.round(past * 1000), inRt: !!M.rt,
+                         virajVazut: potrivit });
+    if (potrivit) {
+      M._virajRefuzat = null;
+      if (M.rt) {
+        // În probă poziția NU se atinge: o corecție de sute de metri schimbă devierea
+        // afișată, iar pilotul reacționează la o cifră care sare (audit #8).
+        say(`Boxul ${prev.num}: virajul l-am văzut, dar poziția nu se potrivește. Continuă proba.`, 3, 'desync');
+        tone('tick');
+      } else {
+        // În legătură se recalează, cu același contract ca la snap: ești la box + cât
+        // ai mers de la virajul ăla, nu fix pe box.
+        const lagAcum = Math.min(400, vz.lagM + Math.max(0, (M.routeKm - vz.routeKm) * 1000));
+        say(`Te-am prins la boxul ${prev.num} — recalez.`, 3, 'desync');
+        M._lastSnapT = clock.mono();
+        snapToBox(prevIdx, 'turn_tardiv', lagAcum);
+      }
+      return;
+    }
     // În probă instrucțiunea e diferită: lista de boxuri NU se folosește la 50 km/h.
     say(M.rt
       ? `Atenție: virajul de la boxul ${prev.num} pare ratat. Continuă — corectezi când poți opri.`
       : `Atenție: ar fi trebuit să virezi la boxul ${prev.num}. Dacă ești tot pe drept, apasă SUNT LA BOX.`, 3, 'desync');
     tone('alarm');
-    log('desync_warn', { boxNum: prev.num, pastM: Math.round(past * 1000), inRt: !!M.rt });
   }
 
   // ── API public ────────────────────────────────────────────────────────────
@@ -649,6 +732,7 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
       M.routeKm = 0; M.traceM = null; M._projMiss = 0;
       M.rtIdx = 0; M.rt = null; M.nextBoxIdx = 0; M.results = {}; M.lastDebrief = null;
       M._ann = {}; M._staged = false; M._warnedRt = {}; M._desyncSaid = null; M._confirmedIdx = -1;
+      M._virajRefuzat = null; M._turnAcc = 0; M._lastHdg = null; M._lastSnapT = 0;
       M._lastFixMono = null; M._gpsLostSaid = false;
       M.calFactor = 1; M._rawSinceAnchor = 0; M._calAnchorKm = 0; M._anchorKm = 0;
       M._calN = 0; M._calOficial = 0; M._calMasurat = 0;

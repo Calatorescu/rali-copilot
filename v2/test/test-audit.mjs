@@ -421,5 +421,172 @@ console.log('\n═══ Tura 5: snapul pe viraj ține cont de întârzierea det
      sy && String(sy.lagM));
 }
 
+// ── Bucla József, 03.08.2026 — două ture identice, aceleași trei defecte ─────
+// Jurnalul (rali-jurnale/jurnale/2026-08-03.json, sesiunile 16:49:44 și 17:07:19):
+//   16:50:09 cue box 2 · 16:50:35 sync turn box 2 {deltaM −54, lagM 26} + cue box 3
+//   16:50:58 cue box 4 (23 s mai târziu!) · 16:51:53 snap_refuzat {fara_candidat,
+//   routeKm 0,51} · 16:51:54 cue box 5 · 16:52:00 desync_warn {box 4, pastM 254}
+// Adică: virajul de la boxul 4 a fost VĂZUT și refuzat, iar 7 s mai târziu aplicația
+// i-a spus pilotului că nu l-a făcut. Roadbook-ul: box 2 la 0,29, box 3 la 0,32 (29 m),
+// box 4 la 0,35 (22 m). Fixtura de mai jos reproduce geometria și vitezele reale.
+const BUCLA = sanitizeBoxes([
+  { num: 1, sumKm: 0.00, dir: 'ÎNAINTE', flag: 'TC', comment: 'START / TC 1' },
+  { num: 2, sumKm: 0.29, dir: 'DREAPTA', comment: 'Dreapta spre Str. József Attila' },
+  { num: 3, sumKm: 0.32, dir: 'STÂNGA', comment: 'Stânga — IMEDIAT (29 m)' },
+  { num: 4, sumKm: 0.35, dir: 'STÂNGA-T', comment: 'Stânga la T — IMEDIAT (22 m)' },
+  { num: 5, sumKm: 0.57, dir: 'ÎNAINTE', flag: 'RT_START_AUTO', comment: 'START RT 1 · 40 km/h' },
+  { num: 7, sumKm: 2.57, dir: 'ÎNAINTE', flag: 'RT_FINISH', comment: 'FINISH RT 1' }
+]);
+
+// Lume cu direcție: fiecare pas mută mașina pe un cap compas dat, cu viteza dată.
+function lumeCuBusola(boxes) {
+  let wall = 0, lat = 45, lng = 21;
+  const clock = makeClock({ now: () => wall, mono: () => wall });
+  const store = makeMemStore();
+  const said = [];
+  const m = makeMachine({ plan: buildPlan(boxes, {}, null), clock, store,
+    driver: makeDriverModel(),
+    voice: { say: (t, p) => said.push({ t, p }), tone() {}, flush() {} }, ui: { render() {} } });
+  m.start();
+  wall += 1000; m.onFix({ lat, lng, tMs: wall, speedMs: 0, headingDeg: 0, accM: 6 });
+  // un pas = o secundă; `m` metri pe capul `hdg`
+  const pas = (metri, hdg) => {
+    const r = hdg * Math.PI / 180;
+    lat += (metri * Math.cos(r)) / 111320;
+    lng += (metri * Math.sin(r)) / (111320 * Math.cos(45 * Math.PI / 180));
+    wall += 1000;
+    m.onFix({ lat, lng, tMs: wall, speedMs: metri, headingDeg: hdg, accM: 6 });
+  };
+  const drept = (n, metri, hdg) => { for (let i = 0; i < n; i++) pas(metri, hdg); };
+  return { m, store, said, pas, drept, get nextBox() { return boxes[m.M.nextBoxIdx]; } };
+}
+
+console.log('\n═══ 03.08: virajul de la boxul 4 e găsit, nu refuzat ═══');
+{
+  const w = lumeCuBusola(BUCLA);
+  w.drept(24, 12, 0);                       // 288 m spre nord, până la boxul 2 (0,29)
+  // virajul dreapta: 7 fixuri de 8 m cu direcția în schimbare (54 m de colț, ca în teren),
+  // apoi 3 fixuri de 9 m cu direcția stabilă → detectorul se hotărăște (lag ≈ 27 m)
+  const colt = [15, 30, 45, 60, 70, 80, 90];
+  for (const h of colt) w.pas(8, h);
+  w.drept(3, 9, 90);
+  const s2 = w.store.journal.find(e => e.type === 'sync' && e.boxNum === 2);
+  ok('boxul 2 e sincronizat pe viraj, cu lag de ordinul din teren (25-30 m)',
+     s2 && s2.lagM >= 20 && s2.lagM <= 40, JSON.stringify(s2));
+  ok('corecția e înapoi, de ordinul măsurat în jurnal (−40…−70 m)',
+     s2 && s2.deltaM <= -40 && s2.deltaM >= -70, s2 && String(s2.deltaM));
+
+  // bucla reală: dus pe József, întoarcere sub 8 km/h (măsurat în teren: 3-7 km/h —
+  // de-aia detectorul de viraje nici nu se trezește acolo), înapoi, apoi virajul la T.
+  // Lungimile sunt calibrate pe jurnal: de la snapul boxului 2 până la confirmarea
+  // virajului de la T, aplicația a numărat 194 m (0,316 → 0,51).
+  w.drept(7, 9, 135);                       // 63 m spre sud-est
+  for (const h of [160, 200, 250, 290, 315]) w.pas(2, h);   // întoarcerea, la ~7 km/h
+  w.drept(7, 9, 315);                       // 63 m înapoi spre nord-vest
+  const faraViraj = w.store.journal.filter(e => e.type === 'sync' && e.boxNum === 3);
+  ok('manevra sub 8 km/h NU produce viraj detectat (cauza (b) din teren)',
+     faraViraj.length === 0, JSON.stringify(faraViraj));
+  // virajul STÂNGA la T, înapoi pe DJ691, cu lag de detectare ca în teren (~30-50 m)
+  for (const h of [290, 270, 250, 225, 210]) w.pas(6, h);
+  w.drept(4, 8, 195);
+  const s4 = w.store.journal.find(e => e.type === 'sync' && e.boxNum === 4);
+  const refuz = w.store.journal.filter(e => e.type === 'snap_refuzat' && e.motiv === 'fara_candidat');
+  // pinul pe realitate: dacă fixtura nu ajunge unde a ajuns mașina lui Andreas
+  // (0,51 și 0,52 la confirmarea virajului), testul de dedesubt nu dovedește nimic
+  ok('poziția la confirmarea virajului e ca în jurnal (0,505-0,53 față de 0,51/0,52 real)',
+     s4 && s4.deltaM < 0 && w.m.M.routeKm - s4.deltaM / 1000 > 0.505 &&
+     w.m.M.routeKm - s4.deltaM / 1000 < 0.53,
+     JSON.stringify({ s4, acum: w.m.M.routeKm.toFixed(3) }));
+  ok('virajul de la T îl găsește pe boxul 4 (înainte: „fara_candidat")',
+     !!s4, JSON.stringify({ refuz, sync: w.store.journal.filter(e => e.type === 'sync') }));
+  ok('poziția devine box 4 + lag, nu fix boxul',
+     s4 && w.m.M.routeKm > 0.35 && w.m.M.routeKm < 0.55, w.m.M.routeKm.toFixed(3));
+  ok('nicio acuzație „boxul 4 pare ratat"',
+     !w.said.some(s => /boxul 4/.test(s.t) && /ratat|trebuit să virezi/.test(s.t)),
+     JSON.stringify(w.said.filter(s => /boxul 4/.test(s.t)).map(s => s.t)));
+}
+
+console.log('\n═══ 03.08: boxurile înlănțuite se văd și se aud la timp ═══');
+{
+  const w = lumeCuBusola(BUCLA);
+  w.drept(23, 12, 0);                       // 276 m — chiar înainte de boxul 2
+  const acum = w.said.filter(s => /dreapta acum/.test(s.t));
+  ok('anunțul „acum" al boxului 2 spune ȘI manevra următoare',
+     acum.length >= 1 && /apoi .*stânga/i.test(acum[acum.length - 1].t),
+     JSON.stringify(acum.map(s => s.t)));
+  ok('…cu distanța dintre ele, în metri', acum.some(s => /la 30 de metri|la 29 de metri/.test(s.t)),
+     JSON.stringify(acum.map(s => s.t)));
+
+  // ecranul: boxul 3 (0,32) nu mai are voie să țină cardul până la 0,40 — boxul 4 (0,35)
+  // e mai aproape decât el încă de la 0,335. Măsurat în teren: 23 s de întârziere.
+  const w2 = lumeCuBusola(BUCLA);
+  w2.drept(28, 12, 0);                      // 336 m: trecut de 0,335, încă departe de 0,40
+  ok('la 0,336 km ecranul arată deja boxul 4, nu boxul 3',
+     w2.nextBox && w2.nextBox.num === 4, JSON.stringify({ km: w2.m.M.routeKm.toFixed(3),
+       box: w2.nextBox && w2.nextBox.num }));
+}
+
+console.log('\n═══ 03.08: „te-am prins, recalez" în loc de „n-ai virat" ═══');
+{
+  // Poziția o ia mult înainte (mai mult decât poate repara fereastra de 150 m), deci
+  // virajul rămâne refuzat — dar EXISTĂ. Aplicația n-are voie să-l acuze pe pilot.
+  const boxes = sanitizeBoxes([
+    { num: 1, sumKm: 0.00, dir: 'ÎNAINTE', flag: 'TC', comment: 'Start' },
+    { num: 2, sumKm: 0.29, dir: 'DREAPTA', comment: 'colț' },
+    { num: 3, sumKm: 1.50, dir: 'ÎNAINTE', flag: 'TC', comment: 'final' }
+  ]);
+  const w = lumeCuBusola(boxes);
+  // ordinea din teren: întâi virajul (refuzat), abia apoi alarma — la boxul 4 au fost
+  // 7 s între ele. Poziția e cu ~180 m peste box când se confirmă virajul: prea mult
+  // pentru fereastra de 150 m, prea puțin ca alarma să fi pornit deja.
+  w.drept(36, 12, 0);                       // 432 m spre nord
+  for (const h of [20, 40, 60, 75, 90]) w.pas(6, h);
+  w.drept(4, 8, 90);                        // detectorul se hotărăște (lag ≈ 24 m)
+  const refuz = w.store.journal.find(e => e.type === 'snap_refuzat' && e.motiv === 'fara_candidat');
+  ok('virajul e refuzat (prea departe), dar notat cu lag și km de viraj',
+     refuz && refuz.lagM > 0 && refuz.virajKm > 0, JSON.stringify(refuz));
+  w.drept(6, 10, 90);                       // se merge mai departe: abia acum boxul e „ratat"
+  const dw = w.store.journal.find(e => e.type === 'desync_warn');
+  ok('desync-ul recunoaște că virajul a fost văzut', dw && dw.virajVazut === true,
+     JSON.stringify(dw));
+  ok('mesajul nu mai acuză pilotul',
+     !w.said.some(s => /ar fi trebuit să virezi/.test(s.t)),
+     JSON.stringify(w.said.filter(s => /boxul 2/.test(s.t)).map(s => s.t)));
+  ok('spune că recalează', w.said.some(s => /Te-am prins la boxul 2/.test(s.t)),
+     JSON.stringify(w.said.map(s => s.t).slice(-4)));
+  const st = w.store.journal.find(e => e.type === 'sync' && e.how === 'turn_tardiv');
+  ok('recalarea s-a și făcut, în legătură', !!st, JSON.stringify(st));
+  ok('poziția e box + cât s-a mers de la viraj (nu fix pe box)',
+     w.m.M.routeKm > 0.29 && w.m.M.routeKm < 0.45, w.m.M.routeKm.toFixed(3));
+}
+
+console.log('\n═══ 03.08: în probă, recalarea NU se execută (doar se spune) ═══');
+{
+  // ca în teren: alarma de la boxul 4 a venit la 2 s DUPĂ ce pornise RT1
+  const boxes = sanitizeBoxes([
+    { num: 1, sumKm: 0.00, dir: 'ÎNAINTE', flag: 'TC', comment: 'Start' },
+    { num: 2, sumKm: 0.20, dir: 'ÎNAINTE', flag: 'RT_START_AUTO', comment: 'START RT 1 · 40 km/h' },
+    { num: 3, sumKm: 0.29, dir: 'DREAPTA', comment: 'colț, în probă' },
+    { num: 4, sumKm: 2.40, dir: 'ÎNAINTE', flag: 'RT_FINISH', comment: 'FINISH' }
+  ]);
+  const w = lumeCuBusola(boxes);
+  w.drept(36, 12, 0);
+  for (const h of [20, 40, 60, 75, 90]) w.pas(6, h);
+  w.drept(4, 8, 90);                        // virajul refuzat, exact ca mai sus
+  ok('proba rulează', w.m.M.state === 'RT_RUN', w.m.M.state);
+  const kmInainte = w.m.M.routeKm;
+  w.drept(6, 10, 90);                       // încă 60 m: acum boxul pare „ratat"
+  ok('poziția a avansat cu drumul făcut, fără nicio săritură',
+     Math.abs((w.m.M.routeKm - kmInainte) * 1000 - 60) < 15,
+     `${kmInainte.toFixed(3)} → ${w.m.M.routeKm.toFixed(3)}`);
+  ok('nicio resincronizare în plină probă',
+     !w.store.journal.some(e => e.type === 'sync'),
+     JSON.stringify(w.store.journal.filter(e => e.type === 'sync')));
+  ok('dar nici nu-l acuză', !w.said.some(s => /pare ratat/.test(s.t)),
+     JSON.stringify(w.said.filter(s => /boxul 2/.test(s.t)).map(s => s.t)));
+  ok('îi spune că poziția e de vină', w.said.some(s => /poziția nu se potrivește/.test(s.t)),
+     JSON.stringify(w.said.map(s => s.t).slice(-4)));
+}
+
 console.log(`\n──────── ${pass} trecute, ${fail} căzute ────────`);
 process.exit(fail ? 1 : 0);

@@ -64,6 +64,9 @@ input { background: var(--bg); border: 1px solid var(--border); border-radius: 1
 .nx-com { font-size: 15px; color: var(--text); min-height: 20px; }
 .nx-box { font-size: 12px; color: var(--dim); }
 .nx-after { font-size: 13px; color: var(--dim); margin-top: 6px; border-top: 1px solid var(--border); padding-top: 6px; }
+/* boxuri înlănțuite (sub 60 m): a doua manevră nu mai e o notă de subsol — o faci
+   la 2 secunde după prima (bucla József, 03.08.2026) */
+.nx-after.inlantuit { font-size: 19px; font-weight: 800; color: var(--warn); }
 
 /* banda TC — permanentă, verde/roșu dintr-o privire */
 .tcband { text-align: center; font-size: 15px; font-weight: 800; padding: 7px;

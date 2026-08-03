@@ -46,7 +46,10 @@ export function makeUi() {
       const b = plan.boxes[M.nextBoxIdx];
       if (b) {
         const dM = Math.max(0, (b.sumKm - M.routeKm) * 1000);
-        $('cp-next-dist').textContent = dM >= 1000 ? (dM / 1000).toFixed(1) + ' km' : Math.round(dM) + ' m';
+        // „0 m" ținut pe ecran zeci de secunde arată ca o aplicație blocată — și chiar
+        // asta a văzut Andreas în bucla József (03.08). Cifra devine cuvânt: ești ACOLO.
+        $('cp-next-dist').textContent = dM < 12 ? 'ACUM'
+          : dM >= 1000 ? (dM / 1000).toFixed(1) + ' km' : Math.round(dM) + ' m';
         $('cp-next-dir').textContent = dirGlyph(b);
         $('cp-next-com').textContent = (b.comment || '').split('/')[0].trim();
         $('cp-next-box').textContent = 'box ' + (b.num != null ? b.num : '?');
@@ -54,9 +57,19 @@ export function makeUi() {
         $('cp-next-dist').textContent = '—'; $('cp-next-dir').textContent = '🏁';
         $('cp-next-com').textContent = 'final de leg'; $('cp-next-box').textContent = '';
       }
+      // Rândul de dedesubt: la boxuri ÎNLĂNȚUITE (sub 60 m) nu mai arată un kilometraj
+      // absolut pe care nimeni nu-l poate folosi la volan, ci manevra imediat următoare
+      // și la câți metri după cea curentă vine — cu tot cu direcție și săgeată.
       const b2 = plan.boxes[M.nextBoxIdx + 1];
-      $('cp-after').textContent = b2
-        ? `apoi: ${dirGlyph(b2)} la ${b2.sumKm.toFixed(2)} km` : '';
+      const af = $('cp-after');
+      if (b2 && b) {
+        const gapM = Math.round((b2.sumKm - b.sumKm) * 1000);
+        const inlantuit = gapM <= 60;
+        af.textContent = inlantuit
+          ? `IMEDIAT APOI (${gapM} m): ${dirGlyph(b2)} box ${b2.num != null ? b2.num : '?'}`
+          : `apoi: ${dirGlyph(b2)} la ${b2.sumKm.toFixed(2)} km`;
+        af.className = 'nx-after' + (inlantuit ? ' inlantuit' : '');
+      } else { af.textContent = ''; af.className = 'nx-after'; }
 
       // probele — bara de jos
       $('cp-rts').textContent = plan.rts.map(r =>
