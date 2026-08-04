@@ -37,7 +37,7 @@ const TRESOR = sanitizeBoxes([
 // probele scoase din fixtură (start/finish nu schimbă nimic în logica de traseu, dar ar
 // umple difuzorul cu cifre de ritm); restul kilometrajului e cel din roadbook.
 
-function lume(boxes = TRESOR, opts = {}) {
+function lume(boxes = TRESOR, opts = {}, { faraFix = false } = {}) {
   // lng deplasat cu -10 fata de zona reala, ca in toate fixturile (vezi test-audit.mjs)
   let wall = 0, lat = 45.78, lng = 11.24;
   const clock = makeClock({ now: () => wall, mono: () => wall });
@@ -48,7 +48,7 @@ function lume(boxes = TRESOR, opts = {}) {
     voice: { say: (t, p, cat, cls) => said.push({ t, p, cat, cls }), tone() {}, flush() {} },
     ui: { render() {} }, opts });
   m.start();
-  wall += 1000; m.onFix({ lat, lng, tMs: wall, speedMs: 0, headingDeg: 0, accM: 6 });
+  if (!faraFix) { wall += 1000; m.onFix({ lat, lng, tMs: wall, speedMs: 0, headingDeg: 0, accM: 6 }); }
   // un pas = un fix. În teren fixurile au venit la ~6 s; aici la 1 s, ca virajele să
   // aibă destule mostre pentru detector (el cere 2,5 s de direcție stabilă).
   const pas = (metri, hdg) => {
@@ -216,6 +216,38 @@ console.log('\n═══ Alarme false: ce NU trebuie să declare ieșirea de pe 
   w4.drept(600, 0);
   ok('cu detectarea oprită, nimic nu se schimbă', !w4.m.M.offRoute &&
      w4.jurnal('offroute_semn').length === 0, JSON.stringify(w4.jurnal('offroute_semn')));
+}
+
+console.log('\n═══ Butonul apăsat în primul minut (tura poligon, 18:01) ═══');
+{
+  // În teren: apăsat de trei ori în 32 de secunde, la 300-800 m de la plecare. De
+  // fiecare dată „N-am de unde să te iau înapoi — n-am destul drum în memorie", iar
+  // aplicația a continuat să dicteze viraje („stânga acum" la 18:01:27, „dreapta acum"
+  // la 18:01:53) pentru un traseu pe care mașina nu se afla.
+  const w = lume();
+  w.drept(120, 0);                 // cât condusese când a apăsat prima dată
+  ok('butonul reușește — înghețarea nu depinde de date',
+     w.m.offRouteManual() === true && !!w.m.M.offRoute, JSON.stringify(w.m.M.offRoute));
+  ok('și are ce arăta: punctul de plecare, la 120 m în spate',
+     w.m.M.offRoute.orb === false && w.m.M.offRoute.boxNum === 1 &&
+     Math.abs(w.m.M.offRoute.distM - 120) < 25, JSON.stringify(w.m.M.offRoute));
+  ok('nicăieri mesajul vechi, „n-am destul drum în memorie"',
+     !w.said.some(s => /destul drum în memorie/.test(s.t)),
+     JSON.stringify(w.said.slice(-2).map(s => s.t)));
+  const cueInainte = w.jurnal('cue').length;
+  w.drept(400, 0); w.viraj(0, 90); w.drept(300, 90);
+  ok('și, esențial, nu mai dictează niciun viraj după apăsare',
+     w.jurnal('cue').length === cueInainte, JSON.stringify(w.jurnal('cue').map(c => c.boxNum)));
+
+  // cazul chiar fără nimic în memorie: GPS-ul n-a prins încă niciun fix
+  const w2 = lume(TRESOR, {}, { faraFix: true });
+  ok('fără nicio poziție, butonul tot îngheață planul',
+     w2.m.offRouteManual() === true && w2.m.M.offRoute.orb === true,
+     JSON.stringify(w2.m.M.offRoute));
+  ok('iar mesajul spune CE lipsește și ce să facă',
+     w2.said.some(s => /Fără harta traseului nu știu unde e boxul/.test(s.t)) &&
+     w2.said.some(s => /SUNT LA BOX/.test(s.t)),
+     JSON.stringify(w2.said.map(s => s.t)));
 }
 
 console.log('\n═══ Butonul: pilotul știe primul ═══');

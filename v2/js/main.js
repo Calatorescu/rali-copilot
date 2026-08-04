@@ -267,10 +267,14 @@ function startDay(dinPreluare) {
                  `Ești fizic în punctul ăsta, gata de plecare?`)) return;
   }
   stopGps();
+  // Pierderea semnalului se anunță ÎNTR-UN SINGUR LOC — mașina de stări, care știe dacă
+  // ești în probă și scrie și în jurnal. Înainte vorbeau amândouă: în tura de la 18:00
+  // s-a auzit „Atenție, GPS pierdut." (18:03:27) și „GPS pierdut." (18:03:34), la 7
+  // secunde una de alta, de două ori în aceeași tură.
   gps = makeLiveGps({
     onFix: f => machine.onFix(f),
-    onLost: () => voice.say('Atenție, GPS pierdut.', 3),
-    onBack: () => voice.say('GPS revenit.', 2)
+    onLost: () => {},
+    onBack: () => { try { machine.gpsRevenit(); } catch (e) {} }
   });
   if (!gps.start()) { alert('GPS indisponibil.'); return; }
   machine.start();

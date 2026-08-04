@@ -52,12 +52,24 @@ export function makeUi() {
       if (offBtn) offBtn.textContent = M.offRoute ? '✓ AM REVENIT PE TRASEU' : '↩ AM GREȘIT DRUMUL';
       if (M.offRoute) {
         const o = M.offRoute;
+        const af0 = $('cp-after');
+        if (o.orb) {
+          // fără hartă și fără drum în memorie: planul e înghețat (ăsta e câștigul),
+          // dar nu există săgeată de arătat — și ecranul o spune, în loc să mintă
+          $('cp-next-dist').textContent = '—';
+          $('cp-next-dir').textContent = '⚠';
+          $('cp-next-com').textContent = 'NU EȘTI PE TRASEU';
+          $('cp-next-box').textContent = 'instrucțiunile sunt oprite';
+          af0.textContent = 'fără harta traseului nu știu unde e boxul · apasă SUNT LA BOX';
+          af0.className = 'nx-after';
+          $('cp-rts').textContent = plan.rts.map(r => r.name).join('  ');
+          return;
+        }
         $('cp-next-dist').textContent = o.distM >= 1000
           ? (o.distM / 1000).toFixed(1) + ' km' : o.distM + ' m';
         $('cp-next-dir').textContent = sageata(o.relDeg);
         $('cp-next-com').textContent = 'ÎNTOARCERE LA TRASEU';
         $('cp-next-box').textContent = 'box ' + o.boxNum;
-        const af0 = $('cp-after');
         af0.textContent = 'linie dreaptă către punct — nu traseu pe străzi';
         af0.className = 'nx-after';
         $('cp-rts').textContent = plan.rts.map(r => r.name).join('  ');

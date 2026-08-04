@@ -1032,18 +1032,55 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
   // Punctul geografic al unui kilometru de traseu, din firimiturile pe care chiar
   // le-am condus. Cu recunoaștere există și urma, dar firimiturile sunt disponibile
   // ÎNTOTDEAUNA — inclusiv în tura Tresor, unde recunoaștere nu exista.
+  // Firimiturile sunt la 10 m una de alta, deci un kilometru pe care CHIAR l-am trecut
+  // are întotdeauna una la câțiva metri. Fereastra strânsă (60 m) e ce desparte „știu
+  // unde e locul ăla" de „ghicesc": cu toleranța veche de 250 m, un buton apăsat la
+  // 120 m de la plecare (tura poligon, 18:01) primea drept „punct de reintrare pentru
+  // boxul 2" chiar poziția mașinii — adică „întoarce-te unde ești deja".
   function idxUrmaLaKm(km) {
     let bi = -1, bd = Infinity;
     for (let i = 0; i < M._urme.length; i++) {
       const d = Math.abs(M._urme[i].km - km);
       if (d < bd) { bd = d; bi = i; }
     }
-    return bd < 0.25 ? bi : -1;
+    return bd < 0.06 ? bi : -1;
   }
 
   function punctLaKm(km) {
     const i = idxUrmaLaKm(km);
-    return i >= 0 ? { lat: M._urme[i].lat, lng: M._urme[i].lng } : null;
+    return i >= 0 ? { lat: M._urme[i].lat, lng: M._urme[i].lng, sursa: 'urme' } : null;
+  }
+
+  // UNDE E, PE HARTĂ, UN BOX. Trei surse, în ordinea încrederii:
+  //  1. RECUNOAȘTEREA — urmă continuă, condusă și legată de kilometraj prin ancore;
+  //  2. HARTA TRASEULUI — coordonata boxului, așa cum a ieșit din rutarea care a generat
+  //     roadbook-ul. Exactă, dar punctuală (fără drumul dintre boxuri);
+  //  3. FIRIMITURILE — unde am fost noi când credeam că suntem la kilometrul ăla.
+  //     Singura sursă care există mereu, dar și singura care poate fi de pe drumul
+  //     GREȘIT: după o manevră ratată, firimiturile boxurilor următoare sunt pe altă
+  //     stradă. De-aia sursa se întoarce odată cu punctul — cine alege ținta trebuie
+  //     să știe cu ce are de-a face.
+  function pctBox(b) {
+    if (!b) return null;
+    if (plan.trace && plan.anchorMap) {
+      const seg = traceAheadPoint(plan.trace, 0, 0);
+      const cum = plan.anchorMap.traceM(b.sumKm);
+      const p = pePunctulUrmei(cum);
+      if (p) return { lat: p.lat, lng: p.lng, sursa: 'recon' };
+      if (seg) { /* urma există, dar kilometrul e în afara ei — cade pe sursele de mai jos */ }
+    }
+    const h = plan.harta && b.num != null ? plan.harta[b.num] : null;
+    if (h) return { lat: h.lat, lng: h.lng, sursa: 'harta' };
+    return punctLaKm(b.sumKm);
+  }
+
+  // punctul de pe urmă la `cumM` metri de la începutul ei
+  function pePunctulUrmei(cumM) {
+    const pts = plan.trace && plan.trace.pts;
+    if (!pts || !pts.length || cumM == null || !isFinite(cumM)) return null;
+    if (cumM <= pts[0].cum) return pts[0];
+    for (let i = 1; i < pts.length; i++) if (pts[i].cum >= cumM) return pts[i];
+    return pts[pts.length - 1];
   }
 
   // firimitura aflată la ~`dist` metri înainte (+) sau înapoi (−) de indexul dat
@@ -1120,32 +1157,72 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
   // dintre ele în linie dreaptă. Ce ratezi într-o buclă strânsă poate fi la 50 m în
   // spate, în timp ce boxul confirmat e la un kilometru.
   function punctDeReintrare() {
+    if (!M._lastPos) return null;
     const cand = [];
+    const pune = (i) => { if (plan.boxes[i]) cand.push({ box: plan.boxes[i], idx: i }); };
     const ratat = M._offSemne.find(s => s.tip === 'manevra_neconfirmata');
-    if (ratat && plan.boxes[ratat.idx]) cand.push(plan.boxes[ratat.idx]);
-    if (M._confirmedIdx != null && plan.boxes[M._confirmedIdx]) cand.push(plan.boxes[M._confirmedIdx]);
+    if (ratat) pune(ratat.idx);
+    if (M._confirmedIdx != null) pune(M._confirmedIdx);
+    // …și, când n-a fost confirmat nimic (butonul apăsat în primul minut, 18:01),
+    // boxul de dinainte și cel de după: primul are firimituri, al doilea are coordonată
+    // dacă harta e încărcată. Fără ele, apăsarea rămânea fără niciun răspuns util.
+    pune(M.nextBoxIdx - 1);
+    pune(M.nextBoxIdx);
+    // DE UNDE ÎNCEPE DRUMUL GREȘIT: de la boxul ratat încolo, firimiturile sunt de pe
+    // altă stradă, deci nu pot fi ținte. Coordonatele din hartă sau din recunoaștere,
+    // da — alea sunt ale traseului adevărat, oriunde am rătăci noi.
+    const limita = ratat ? ratat.idx : M.nextBoxIdx;
     let best = null;
-    for (const b of cand) {
-      const p = punctLaKm(b.sumKm);
-      if (!p || !M._lastPos) continue;
+    for (const c of cand) {
+      const p = pctBox(c.box);
+      if (!p) continue;
+      if (p.sursa === 'urme' && c.idx > limita) continue;
       const d = haversineM(M._lastPos.lat, M._lastPos.lng, p.lat, p.lng);
-      if (!best || d < best.distM) best = { box: b, idx: plan.boxes.indexOf(b), pct: p, distM: d };
+      if (!best || d < best.distM) best = { box: c.box, idx: c.idx, pct: p, distM: d };
     }
     return best;
   }
 
+  // Intrarea în stare. ÎNGHEȚAREA PLANULUI NU DEPINDE DE NIMIC: se poate face oriunde,
+  // oricând, fără hartă, fără firimituri, fără geometrie. Ghidajul e cel care depinde de
+  // date — și, când lipsesc, se spune exact CE lipsește.
+  //
+  // 04.08.2026, 18:01, tura poligon: Andreas a apăsat „AM GREȘIT DRUMUL" de trei ori în
+  // 32 de secunde (18:01:11, 18:01:16, 18:01:43) și a primit de fiecare dată „N-am de
+  // unde să te iau înapoi — n-am destul drum în memorie", iar aplicația a continuat
+  // netulburată să-i dicteze virajele unui traseu pe care nu se afla („stânga acum" la
+  // 18:01:27, „dreapta acum" la 18:01:53). Butonul spunea NU la singurul lucru pe care
+  // îl putea face oricum: să tacă și să înghețe.
   function declaraOffRoute(cum) {
     const t = punctDeReintrare();
-    if (!t) { log('offroute_fara_tinta', { semne: M._offSemne.length, urme: M._urme.length }); return; }
-    M.offRoute = { boxNum: t.box.num, idx: t.idx, km: t.box.sumKm, pct: t.pct,
-                   distM: Math.round(t.distM), relDeg: null, de: clock.rally(), cum,
-                   kmLaIesire: M.routeKm };
+    M.offRoute = t
+      ? { boxNum: t.box.num, idx: t.idx, km: t.box.sumKm, pct: t.pct,
+          distM: Math.round(t.distM), relDeg: null, de: clock.rally(), cum,
+          kmLaIesire: M.routeKm, orb: false }
+      : { boxNum: null, idx: null, km: null, pct: null, distM: null, relDeg: null,
+          de: clock.rally(), cum, kmLaIesire: M.routeKm, orb: true };
     M._offSector = null; M._offVorbaMono = 0;
-    log('offroute_intrare', { cum, boxNum: t.box.num, distM: Math.round(t.distM),
+    log('offroute_intrare', { cum, boxNum: t ? t.box.num : null, orb: !t,
+                              distM: t ? Math.round(t.distM) : null,
                               semne: M._offSemne.map(s => s.tip), routeKm: r2(M.routeKm) });
-    say(`Ai ieșit de pe traseu. Întoarcere la boxul ${t.box.num}.`, 4, 'offroute', 'manevra');
+    if (t) say(`Ai ieșit de pe traseu. Întoarcere la boxul ${t.box.num}.`, 4, 'offroute', 'manevra');
+    // Mesajul „orb" spune ce LIPSEȘTE, nu ce nu poate aplicația. Vechiul „n-am destul
+    // drum în memorie" nu-i spunea pilotului nici ce s-a întâmplat, nici ce să facă.
+    else say('Am oprit instrucțiunile — nu mai ești pe traseu. Fără harta traseului nu știu unde e boxul; oprește și apasă SUNT LA BOX.', 4, 'offroute', 'manevra');
     tone('alarm');
     ui.render(M, plan);
+  }
+
+  // Starea „oarbă" nu e definitivă: firimiturile se adună cu fiecare fix, iar harta poate
+  // fi încărcată între timp. La prima țintă disponibilă, ghidajul pornește singur.
+  function incearcaTintaTarzie() {
+    const t = punctDeReintrare();
+    if (!t) return;
+    const o = M.offRoute;
+    o.boxNum = t.box.num; o.idx = t.idx; o.km = t.box.sumKm; o.pct = t.pct;
+    o.distM = Math.round(t.distM); o.orb = false;
+    log('offroute_tinta', { boxNum: t.box.num, distM: o.distM });
+    say(`Am punctul: întoarcere la boxul ${t.box.num}.`, 4, 'offroute', 'manevra');
   }
 
   // unde e punctul față de botul mașinii, în cuvinte de pilot
@@ -1162,12 +1239,17 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
     if (!M.offRoute) return;
     const o = M.offRoute;
     if (!fix || fix.lat == null) return;
+    // fără punct de reintrare (nici hartă, nici drum în memorie) planul rămâne înghețat,
+    // dar nu există ce arăta: ieșirea se face prin buton sau prin „SUNT LA BOX"
+    if (o.orb) { incearcaTintaTarzie(); return; }
     o.distM = Math.round(haversineM(fix.lat, fix.lng, o.pct.lat, o.pct.lng));
     const brg = bearingDeg(fix.lat, fix.lng, o.pct.lat, o.pct.lng);
     o.brgDeg = Math.round(brg);
     o.relDeg = M._hdg != null ? Math.round(angDiff(brg, M._hdg)) : null;
-    // PRINS: ești la punctul de reintrare
-    if (o.distM <= OFF_PRINS_M) { iesiOffRoute('punct'); return; }
+    // PRINS: ești la punctul de reintrare. Nu în primele 10 s de stare — dacă punctul
+    // se nimerește chiar lângă tine când apeși butonul, cursa ar ieși din îngheț
+    // înainte să apuci să te uiți la ecran.
+    if (o.distM <= OFF_PRINS_M && clock.rally() - o.de > 10000) { iesiOffRoute('punct'); return; }
     // vocea: doar când se schimbă sectorul (opt sferturi de ceas) sau la 12 s
     const sector = o.relDeg != null ? Math.round(o.relDeg / 45) : null;
     const acum = clock.mono();
@@ -1201,8 +1283,7 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
     // o apăsare le sare pe amândouă.
     offRouteManual() {
       if (M.offRoute) return true;
-      if (!punctDeReintrare()) { say('N-am de unde să te iau înapoi — n-am destul drum în memorie.', 3, 'offroute', 'manevra'); return false; }
-      declaraOffRoute('manual');
+      declaraOffRoute('manual');       // îngheață ÎNTOTDEAUNA; ghidajul e ce poate lipsi
       return true;
     },
     // „am revenit" — pilotul confirmă că e la punctul de reintrare
@@ -1290,6 +1371,12 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
       ui.render(M, plan);
     },
     extSpeed(kmh) { M._extSpeedKmh = kmh; M._extSpeedT = clock.mono(); },   // priza BLE
+    // revenirea semnalului se rostește doar dacă pierderea lui chiar s-a anunțat
+    gpsRevenit() {
+      if (!M._gpsLostSaid) return;
+      M._gpsLostSaid = false;
+      say('GPS revenit.', 2, 'gps', 'ritm');
+    },
     // După suspendare (ecran stins, cameră): performance.now poate să fi stat pe loc,
     // dar ceasul raliului nu — cronometrul probei se re-ancorează pe el.
     reanchor() {
