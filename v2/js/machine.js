@@ -51,6 +51,19 @@ const COADA_MAX_M = 500;
 // mâna pe volan, prea puțin ca să uiți până acolo. Podeaua de 25 m rămâne.
 const ACUM_MAX_M = 60;
 
+// VIRAJUL DE IMEDIAT DUPĂ LINIA DE FINISH intră în anunțul de finish, dinainte.
+// Tura Tresor, 04.08.2026, RT 2: boxul 11 e FINISH la km 3,50, boxul 12 e o stângă la
+// 3,55 — 50 m după tabelă. Ce s-a întâmplat, din jurnal: „stânga acum" a plecat la
+// 16:34:28, la 13 m de viraj, și a intrat în coadă în spatele frazei de finish („Finish.
+// 33 virgulă 8 în urmă. Nu opri lângă tabelă.", ~4 s), iar rezultatul probei a venit la
+// 16:34:31. Pilotul era deja în intersecție. Cauza de fond: în probă lista de boxuri
+// tace, iar linia de finish se procesează prima — deci singurul moment în care manevra
+// mai poate fi spusă la timp e ÎNAINTE de linie, în anunțul liniei.
+// 200 m: la Sibiu virajul de după tabela roșie e cazul obișnuit, iar ambele finish-uri
+// din tura asta au manevra la 50 și la 140 m. Peste 200 m manevra își primește oricum
+// anunțurile ei normale, după ce proba s-a închis.
+const COADA_FINISH_M = 200;
+
 export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }) {
   const M = {
     state: 'PREP',
@@ -64,7 +77,7 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
     tcs: [],               // [{name, time, rallyMs, km|null, warned:{}}]
     shadow: !!opts.shadow, // modul umbră: totul rulează, vocea tace, jurnalul ține minte
     ghost: !!opts.ghost,
-    _ann: {}, _staged: false, _warnedRt: {}, _lastBank: 0,
+    _ann: {}, _staged: false, _warnedRt: {}, _lastBank: 0, _coadaFinish: null,
     _turnAcc: 0, _lastHdg: null, _lastHdgT: 0, _quietMs: 0, _lastSnapT: 0, _virajRefuzat: null,
     _dirEtapa: 0, _dirStart: null, dirAlerta: null,
     _lastToneT: 0, _extSpeedKmh: null, _extSpeedT: 0,
@@ -388,13 +401,19 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
       // Legătura diferă, ca urechea să știe pe ce anunț e: „apoi" pe treapta cu cifră,
       // „și" pe „acum". Virgula dinainte nu e ortografie, e pauza de TTS.
       //
-      // Doar boxurile de MANEVRĂ primesc coadă (un TC n-are „ce urmează" de planificat),
-      // și doar în afara probei: în probă urechea e pe cifrele de ritm, deci acolo rămâne
-      // doar cazul „imediat" — singurul în care un anunț separat ar ajunge după viraj.
-      if ((isNow || ultimaCuCifra) && TURN_DIRS.has(b.dir || '')) {
+      // Coadă primesc boxurile de MANEVRĂ (un TC n-are „ce urmează" de planificat) și
+      // liniile de FINISH — vezi COADA_FINISH_M: acolo e singura ocazie de a spune la
+      // timp virajul de după tabelă. În rest, în probă rămâne doar cazul „imediat":
+      // urechea e pe cifrele de ritm, iar un anunț separat ar ajunge după viraj.
+      const capManevra = TURN_DIRS.has(b.dir || ''), capFinish = b.flag === 'RT_FINISH';
+      if ((isNow || ultimaCuCifra) && (capManevra || capFinish)) {
         const coada = coadaManevra(M.nextBoxIdx);
-        if (coada && (!M.rt || coada.gapM <= COADA_IMEDIAT_M))
+        const limita = capFinish ? COADA_FINISH_M : (M.rt ? COADA_IMEDIAT_M : COADA_MAX_M);
+        if (coada && coada.gapM <= limita) {
           txt += `${isNow ? ', și ' : ', apoi '}${coada.text}`;
+          // ce s-a spus aici nu se mai repetă după linie, la închiderea probei
+          if (capFinish) M._coadaFinish = coada.box.num;
+        }
       }
       // Clasa 'manevra' lipsea tocmai de la anunțurile de viraj — adică fix de la ce
       // descrie regula. Comitul „paznic de directie" (03.08) a pus clasele pe alarme și
@@ -532,9 +551,15 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
     const nb = plan.boxes[M.nextBoxIdx];
     if (nb) {
       const dTo = (nb.sumKm - M.routeKm) * 1000;
-      if (dTo > -30 && dTo < 350 && (nb.dir !== 'ÎNAINTE' || nb.flag))
+      // „Urmează: …" rămâne doar pentru ce N-a intrat deja în anunțul liniei de finish
+      // (vezi COADA_FINISH_M). Altfel aceeași manevră s-ar auzi de două ori în trei
+      // secunde, printre cifrele rezultatului — măsurat în tura Tresor: „Urmează:
+      // stânga acum" imediat după „stânga acum".
+      const dejaSpus = M._coadaFinish != null && M._coadaFinish === nb.num;
+      if (!dejaSpus && dTo > -30 && dTo < 350 && (nb.dir !== 'ÎNAINTE' || nb.flag))
         say(`Urmează: ${turnText(nb, Math.max(20, dTo), dTo < 60)}`, 3, 'turn', 'manevra');
     }
+    M._coadaFinish = null;
     // debrieful vocal vine la 6 s după — întâi drumul, apoi lecția
     if (!M.shadow) setTimeout(() => { if (M.state === 'LIAISON') say(deb.voiceTxt, 1, 'debrief', 'ritm'); }, 6000);
 

@@ -353,5 +353,50 @@ console.log('\n═══ Coada stă și pe ultima treaptă cu cifră, nu doar pe
      JSON.stringify({ treapta: treapta.map(s => s.t), acum: acum.map(s => s.t) }));
 }
 
+console.log('\n═══ Virajul de la 55 m după tabelă intră în anunțul de finish ═══');
+{
+  // Cazul real: RT 2 din tura Tresor. Boxul 11 = FINISH la 3,50; boxul 12 = stânga la
+  // 3,55. În teren, „stânga acum" a venit la 13 m de viraj, în spatele frazei de finish.
+  const w = lume(TRESOR);
+  drumDrept(w, 380);                          // 3,8 km: proba 2 închisă, boxul 12 trecut
+  const apropiere = w.said.filter(s => /^Finish în .*apoi/.test(s.t));
+  ok('anunțul de apropiere de finish spune și virajul de după',
+     apropiere.some(s => /^Finish în \d+ de metri, apoi imediat stânga$/.test(s.t)),
+     JSON.stringify(w.said.map(s => s.t).slice(-14)));
+  ok('și „acum"-ul liniei la fel',
+     w.said.some(s => s.t === 'FINISH, și imediat stânga'),
+     JSON.stringify(w.said.map(s => s.t).slice(-14)));
+  ok('iar după linie NU se mai repetă („Urmează: stânga…" dispare)',
+     !w.said.some(s => /^Urmează: stânga/.test(s.t)),
+     JSON.stringify(w.said.filter(s => /Urmează/.test(s.t)).map(s => s.t)));
+  // esențialul: pilotul află de viraj ÎNAINTE de linie, nu la 13 m de el ca în teren
+  const iCoada = w.said.findIndex(s => /^Finish în \d+ de metri, apoi imediat stânga$/.test(s.t));
+  const iAcum = w.said.findIndex((s, i) => i > iCoada && s.t === 'stânga acum');
+  ok('ordinea în difuzor: manevra se aude înainte de linie, nu la 13 m de viraj',
+     iCoada >= 0 && iAcum > iCoada, JSON.stringify({ iCoada, iAcum }));
+}
+
+console.log('\n═══ …dar o manevră la peste 200 m după finish nu intră în coadă ═══');
+{
+  // RT 1 din aceeași tură: FINISH la 2,14, dreapta la 2,28 = 140 m → intră.
+  // Verificăm și granița: mutată la 400 m, nu mai intră, ci se anunță singură.
+  const w = lume(TRESOR);
+  drumDrept(w, 230);
+  ok('la 140 m intră (boxul 6 → boxul 7 din tură)',
+     w.said.some(s => /^Finish în \d+ de metri, apoi în 150 de metri dreapta$/.test(s.t)) ||
+     w.said.some(s => /^FINISH, și în 150 de metri dreapta$/.test(s.t)),
+     JSON.stringify(w.said.map(s => s.t).slice(-10)));
+
+  const DEPARTE = sanitizeBoxes(TRESOR.map(b => b.num === 7 ? { ...b, sumKm: 2.54 } : b));
+  const w2 = lume(DEPARTE);
+  drumDrept(w2, 230);
+  ok('la 400 m nu mai intră în anunțul liniei',
+     !w2.said.some(s => /^Finish în .*apoi/.test(s.t) || /^FINISH, și/.test(s.t)),
+     JSON.stringify(w2.said.map(s => s.t).slice(-10)));
+  ok('…dar „Urmează: …" rămâne, ca să nu se piardă manevra',
+     w2.said.some(s => /^Urmează: /.test(s.t)),
+     JSON.stringify(w2.said.filter(s => /Urmează/.test(s.t)).map(s => s.t)));
+}
+
 console.log(`\n──────── ${pass} trecute, ${fail} căzute ────────`);
 process.exit(fail ? 1 : 0);
