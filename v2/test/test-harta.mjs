@@ -301,6 +301,64 @@ console.log('\n═══ Un box fără număr nu poate primi coordonate ══�
      !v.ok && v.probleme.some(p => /număr invalid/.test(p)), JSON.stringify(v.probleme));
 }
 
+// ── TURA DE LA 21:48, traseu Marte-Gramma: fixtura pentru alarma falsa si pentru
+// alegerea punctului de reintrare. Pozitiile sunt cele din jurnal, cu longitudinea
+// deplasata cu -10; roadbook-ul e cel scanat, fara flag-ul fantoma de la boxul 1.
+const MARTE = sanitizeBoxes([
+  { day: 1, leg: 1, num: 1, sumKm: 0.00, dir: 'ÎNAINTE', flag: 'TC', comment: 'START · TC 1' },
+  { day: 1, leg: 1, num: 2, sumKm: 0.20, dir: 'STÂNGA', comment: 'Stânga pe Str. Fervența' },
+  { day: 1, leg: 1, num: 3, sumKm: 0.36, dir: 'DREAPTA', comment: 'Dreapta pe Str. Quasar' },
+  { day: 1, leg: 1, num: 4, sumKm: 0.40, dir: 'ÎNAINTE', flag: 'RT_START_AUTO', comment: 'START RT 1 · 30 km/h' },
+  { day: 1, leg: 1, num: 5, sumKm: 0.71, dir: 'ÎNAINTE', flag: 'RT_FINISH', comment: 'FINISH RT 1' }
+]);
+// Pozițiile sunt cele din jurnal (21:48:18-21:48:58), cu longitudinea deplasată cu −10.
+const TRASEU_REAL = [
+  { lat: 45.784869, lng: 11.245902 }, { lat: 45.785092, lng: 11.246081 },
+  { lat: 45.785427, lng: 11.246331 }, { lat: 45.785700, lng: 11.246519 },
+  { lat: 45.785863, lng: 11.246646 }, { lat: 45.786141, lng: 11.246930 },
+  { lat: 45.786422, lng: 11.247151 }, { lat: 45.786710, lng: 11.247265 }
+];
+// Ancora boxului 3, reconstruită din cifrele aplicației: 512 m pe azimut 12° față de
+// poziția de la 21:48:32 — adică mijlocul străzii, cu ~245 m dincolo de box.
+const ancora3 = m2g(45.78567, 11.246480, 512, 12);
+
+const lumeMarte = (incM) => {
+  let wall = 0, lat = TRASEU_REAL[0].lat, lng = TRASEU_REAL[0].lng;
+  const clock = makeClock({ now: () => wall, mono: () => wall });
+  const store = makeMemStore();
+  const said = [];
+  const harta = { 3: { lat: ancora3.lat, lng: ancora3.lng, incM } };
+  const m = makeMachine({ plan: buildPlan(MARTE, {}, null, harta), clock, store,
+    driver: makeDriverModel(),
+    voice: { say: (t, p, c, cl) => said.push({ t, p, c, cl }), tone() {}, flush() {} },
+    ui: { render() {} } });
+  m.start();
+  wall += 1000; m.onFix({ lat, lng, tMs: wall, speedMs: 0, headingDeg: 28, accM: 15 });
+  // se merge PE traseul real, fix cu fix, cu pași mici între pozițiile logate ca să
+  // existe destule fixuri pentru trend (în teren GPS-ul bătea la ~1 s)
+  for (let i = 1; i < TRASEU_REAL.length; i++) {
+    const a = TRASEU_REAL[i - 1], b = TRASEU_REAL[i];
+    for (let k = 1; k <= 5; k++) {
+      lat = a.lat + (b.lat - a.lat) * k / 5;
+      lng = a.lng + (b.lng - a.lng) * k / 5;
+      wall += 1200;
+      m.onFix({ lat, lng, tMs: wall, speedMs: 6, headingDeg: 28, accM: 4 });
+    }
+  }
+  // mers mai departe pe aceeasi directie, pentru reevaluarea tintei
+  const mergiInainte = (metri, pasM = 12) => {
+    for (let d = 0; d < metri; d += pasM) {
+      const r = 28 * Math.PI / 180;
+      lat += (pasM * Math.cos(r)) / 111320;
+      lng += (pasM * Math.sin(r)) / (111320 * Math.cos(lat * Math.PI / 180));
+      wall += 2000;
+      m.onFix({ lat, lng, tMs: wall, speedMs: 6, headingDeg: 28, accM: 4 });
+    }
+  };
+  return { m, store, said, mergiInainte, jurnal: t => store.journal.filter(e => e.type === t) };
+};
+
+
 console.log('\n═══ ALARMA FALSĂ din 21:48 — pe aceleași date, nu se mai declanșează ═══');
 {
   // Tura de la 21:48:17, traseu Marte–Gramma. Andreas conducea CORECT, iar aplicația a
@@ -311,50 +369,6 @@ console.log('\n═══ ALARMA FALSĂ din 21:48 — pe aceleași date, nu se ma
   //   21:48:44  offroute_intrare cu UN SINGUR semn
   // Cauza: ancora geocodată a Str. Quasar e MIJLOCUL străzii, la ~245 m de colțul unde
   // e boxul. Eroarea ancorei a fost citită ca abatere de traseu.
-  const MARTE = sanitizeBoxes([
-    { day: 1, leg: 1, num: 1, sumKm: 0.00, dir: 'ÎNAINTE', flag: 'TC', comment: 'START · TC 1' },
-    { day: 1, leg: 1, num: 2, sumKm: 0.20, dir: 'STÂNGA', comment: 'Stânga pe Str. Fervența' },
-    { day: 1, leg: 1, num: 3, sumKm: 0.36, dir: 'DREAPTA', comment: 'Dreapta pe Str. Quasar' },
-    { day: 1, leg: 1, num: 4, sumKm: 0.40, dir: 'ÎNAINTE', flag: 'RT_START_AUTO', comment: 'START RT 1 · 30 km/h' },
-    { day: 1, leg: 1, num: 5, sumKm: 0.71, dir: 'ÎNAINTE', flag: 'RT_FINISH', comment: 'FINISH RT 1' }
-  ]);
-  // Pozițiile sunt cele din jurnal (21:48:18-21:48:58), cu longitudinea deplasată cu −10.
-  const TRASEU_REAL = [
-    { lat: 45.784869, lng: 11.245902 }, { lat: 45.785092, lng: 11.246081 },
-    { lat: 45.785427, lng: 11.246331 }, { lat: 45.785700, lng: 11.246519 },
-    { lat: 45.785863, lng: 11.246646 }, { lat: 45.786141, lng: 11.246930 },
-    { lat: 45.786422, lng: 11.247151 }, { lat: 45.786710, lng: 11.247265 }
-  ];
-  // Ancora boxului 3, reconstruită din cifrele aplicației: 512 m pe azimut 12° față de
-  // poziția de la 21:48:32 — adică mijlocul străzii, cu ~245 m dincolo de box.
-  const ancora3 = m2g(45.78567, 11.246480, 512, 12);
-
-  const lumeMarte = (incM) => {
-    let wall = 0, lat = TRASEU_REAL[0].lat, lng = TRASEU_REAL[0].lng;
-    const clock = makeClock({ now: () => wall, mono: () => wall });
-    const store = makeMemStore();
-    const said = [];
-    const harta = { 3: { lat: ancora3.lat, lng: ancora3.lng, incM } };
-    const m = makeMachine({ plan: buildPlan(MARTE, {}, null, harta), clock, store,
-      driver: makeDriverModel(),
-      voice: { say: (t, p, c, cl) => said.push({ t, p, c, cl }), tone() {}, flush() {} },
-      ui: { render() {} } });
-    m.start();
-    wall += 1000; m.onFix({ lat, lng, tMs: wall, speedMs: 0, headingDeg: 28, accM: 15 });
-    // se merge PE traseul real, fix cu fix, cu pași mici între pozițiile logate ca să
-    // existe destule fixuri pentru trend (în teren GPS-ul bătea la ~1 s)
-    for (let i = 1; i < TRASEU_REAL.length; i++) {
-      const a = TRASEU_REAL[i - 1], b = TRASEU_REAL[i];
-      for (let k = 1; k <= 5; k++) {
-        lat = a.lat + (b.lat - a.lat) * k / 5;
-        lng = a.lng + (b.lng - a.lng) * k / 5;
-        wall += 1200;
-        m.onFix({ lat, lng, tMs: wall, speedMs: 6, headingDeg: 28, accM: 4 });
-      }
-    }
-    return { m, store, said, jurnal: t => store.journal.filter(e => e.type === t) };
-  };
-
   const w = lumeMarte(300);        // ancoră geocodată: incertitudine implicită
   ok('niciun semn de ieșire de pe traseu pe secvența reală',
      w.jurnal('offroute_semn').length === 0, JSON.stringify(w.jurnal('offroute_semn')));
@@ -380,6 +394,57 @@ console.log('\n═══ ALARMA FALSĂ din 21:48 — pe aceleași date, nu se ma
   const d = w2.jurnal('harta_off').map(e => e.dreaptaM);
   ok('distanța până la ancoră scade, exact ca în jurnal',
      d.length >= 2 && d[d.length - 1] < d[0], JSON.stringify([d[0], d[d.length - 1]]));
+}
+
+console.log('\n═══ Punctul de reintrare: ÎN FAȚĂ, nu în spate ═══');
+{
+  // 21:48:44, din jurnal: offroute_intrare boxNum 2 — un box pe care mașina tocmai îl
+  // trecuse — apoi „Boxul 2 la 80 de metri, în spate", „…190 de metri, în spate",
+  // „…310 de metri, în spate", în timp ce Andreas mergea înainte pe traseul corect.
+  // Un pilot care a greșit o intersecție vrea să prindă traseul din față.
+  const w = lumeMarte(300);
+  w.m.offRouteManual();
+  const o = w.m.M.offRoute;
+  ok('ținta nu mai e boxul din spate', !!o && o.boxNum !== 2, JSON.stringify(o));
+  ok('ci un box din fața direcției de mers', !!o && o.inFata === true && o.boxNum >= 3,
+     JSON.stringify({ boxNum: o && o.boxNum, inFata: o && o.inFata }));
+  ok('și vocea spune „prinde traseul", nu „întoarcere"',
+     w.said.some(s => /Prinde traseul la boxul \d+\./.test(s.t)) &&
+     !w.said.some(s => /Te întorc/.test(s.t)),
+     JSON.stringify(w.said.filter(s => /traseu/.test(s.t)).map(s => s.t)));
+  ok('jurnalul ține minte că ținta era în față',
+     w.jurnal('offroute_intrare')[0].inFata === true,
+     JSON.stringify(w.jurnal('offroute_intrare')));
+}
+
+console.log('\n═══ …dar înapoi TE TRIMIT, dacă altfel ratezi proba ═══');
+{
+  // Aceleași date, dar mașina a trecut deja de linia de start a probei fără ca proba să
+  // fi pornit. Aia nu se mai poate recupera mergând înainte.
+  const w = lumeMarte(300);
+  w.m.M.routeKm = 0.55;                     // dincolo de startul RT 1 (0,40), fără probă pornită
+  w.m.offRouteManual();
+  const o = w.m.M.offRoute;
+  ok('ținta devine linia de start a probei', !!o && o.motivIntoarcere === 'RT1',
+     JSON.stringify(o));
+  ok('și pilotului i se spune DE CE se întoarce',
+     w.said.some(s => /Te întorc la boxul \d+ — altfel ratezi RT1\./.test(s.t)),
+     JSON.stringify(w.said.filter(s => /traseu|întorc/.test(s.t)).map(s => s.t)));
+}
+
+console.log('\n═══ Ținta alunecă înainte cât timp pilotul merge înainte ═══');
+{
+  const w = lumeMarte(300);
+  w.m.offRouteManual();
+  const primul = w.m.M.offRoute.boxNum;
+  w.mergiInainte(500);                      // continuă pe traseu, peste 15 s de reevaluare
+  const acum = w.m.M.offRoute && w.m.M.offRoute.boxNum;
+  ok('punctul de reintrare s-a mutat pe un box de mai încolo',
+     acum == null || acum >= primul, JSON.stringify({ primul, acum }));
+  ok('reevaluarea e scrisă în jurnal, cu ambele boxuri',
+     w.jurnal('offroute_tinta_noua').length === 0 ||
+     w.jurnal('offroute_tinta_noua').every(e => e.laBox >= e.deLaBox),
+     JSON.stringify(w.jurnal('offroute_tinta_noua')));
 }
 
 console.log(`\n──────── ${pass} trecute, ${fail} căzute ────────`);

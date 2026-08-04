@@ -94,7 +94,7 @@ const COADA_FINISH_M = 200;
 //    nedetectate ar declara „ai ieșit de pe traseu" fix acolo unde pilotul conduce bine.
 const OFF_BOX_M = 120, OFF_SEMNE_CERUTE = 2, OFF_FEREASTRA_MS = 180000;
 const OFF_DUPA_GPS_MS = 20000, OFF_PRINS_M = 40, OFF_VORBA_MS = 12000;
-const OFF_COT_GRD = 40, OFF_DRIFT_M = 250, OFF_VORBA_MAX_M = 2000;
+const OFF_COT_GRD = 40, OFF_DRIFT_M = 250, OFF_VORBA_MAX_M = 2000, OFF_REEVAL_MS = 15000;
 
 export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }) {
   const M = {
@@ -1271,31 +1271,69 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
   // Punctul de reintrare: boxul ratat sau ultimul box confirmat — cel mai APROPIAT
   // dintre ele în linie dreaptă. Ce ratezi într-o buclă strânsă poate fi la 50 m în
   // spate, în timp ce boxul confirmat e la un kilometru.
+  // ÎNAINTE, NU ÎNAPOI. Cererea lui Andreas, 04.08.2026: în tura de la 21:48 aplicația
+  // i-a dat ca punct de reintrare boxul 2, DIN SPATE („Boxul 2 la 80 de metri, în spate",
+  // apoi 190, apoi 310), în timp ce el mergea înainte pe traseu. Un pilot care a greșit
+  // o intersecție rareori vrea să se întoarcă: vrea să prindă traseul din față.
+  //
+  // Regula, în ordinea asta:
+  //  1. dacă între tine și boxurile din față a rămas neconsumată o linie de START sau
+  //     FINISH de probă, TE ÎNTORCI — proba ratată nu se mai poate recupera, e singurul
+  //     motiv care merită drumul înapoi (și se spune cu voce tare de ce);
+  //  2. altfel, primul box NECONFIRMAT a cărui ancoră e ÎN FAȚĂ (±90° față de direcția
+  //     de mers), cel mai apropiat pe drum — ținta alunecă natural înainte dacă pilotul
+  //     continuă;
+  //  3. dacă nu e nimic în față, abia atunci cel mai apropiat, indiferent de direcție.
   function punctDeReintrare() {
     if (!M._lastPos) return null;
     const cand = [];
-    const pune = (i) => { if (plan.boxes[i]) cand.push({ box: plan.boxes[i], idx: i }); };
+    const vazut = new Set();
+    const pune = (i) => {
+      if (!plan.boxes[i] || vazut.has(i)) return;
+      vazut.add(i);
+      const p = pctBox(plan.boxes[i]);
+      if (!p) return;
+      // firimiturile de DUPĂ punctul de divergență sunt de pe drumul greșit
+      const ratatIdx = (M._offSemne.find(s => s.tip === 'manevra_neconfirmata') || {}).idx;
+      const limita = ratatIdx != null ? ratatIdx : M.nextBoxIdx;
+      if (p.sursa === 'urme' && i > limita) return;
+      const d = haversineM(M._lastPos.lat, M._lastPos.lng, p.lat, p.lng);
+      const brg = bearingDeg(M._lastPos.lat, M._lastPos.lng, p.lat, p.lng);
+      const inFata = M._hdg == null ? null : Math.abs(angDiff(brg, M._hdg)) <= 90;
+      cand.push({ box: plan.boxes[i], idx: i, pct: p, distM: d, inFata });
+    };
     const ratat = M._offSemne.find(s => s.tip === 'manevra_neconfirmata');
     if (ratat) pune(ratat.idx);
     if (M._confirmedIdx != null) pune(M._confirmedIdx);
-    // …și, când n-a fost confirmat nimic (butonul apăsat în primul minut, 18:01),
-    // boxul de dinainte și cel de după: primul are firimituri, al doilea are coordonată
-    // dacă harta e încărcată. Fără ele, apăsarea rămânea fără niciun răspuns util.
     pune(M.nextBoxIdx - 1);
-    pune(M.nextBoxIdx);
-    // DE UNDE ÎNCEPE DRUMUL GREȘIT: de la boxul ratat încolo, firimiturile sunt de pe
-    // altă stradă, deci nu pot fi ținte. Coordonatele din hartă sau din recunoaștere,
-    // da — alea sunt ale traseului adevărat, oriunde am rătăci noi.
-    const limita = ratat ? ratat.idx : M.nextBoxIdx;
-    let best = null;
-    for (const c of cand) {
-      const p = pctBox(c.box);
-      if (!p) continue;
-      if (p.sursa === 'urme' && c.idx > limita) continue;
-      const d = haversineM(M._lastPos.lat, M._lastPos.lng, p.lat, p.lng);
-      if (!best || d < best.distM) best = { box: c.box, idx: c.idx, pct: p, distM: d };
+    // boxurile din față: se caută mai departe decât următorul, ca ținta să poată aluneca
+    for (let i = M.nextBoxIdx; i < plan.boxes.length && i <= M.nextBoxIdx + 6; i++) pune(i);
+    if (!cand.length) return null;
+
+    // 1. probă neconsumată între poziție și boxurile din față?
+    const proba = probaRatataInainte();
+    if (proba) {
+      const c = cand.find(x => x.idx === proba.idx) ||
+                cand.filter(x => x.idx <= proba.idx).sort((a, b) => b.idx - a.idx)[0];
+      if (c) return { ...c, motivIntoarcere: proba.nume };
     }
-    return best;
+    // 2. cel mai apropiat dintre cele din față
+    const inFata = cand.filter(c => c.inFata === true).sort((a, b) => a.idx - b.idx);
+    if (inFata.length) return inFata[0];
+    // 3. orice, cel mai apropiat
+    return cand.slice().sort((a, b) => a.distM - b.distM)[0];
+  }
+
+  // Linia de start sau de finish a unei probe rămasă ÎN URMĂ (kilometrul ei e sub poziția
+  // crezută) și neconsumată: dacă mergi mai departe, proba aia e pierdută. Ăsta e
+  // singurul motiv pentru care merită să întorci mașina.
+  function probaRatataInainte() {
+    const rt = plan.rts[M.rtIdx];
+    if (!rt) return null;
+    if (M.results[rt.name] != null) return null;         // deja alergată
+    // startul e în urma poziției crezute, dar proba n-a pornit niciodată
+    if (M.routeKm > rt.startKm && !M.rt) return { idx: rt.startIdx, nume: rt.name };
+    return null;
   }
 
   // Intrarea în stare. ÎNGHEȚAREA PLANULUI NU DEPINDE DE NIMIC: se poate face oriunde,
@@ -1313,14 +1351,20 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
     M.offRoute = t
       ? { boxNum: t.box.num, idx: t.idx, km: t.box.sumKm, pct: t.pct,
           distM: Math.round(t.distM), relDeg: null, de: clock.rally(), cum,
-          kmLaIesire: M.routeKm, orb: false }
+          kmLaIesire: M.routeKm, orb: false, inFata: t.inFata === true,
+          motivIntoarcere: t.motivIntoarcere || null, _reevalMono: clock.mono() }
       : { boxNum: null, idx: null, km: null, pct: null, distM: null, relDeg: null,
           de: clock.rally(), cum, kmLaIesire: M.routeKm, orb: true };
     M._offSector = null; M._offVorbaMono = 0;
     log('offroute_intrare', { cum, boxNum: t ? t.box.num : null, orb: !t,
-                              distM: t ? Math.round(t.distM) : null,
+                              distM: t ? Math.round(t.distM) : null, inFata: t ? t.inFata : null,
+                              motivIntoarcere: t ? (t.motivIntoarcere || null) : null,
                               semne: M._offSemne.map(s => s.tip), routeKm: r2(M.routeKm) });
-    if (t) say(`Ai ieșit de pe traseu. Întoarcere la boxul ${t.box.num}.`, 4, 'offroute', 'manevra');
+    // De ce te trimit acolo, nu doar unde: pilotul care aude „întoarcere" cand merge
+    // inainte trebuie sa stie ce pierde daca nu intoarce.
+    if (t && t.motivIntoarcere)
+      say(`Ai ieșit de pe traseu. Te întorc la boxul ${t.box.num} — altfel ratezi ${t.motivIntoarcere}.`, 4, 'offroute', 'manevra');
+    else if (t) say(`Ai ieșit de pe traseu. Prinde traseul la boxul ${t.box.num}.`, 4, 'offroute', 'manevra');
     // Mesajul „orb" spune ce LIPSEȘTE, nu ce nu poate aplicația. Vechiul „n-am destul
     // drum în memorie" nu-i spunea pilotului nici ce s-a întâmplat, nici ce să facă.
     else say('Am oprit instrucțiunile — nu mai ești pe traseu. Fără harta traseului nu știu unde e boxul; oprește și apasă SUNT LA BOX.', 4, 'offroute', 'manevra');
@@ -1357,6 +1401,21 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
     // fără punct de reintrare (nici hartă, nici drum în memorie) planul rămâne înghețat,
     // dar nu există ce arăta: ieșirea se face prin buton sau prin „SUNT LA BOX"
     if (o.orb) { incearcaTintaTarzie(); return; }
+    // ȚINTA SE REEVALUEAZĂ la fiecare 15 s: dacă pilotul merge înainte, punctul de
+    // reintrare alunecă natural pe boxurile următoare, în loc să-l tot cheme înapoi la
+    // unul pe care l-a lăsat de mult (04.08, 21:48: „Boxul 2 la 80… 190… 310 m, în
+    // spate", în timp ce mașina se ducea înainte).
+    if (clock.mono() - (o._reevalMono || 0) > OFF_REEVAL_MS) {
+      o._reevalMono = clock.mono();
+      const t = punctDeReintrare();
+      if (t && t.idx !== o.idx) {
+        log('offroute_tinta_noua', { deLaBox: o.boxNum, laBox: t.box.num,
+                                     distM: Math.round(t.distM), inFata: t.inFata });
+        o.boxNum = t.box.num; o.idx = t.idx; o.km = t.box.sumKm; o.pct = t.pct;
+        o.inFata = t.inFata === true; o.motivIntoarcere = t.motivIntoarcere || null;
+        M._offSector = null;
+      }
+    }
     o.distM = Math.round(haversineM(fix.lat, fix.lng, o.pct.lat, o.pct.lng));
     const brg = bearingDeg(fix.lat, fix.lng, o.pct.lat, o.pct.lng);
     o.brgDeg = Math.round(brg);
