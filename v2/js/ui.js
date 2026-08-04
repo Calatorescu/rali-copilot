@@ -77,6 +77,14 @@ export function makeUi() {
         (plan.rts[M.rtIdx] === r && M.state === 'RT_RUN') ? `▶${r.name}` : r.name
       ).join('  ');
 
+      // corecția de poziție: rămâne 20 s pe ecran chiar și când vocea o scurtează sau o
+      // sare complet, fiindcă boxul următor e prea aproape (vezi anuntaCorectia)
+      const cr = $('cp-corr');
+      if (cr) {
+        if (M.corectie) { cr.textContent = '⟲ ' + M.corectie.text; cr.className = 'corrline'; }
+        else cr.className = 'corrline hidden';
+      }
+
       // paznicul de direcție — banner cât timp alerta e în picioare (03.08.2026)
       const db = $('cp-dirband');
       if (db) {

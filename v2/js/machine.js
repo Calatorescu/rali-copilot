@@ -38,6 +38,7 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
     _turnAcc: 0, _lastHdg: null, _lastHdgT: 0, _quietMs: 0, _lastSnapT: 0, _virajRefuzat: null,
     _dirEtapa: 0, _dirStart: null, dirAlerta: null,
     _lastToneT: 0, _extSpeedKmh: null, _extSpeedT: 0,
+    corectie: null,        // ultima corecție de poziție, pentru ECRAN (vezi anuntaCorectia)
     // auto-calibrarea odometrului (vezi calibreaza + makeCalibrator din geo.js)
     calFactor: 1, _rawSinceAnchor: 0, _calAnchorKm: 0, _calN: 0,
     _anchorKm: 0,
@@ -119,6 +120,8 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
       if (M._curveHdg != null) M._curveDeg += Math.abs(angDiff(fix.headingDeg, M._curveHdg));
       M._curveHdg = fix.headingDeg;
     }
+    // corecția stă pe ecran 20 s, apoi dispare singură — și când e rostită, și când nu
+    if (M.corectie && clock.mono() > M.corectie.panaMono) M.corectie = null;
     const extFresh = M._extSpeedKmh != null && clock.mono() - M._extSpeedT < 3000;
     M.speedKmh = extFresh ? M._extSpeedKmh
       : (fix.speedMs != null ? fix.speedMs * 3.6 : M.speedKmh);
@@ -330,7 +333,14 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
         const inl = boxInlantuit(M.nextBoxIdx);
         if (inl) txt += `, apoi ${inl.text}`;
       }
-      say(txt, isNow ? 4 : (M.rt ? 3 : 2), 'turn');
+      // Clasa 'manevra' lipsea tocmai de la anunțurile de viraj — adică fix de la ce
+      // descrie regula. Comitul „paznic de directie" (03.08) a pus clasele pe alarme și
+      // pe ritm, dar anunțul principal („150 de metri — dreapta") rămăsese neclasificat,
+      // deci orice mesaj cu prioritate mai mare îl putea tăia din difuzor. Măsurat în
+      // jurnalul de 04.08, bucla József: „40 de metri — stânga" (11:27:58), „30 de metri
+      // — stânga la T" (11:28:25) și „Start probă în 140 de metri" (11:28:55) apar toate
+      // în `voce_aruncata` cu motivul „intrerupt".
+      say(txt, isNow ? 4 : (M.rt ? 3 : 2), 'turn', 'manevra');
       if (isNow) { driver.cueGiven(b.num, clock.wall()); log('cue', { boxNum: b.num }); }
     }
   }
@@ -718,9 +728,37 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
     M._lastSnapT = clock.mono();
     const before = M.routeKm;
     snapToBox(best, 'turn', lagM);
-    const deltaM = Math.round((M.routeKm - before) * 1000);
-    if (Math.abs(deltaM) > 60)
-      say(`Corectat ${deltaM > 0 ? 'înainte' : 'înapoi'} ${Math.abs(deltaM)} metri, box ${plan.boxes[best].num}.`, 2, 'sync');
+    anuntaCorectia(Math.round((M.routeKm - before) * 1000), plan.boxes[best].num);
+  }
+
+  // ── ANUNȚUL DE CORECȚIE — informație, nu manevră ─────────────────────────
+  // 04.08.2026, bucla József, Leg 2: snapul pe boxul 4 a mutat poziția cu −116 m și a
+  // rostit „Corectat înapoi 116 metri, box 4" — o frază de vreo 3 secunde, într-o buclă
+  // în care boxurile 2-3-4 sunt la 70-91 m unul de altul, adică la 6-8 secunde de mers.
+  // Corecția e o EXPLICAȚIE pentru ce s-a văzut deja pe ecran; manevra următoare e o
+  // decizie de peste câteva secunde. Deci:
+  //  • clasa e 'ritm': nu întrerupe niciodată o manevră care se rostește și nu i-o ia
+  //    înainte în coadă (regula claselor din 03.08);
+  //  • sub 150 m până la boxul următor rămâne doar „Corectat." — pragul vine din
+  //    roadbook-ul real: secțiunile din buclă au 70-91 m, iar de la boxul 4 până la
+  //    startul probei sunt 360 m, unde fraza întreagă încape liniștită;
+  //  • sub 60 m nu se rostește nimic — „acum"-ul manevrei e practic aici;
+  //  • ecranul primește informația ÎNTOTDEAUNA, chiar și când gura tace.
+  const CORECTIE_MIN_M = 60, CORECTIE_SPATIU_M = 150;
+
+  function anuntaCorectia(deltaM, boxNum) {
+    const semn = deltaM > 0 ? 'înainte' : 'înapoi';
+    M.corectie = { text: `corectat ${semn} ${Math.abs(deltaM)} m · box ${boxNum}`,
+                   deltaM, boxNum, panaMono: clock.mono() + 20000 };
+    if (Math.abs(deltaM) <= CORECTIE_MIN_M) return;
+    const urm = plan.boxes[M.nextBoxIdx];
+    const panaLaUrm = urm ? (urm.sumKm - M.routeKm) * 1000 : Infinity;
+    log('corectie_anunt', { deltaM, boxNum, panaLaUrmatorulM: isFinite(panaLaUrm) ? Math.round(panaLaUrm) : null,
+                            rostit: panaLaUrm < CORECTIE_MIN_M ? 'deloc'
+                                  : panaLaUrm < CORECTIE_SPATIU_M ? 'scurt' : 'intreg' });
+    if (panaLaUrm < CORECTIE_MIN_M) return;
+    if (panaLaUrm < CORECTIE_SPATIU_M) { say('Corectat.', 1, 'sync', 'ritm'); return; }
+    say(`Corectat ${semn} ${Math.abs(deltaM)} metri, box ${boxNum}.`, 2, 'sync', 'ritm');
   }
 
   // „Merg drept, dar aplicația crede că trebuia să fi virat." Fără geometrie, ăsta e
@@ -788,7 +826,7 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
       M._ann = {}; M._staged = false; M._warnedRt = {}; M._desyncSaid = null; M._confirmedIdx = -1;
       M._virajRefuzat = null; M._turnAcc = 0; M._lastHdg = null; M._lastSnapT = 0;
       // paznicul de direcție se re-armează la fiecare zi/leg nou
-      M._dirEtapa = 0; M.dirAlerta = null;
+      M._dirEtapa = 0; M.dirAlerta = null; M.corectie = null;
       M._dirStart = M._lastPos ? { ...M._lastPos } : null;
       M._lastFixMono = null; M._gpsLostSaid = false;
       // zi/leg nou = riglă nouă: măsurătorile de calibrare NU se moștenesc între leg-uri
@@ -828,6 +866,9 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
     tick() {
       if (M.state === 'PREP') return;
       const now = clock.mono();
+      // și fără fixuri corecția expiră la timp: altfel, cu GPS-ul mort, ar rămâne pe
+      // ecran ore întregi ca o informație proaspătă
+      if (M.corectie && now > M.corectie.panaMono) M.corectie = null;
       const stale = M._lastFixMono != null && now - M._lastFixMono > 15000;
       if (stale && !M._gpsLostSaid) {
         M._gpsLostSaid = true;

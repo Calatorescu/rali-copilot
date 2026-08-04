@@ -87,6 +87,11 @@ input { background: var(--bg); border: 1px solid var(--border); border-radius: 1
   margin-top: 3px; }
 #bp-list .btn.pri { outline: 2px solid #fff6; }
 
+/* corecția de poziție — informație, nu alarmă: se citește dintr-o privire, nu strigă */
+.corrline { background: #ffd60a1f; color: var(--warn); border-radius: 10px; padding: 6px 10px;
+  font-size: 13px; font-weight: 700; margin-bottom: 8px; text-align: center;
+  font-variant-numeric: tabular-nums; }
+
 .debrief { background: #0a84ff22; border-radius: 10px; padding: 9px 12px; font-size: 13px; margin-bottom: 8px; }
 .rts-line { font-size: 13px; color: var(--dim); text-align: center; margin-bottom: 8px; font-variant-numeric: tabular-nums; }
 .bignum { font-size: 44px; font-weight: 800; font-variant-numeric: tabular-nums; padding: 8px 0; }
