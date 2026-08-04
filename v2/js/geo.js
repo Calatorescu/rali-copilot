@@ -112,6 +112,92 @@ export function makeOdometer() {
   };
 }
 
+// ── CALIBRAREA ODOMETRULUI — dovada, nu prima impresie ───────────────────────
+// Roadbook-ul e o riglă: între două boxuri confirmate fizic, distanța oficială e
+// adevărul, iar ce-a măsurat GPS-ul e măsurătoarea. Raportul lor ar fi eroarea
+// sistematică a odometrului — DACĂ rigla ar fi exactă și măsurătoarea curată.
+//
+// Ce s-a întâmplat pe 04.08.2026, măsurat în jurnal, Leg 1 al ultimei ture:
+//   segment box 4→8:  oficial 2,634 km · măsurat 2,678 km → raport 0,9836 (−1,6%)
+//   segment box 8→12: oficial 2,282 km · măsurat 2,211 km → raport 1,0321 (+3,2%)
+// Versiunea veche aplica factorul de la PRIMA măsurătoare (dinMasuratori:1 în jurnal).
+// Deci pe segmentul următor s-a mers cu −1,6%, exact acolo unde eroarea era de semn
+// OPUS: cele două s-au adunat, iar la oprirea fizică pe boxul 12 (5,43 oficial) poziția
+// arăta 5,34 — 90 m lipsă, corectați manual cu +92 m.
+//
+// Un odometru nu-și schimbă eroarea sistematică cu 4,9 puncte procentuale de la un
+// kilometru la altul. Împrăștierea aia e ZGOMOT: km-ii „oficiali" ai roadbook-ului de
+// test vin dintr-un lanț GPS și au ±40-70 m pe segment, adică ±1,6…3,2% pe 2,3-2,6 km.
+// Toate cele CINCI perechi de segmente din jurnalul zilei arată la fel (0,984/1,006 ·
+// 1,015/0,994 · 1,006/1,052 · 0,967/1,017 · 0,973/0,991): semne care se bat cap în cap.
+//
+// De-aceea calibratorul nu mai crede o măsurătoare, ci o dovadă:
+//  • minim 2 segmente și minim 2 km cumulați — un segment singur nu are cu ce fi comparat;
+//  • media e ponderată cu lungimea (sumă oficial / sumă măsurat — un segment de 2,6 km
+//    cântărește cât trebuie față de unul de 0,6);
+//  • abaterea se aplică doar dacă IESE DIN ZGOMOT: |medie − 1| > 2 × marja de eroare a
+//    mediei (împrăștierea segmentelor / √n). Cu segmente care se contrazic, marja e mare
+//    și factorul rămâne 1 — corect, fiindcă nu s-a măsurat nimic. Cu o eroare reală,
+//    consecventă pe mai multe segmente, împrăștierea e mică și factorul trece;
+//  • schimbarea per măsurătoare e plafonată, iar plafonul CREȘTE cu dovada: 0,5% la a
+//    doua măsurătoare, 1% la a treia, 1,5% la a patra. O eroare reală de 4%, consecventă,
+//    e prinsă în cinci segmente; saltul de azi (0,984 → 1,006 dintr-un pas, adică 2,2
+//    puncte procentuale pe a doua măsurătoare) ar cere cinci segmente care se confirmă.
+export function makeCalibrator(opts = {}) {
+  const O = { minSegmente: 2, minKm: 2, minSegKm: 0.5, plajaSegment: 0.15,
+              pasMax: 0.005, limita: 0.1, pragMinim: 0.003, k: 2, ...opts };
+  const seg = [];
+  let factor = 1;
+
+  function statistica() {
+    const sumO = seg.reduce((a, s) => a + s.oficial, 0);
+    const sumM = seg.reduce((a, s) => a + s.masurat, 0);
+    const medie = sumM > 0 ? sumO / sumM : 1;
+    // împrăștierea segmentelor în jurul mediei, ponderată tot cu lungimea măsurată,
+    // cu corecția de eșantion (n−1) — cu 2 segmente, estimarea „populație" ar minți
+    // în jos exact acolo unde contează
+    let v = 0;
+    if (seg.length > 1) {
+      for (const s of seg) v += (s.masurat / sumM) * (s.raport - medie) ** 2;
+      v *= seg.length / (seg.length - 1);
+    }
+    const imprastiere = Math.sqrt(v);
+    return { n: seg.length, kmOficial: sumO, kmMasurat: sumM, medie, imprastiere,
+             marja: O.k * imprastiere / Math.sqrt(seg.length) };
+  }
+
+  return {
+    get factor() { return factor; },
+    get segmente() { return seg.length; },
+    stare() { return { ...statistica(), factor }; },
+    // oficial/masurat în km. Întoarce ce s-a întâmplat, ca să intre în jurnal.
+    adauga(oficial, masurat) {
+      if (!(masurat >= O.minSegKm) || !(oficial >= O.minSegKm))
+        return { stare: 'scurt', oficial, masurat };
+      const raport = oficial / masurat;
+      if (raport < 1 - O.plajaSegment || raport > 1 + O.plajaSegment)
+        return { stare: 'refuzat', raport, oficial, masurat };   // snap greșit, nu odometru
+      seg.push({ oficial, masurat, raport });
+      const st = statistica();
+      const info = { raport, oficial, masurat, ...st };
+      if (st.n < O.minSegmente)
+        return { stare: 'asteapta', motiv: 'un singur segment măsurat', ...info };
+      if (st.kmOficial < O.minKm)
+        return { stare: 'asteapta', motiv: `doar ${st.kmOficial.toFixed(2)} km cumulați`, ...info };
+      const abatere = Math.abs(st.medie - 1);
+      if (abatere < O.pragMinim)
+        return { stare: 'asteapta', motiv: 'odometrul e destul de bun', ...info };
+      if (abatere <= st.marja)
+        return { stare: 'asteapta', motiv: 'segmentele se contrazic — e zgomot, nu eroare', ...info };
+      const tinta = Math.max(1 - O.limita, Math.min(1 + O.limita, st.medie));
+      const pas = O.pasMax * (st.n - 1);       // plafonul crește cu numărul de segmente
+      factor = Math.max(factor - pas, Math.min(factor + pas, tinta));
+      return { stare: 'aplicat', factor, tinta, pas,
+               plafonat: Math.abs(tinta - factor) > 1e-9, ...info };
+    }
+  };
+}
+
 // diferență unghiulară semnată, -180..180 (pentru detecția de viraje fără geometrie)
 export function angDiff(a, b) { return ((a - b + 540) % 360) - 180; }
 

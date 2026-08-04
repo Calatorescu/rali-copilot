@@ -11,7 +11,7 @@
 // de cod. Kilometrul de traseu vine din proiecția pe urmă când există recunoaștere,
 // altfel din odometrul fuzionat; „AM TRECUT DE BOX" (buton sau voce) rămâne suveran.
 
-import { makeOdometer, projectOnTrace, angDiff, haversineM,
+import { makeOdometer, makeCalibrator, projectOnTrace, angDiff, haversineM,
          bearingDeg, traceAheadPoint, directieRo } from './geo.js';
 import { idealTimeS, deviationS, speedAt, bankingAdvice } from './pace.js';
 import { TURN_DIRS } from './route.js';
@@ -38,13 +38,14 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
     _turnAcc: 0, _lastHdg: null, _lastHdgT: 0, _quietMs: 0, _lastSnapT: 0, _virajRefuzat: null,
     _dirEtapa: 0, _dirStart: null, dirAlerta: null,
     _lastToneT: 0, _extSpeedKmh: null, _extSpeedT: 0,
-    // auto-calibrarea odometrului (vezi calibreaza)
-    calFactor: 1, _rawSinceAnchor: 0, _calAnchorKm: 0, _calN: 0, _calOficial: 0, _calMasurat: 0,
+    // auto-calibrarea odometrului (vezi calibreaza + makeCalibrator din geo.js)
+    calFactor: 1, _rawSinceAnchor: 0, _calAnchorKm: 0, _calN: 0,
     _anchorKm: 0,
     // poziția absolută: ancora geografică + cât s-a curbat drumul de la ea
     _anchorPos: null, _lastPos: null, _curveDeg: 0, _curveHdg: null
   };
   const odo = makeOdometer();
+  let cal = makeCalibrator();
 
   // `cls` = clasa de anunț pentru coada de voce: 'manevra' (unde se virează) sau
   // 'ritm' (secunde, viteze, bancă). Regula cerută de Andreas: ritmul nu taie niciodată
@@ -584,12 +585,12 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
   }
 
   // ── AUTO-CALIBRAREA ODOMETRULUI ──────────────────────────────────────────
-  // Roadbook-ul e o riglă: între două boxuri confirmate fizic, distanța OFICIALĂ e
-  // adevărul, iar ce a măsurat GPS-ul e măsurătoarea. Raportul dintre ele e eroarea
-  // sistematică a odometrului — și se poate corecta pentru tot restul zilei.
-  // La Sibiu asta e cea mai importantă apărare pe care o avem: fără recunoaștere,
-  // 2% eroare pe o probă de 2 km înseamnă 40 m, adică o probă pornită greșit.
-  // Prudent: doar pe segmente lungi, doar corecții mici, învățare lentă.
+  // Regula de învățare stă în makeCalibrator (geo.js), cu tot cu cifrele din jurnalul
+  // de 04.08 care au impus-o. Aici rămâne doar cuplarea la boxurile confirmate.
+  // La Sibiu calibrarea e cea mai importantă apărare pe care o avem fără recunoaștere:
+  // 2% eroare pe o probă de 2 km înseamnă 40 m, adică o probă pornită greșit — dar
+  // exact de-aceea nu are voie să învețe zgomot: un factor greșit strică ACTIV, pe
+  // toată ziua, ceea ce ar fi trebuit să repare.
   //
   // Două ancore, nu una — le-am confundat o dată și calibrarea a ieșit cu 0,5% greșită
   // chiar pe un odometru perfect:
@@ -609,29 +610,31 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
     M._rawSinceAnchor = 0;
     M._calAnchorKm = targetKm;
     ancoreazaGeo(targetKm);                   // boxul confirmat e și ancoră geografică
-    if (masurat < 0.5 || oficial < 0.5) return;   // segment scurt = zgomot, nu semnal
-    const nou = oficial / masurat;
-    if (nou < 0.85 || nou > 1.15) {        // în afara plajei = snap greșit, nu odometru
-      log('cal_refuzat', { raport: r3(nou), masurat: r3(masurat), oficial: r3(oficial) });
+    const r = cal.adauga(oficial, masurat);
+    if (r.stare === 'scurt') return;          // segment prea scurt = zgomot, nu semnal
+    if (r.stare === 'refuzat') {              // în afara plajei = snap greșit, nu odometru
+      log('cal_refuzat', { raport: r3(r.raport), masurat: r3(masurat), oficial: r3(oficial) });
       return;
     }
-    // Raport ACUMULAT: total oficial / total măsurat. Se ponderează singur după lungimea
-    // segmentelor (un segment de 2,6 km cântărește cât trebuie față de unul de 0,6) și
-    // converge la valoarea adevărată. Prima variantă amesteca ponderat și COMPUNEA
-    // factorul — la 4% eroare reală ajungea la 5,8%. Prins de test, nu pe drum.
-    M._calOficial += oficial;
-    M._calMasurat += masurat;
-    M.calFactor = Math.max(0.9, Math.min(1.1, M._calOficial / M._calMasurat));
-    M._calN++;
+    M._calN = cal.segmente;
+    // Ce s-a măsurat intră în jurnal ȘI când NU se aplică nimic — altfel, la debrief,
+    // tăcerea calibrării arată identic cu absența măsurătorilor (04.08: din jurnal nu
+    // se putea vedea că cele două segmente se contraziceau, doar factorul rezultat).
+    const cifre = { segmentOficial: r3(oficial), segmentMasurat: r3(masurat),
+                    raportSegment: r3(r.raport), dinMasuratori: r.n,
+                    kmCumulat: r3(r.kmOficial), medie: r3(r.medie),
+                    imprastiere: r3(r.imprastiere), marja: r3(r.marja) };
+    if (r.stare === 'asteapta') { log('cal_asteapta', { motiv: r.motiv, ...cifre }); return; }
+    M.calFactor = r.factor;
     const proc = (M.calFactor - 1) * 100;
-    log('calibrare', { factor: r3(M.calFactor), procent: r3(proc), dinMasuratori: M._calN,
-                       segmentOficial: r3(oficial), segmentMasurat: r3(masurat) });
+    log('calibrare', { factor: r3(M.calFactor), procent: r3(proc),
+                       tinta: r3(r.tinta), plafonat: !!r.plafonat, ...cifre });
     // „plus 1 virgulă 5 la sută" s-a auzit „5 la sută" la volan (02.08) — corecțiile
     // mici se anunță ca „mică", fără cifră; cifra rămâne doar la corecții mari.
-    if (Math.abs(proc) >= 2 && M._calN <= 3)
-      say(`Odometru calibrat: ${proc > 0 ? 'plus' : 'minus'} ${Math.abs(proc).toFixed(1)} la sută.`, 2, 'cal');
-    else if (Math.abs(proc) >= 0.8 && M._calN <= 3)
-      say('Calibrare mică făcută. E bine.', 1, 'cal');
+    if (Math.abs(proc) >= 2 && M._calN <= 4)
+      say(`Odometru calibrat: ${proc > 0 ? 'plus' : 'minus'} ${Math.abs(proc).toFixed(1)} la sută.`, 2, 'cal', 'ritm');
+    else if (Math.abs(proc) >= 0.8 && M._calN <= 4)
+      say('Calibrare mică făcută. E bine.', 1, 'cal', 'ritm');
   }
 
   function turnDetect(fix) {
@@ -788,8 +791,10 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
       M._dirEtapa = 0; M.dirAlerta = null;
       M._dirStart = M._lastPos ? { ...M._lastPos } : null;
       M._lastFixMono = null; M._gpsLostSaid = false;
+      // zi/leg nou = riglă nouă: măsurătorile de calibrare NU se moștenesc între leg-uri
+      cal = makeCalibrator();
       M.calFactor = 1; M._rawSinceAnchor = 0; M._calAnchorKm = 0; M._anchorKm = 0;
-      M._calN = 0; M._calOficial = 0; M._calMasurat = 0;
+      M._calN = 0;
       // linia de start e prima ancoră geografică: de aici încolo poziția absolută lucrează
       M._anchorPos = M._lastPos ? { ...M._lastPos } : null;
       M._curveDeg = 0; M._curveHdg = null;
