@@ -8,6 +8,7 @@
 // liniară. Cu 3-4 ancore pe leg, kilometrul oficial se citește direct din poziție.
 
 import { slowZones } from './pace.js';
+import { buildTrace } from './geo.js';
 
 export const TURN_DIRS = new Set(['STÂNGA', 'DREAPTA', 'STÂNGA-T', 'DREAPTA-T',
   'GIRATORIU-1', 'GIRATORIU-2', 'GIRATORIU-3', 'GIRATORIU-4']);
@@ -194,6 +195,67 @@ export function makeAnchorMap(anchors) {
       return a.traceM + f * (b.traceM - a.traceM);
     }
   };
+}
+
+// ── Recunoașterea, legată de LEG ────────────────────────────────────────────
+// Găsit 04.08.2026, căutând de ce `recon` e null în exporturile din ambele zile:
+// geometria se ținea sub O SINGURĂ cheie globală ('recon'), deși numerele boxurilor ȘI
+// kilometrajul repornesc la fiecare leg (lecția #1 a auditului, plătită deja o dată).
+// Cu două leg-uri scanate, urma leg-ului 1 se aplica peste planul leg-ului 2: proiecție
+// pe o geometrie care nu e a drumului pe care mergi, ancore care traduc kilometri ai
+// altui traseu. Și invers: o recunoaștere nouă ștergea tăcut recunoașterea celuilalt leg.
+// De-acum forma stocată e { _v: 2, legs: { "1|1": {trace, samples, anchors, at} } }.
+export function reconNormalize(brut, legActiv) {
+  if (!brut || typeof brut !== 'object') return { _v: 2, legs: {} };
+  if (brut._v === 2 && brut.legs && typeof brut.legs === 'object')
+    return { _v: 2, legs: { ...brut.legs } };
+  // forma VECHE (un singur obiect cu trace/anchors): se atribuie leg-ului activ — singura
+  // presupunere rezonabilă, fiindcă vechea aplicație o folosea exact pentru leg-ul activ.
+  if (brut.trace && legActiv)
+    return { _v: 2, legs: { [legActiv]: { ...brut, legKey: legActiv } }, _migrat: true };
+  return { _v: 2, legs: {} };
+}
+
+export function reconPentruLeg(harta, legKey) {
+  if (!harta || !harta.legs || !legKey) return null;
+  return harta.legs[legKey] || null;
+}
+
+export function reconPune(harta, legKey, rec) {
+  const h = reconNormalize(harta, legKey);
+  h.legs[legKey] = rec;
+  delete h._migrat;
+  return h;
+}
+
+// Verdictul citit ÎNAINTE de START. „Există un obiect recon" nu înseamnă „merge":
+// fără ancore, buildPlan nu poate face anchorMap, iar mașina ignoră complet urma —
+// tăcut, exact ca și cum n-ar exista (așa a stat aplicația două zile de teste).
+export function reconStatus(rec) {
+  const puncte = rec && rec.trace && Array.isArray(rec.trace.pts) ? rec.trace.pts.length : 0;
+  const ancore = rec && Array.isArray(rec.anchors) ? rec.anchors.length : 0;
+  const km = rec && rec.trace && isFinite(rec.trace.totalM) ? rec.trace.totalM / 1000 : 0;
+  const at = rec && rec.at ? rec.at : null;
+  const baza = { puncte, ancore, km, at, recuperat: !!(rec && rec.recuperat) };
+  if (!rec) return { ok: false, ...baza, motiv: 'nu s-a înregistrat niciodată' };
+  if (puncte < 2) return { ok: false, ...baza, motiv: 'urma e goală — înregistrarea n-a prins puncte GPS' };
+  if (ancore < 1) return { ok: false, ...baza, motiv: 'fără ancore — urma nu se poate lega de kilometrajul din roadbook' };
+  return { ok: true, ...baza, motiv: null };
+}
+
+// Ciorna unei înregistrări întrerupte (aplicația moare des pe telefon în plin drum).
+// Decizia, ca funcție pură ca s-o poată verifica testele: se promovează la geometria
+// leg-ului DOAR dacă leg-ul n-are deja una — altfel se păstrează și se raportează.
+export function reconRecupereaza(ciorna, harta) {
+  if (!ciorna || !Array.isArray(ciorna.raw) || ciorna.raw.length < 2 || !ciorna.legKey)
+    return { stare: 'gol' };
+  const trace = buildTrace(ciorna.raw);
+  const km = Math.round(trace.totalM) / 1000;
+  if (reconPentruLeg(reconNormalize(harta, ciorna.legKey), ciorna.legKey))
+    return { stare: 'exista_deja', legKey: ciorna.legKey, km };
+  return { stare: 'recuperat', legKey: ciorna.legKey, km,
+           rec: { trace, samples: ciorna.samples || [], anchors: ciorna.anchors || [],
+                  at: ciorna.at || Date.now(), legKey: ciorna.legKey, recuperat: true } };
 }
 
 // Zonele lente ale unei probe, în metri DE PROBĂ, din mostrele de recunoaștere.

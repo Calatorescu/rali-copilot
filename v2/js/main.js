@@ -5,7 +5,9 @@ import { buildTrace } from './geo.js';
 import { makeStore, makeMemStore, exportDay, importDay, resumeStateFromJournal } from './store.js';
 import { makeVoice, makeEars, secRo } from './voice.js';
 import { makeLiveGps, makeSyntheticGps, makeReplayGps } from './gps.js';
-import { buildPlan, detectRts, sanitizeBoxes, groupByLeg, verifyRoadbook } from './route.js';
+import { buildPlan, detectRts, sanitizeBoxes, groupByLeg, verifyRoadbook,
+         reconNormalize, reconPentruLeg, reconPune, reconStatus,
+         reconRecupereaza } from './route.js';
 import { makeMachine } from './machine.js';
 import { makeDriverModel } from './learn.js';
 import { makeUi, startHeaderClock } from './ui.js';
@@ -17,6 +19,10 @@ import { efficiencyPoints, efficiencyGap } from './pace.js';
 const $ = id => document.getElementById(id);
 let store, clock, voice, ui, driver, machine = null, gps = null, plan = null, sync = null;
 let boxesRaw = [], reconRec = null;
+// starea recunoașterii pentru leg-ul activ, calculată în rebuildPlan și afișată în
+// panoul de pregătire — pilotul trebuie s-o vadă ÎNAINTE de START, nu s-o deducă din
+// comportament (04.08.2026: două zile de test fără geometrie, fără ca nimic s-o spună)
+let reconStare = null, reconDraftMesaj = null;
 
 // Versiunea build-ului — se ține SINCRON cu CACHE din sw.js la fiecare deploy.
 // Vizibilă în antet și scrisă în jurnal la fiecare pornire: „ce versiune rulează
@@ -51,6 +57,7 @@ async function init() {
   // (fișier de pe alt telefon = conținut extern) sau dintr-un IndexedDB scris de o
   // versiune veche. Singurul punct prin care trec toate căile. (Audit 02.08.2026, P3.)
   boxesRaw = sanitizeBoxes((await store.get('plan_raw')) || []);
+  await recupereazaDraftRecon();      // o înregistrare întreruptă nu se mai pierde
   await rebuildPlan();
   sync = makeSync({
     getToken: () => localStorage.getItem('r2_gh_token'),
@@ -81,20 +88,36 @@ function audioCtx() { return () => (_audioCtx = _audioCtx || new (window.AudioCo
 
 async function rebuildPlan() {
   const speeds = (await store.get('rt_speeds')) || {};
-  const recon = await store.get('recon');
   // Planul se construiește pe UN SINGUR leg (audit, #1) — km-ii și numerele de box
   // repornesc la fiecare leg, deci amestecul lor global era un traseu inexistent.
   const grupuri = groupByLeg(boxesRaw);
   let cheia = await store.get('leg_activ');
   if (!grupuri.some(g => g.key === cheia)) cheia = grupuri.length ? grupuri[0].key : null;
   const g = grupuri.find(x => x.key === cheia);
-  plan = buildPlan(g ? g.boxes : [], speeds, recon || null);
+  // Geometria e A LEG-ULUI, nu a zilei (vezi route.js, reconNormalize). Forma veche,
+  // dacă mai există pe telefon, se migrează o singură dată și se scrie înapoi.
+  const harta = reconNormalize(await store.get('recon'), cheia);
+  if (harta._migrat) {
+    delete harta._migrat;
+    await store.put('recon', harta);
+    try { store.log('recon_migrat', { legKey: cheia }, Date.now()); } catch (e) {}
+  }
+  const rec = reconPentruLeg(harta, cheia);
+  reconStare = reconStatus(rec);
+  // Se dă mașinii DOAR o geometrie folosibilă: o urmă fără ancore nu poate produce
+  // anchorMap, iar mașina ar ignora-o oricum — dar tăcut. Așa, „Geometrie: DA" din
+  // panou înseamnă exact „proiecția și paznicul de direcție funcționează".
+  plan = buildPlan(g ? g.boxes : [], speeds, reconStare.ok ? rec : null);
   plan.legKey = cheia;
   plan.legGroups = grupuri;
   const idx = grupuri.findIndex(x => x.key === cheia);
   plan.legLabel = g ? g.label : null;
   plan.nextLegKey = idx >= 0 && idx + 1 < grupuri.length ? grupuri[idx + 1].key : null;
   plan.nextLegLabel = plan.nextLegKey ? grupuri[idx + 1].label : null;
+  // starea geometriei pe FIECARE leg — la două leg-uri, „am înregistrat" nu spune
+  // pentru care dintre ele
+  plan.reconLegs = grupuri.map(gr => ({ label: gr.label,
+    stare: reconStatus(reconPentruLeg(harta, gr.key)) }));
   machine = makeMachine({ plan, clock, voice, store, ui, driver });
   // programul TC scanat ieri nu se pierde la repornire — se reîncarcă din stocare
   // Time card-ul e al ZILEI (TC1..TCn în ordine), dar planul e al LEG-ului: fiecare
@@ -182,9 +205,36 @@ function renderPrep() {
       }
     }
   }
-  $('prep-recon').textContent = plan.trace
-    ? `urmă: ${(plan.trace.totalM / 1000).toFixed(2)} km · ${plan.anchorMap ? plan.anchorMap.anchors.length + ' ancore' : 'fără ancore'}`
-    : 'fără recunoaștere (merg pe odometru + viraje)';
+  renderRecon();
+}
+
+// Rândul de geometrie din panoul de pregătire. Cerut după 04.08.2026: aplicația are
+// „traseul ca geometrie" ca idee centrală, paznicul de direcție și proiecția fără drift
+// depind de ea — și au lipsit DOUĂ zile de test fără ca nimic pe ecran s-o spună.
+// Paznicul care „tace" arată identic cu paznicul care e mulțumit.
+function renderRecon() {
+  const el = $('prep-recon');
+  const s = reconStare;
+  if (s && s.ok) {
+    const d = s.at ? new Date(s.at) : null;
+    const cand = d ? ` · ${String(d.getDate()).padStart(2, '0')}.${String(d.getMonth() + 1).padStart(2, '0')} ` +
+      `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}` : '';
+    el.textContent = `Geometrie: DA — ${s.puncte} puncte · ${s.ancore} ancore · ` +
+      `${s.km.toFixed(2)} km${cand}${s.recuperat ? ' (recuperată din înregistrarea întreruptă)' : ''}`;
+    el.style.color = 'var(--ok)';
+  } else {
+    el.textContent = 'Geometrie: NU — paznic de direcție și proiecție fără drift INDISPONIBILE' +
+      (s && s.motiv ? ` (${s.motiv})` : '');
+    el.style.color = 'var(--bad)';
+  }
+  const legs = $('prep-recon-legs');
+  if (legs) {
+    const linii = [];
+    if (plan.reconLegs && plan.reconLegs.length > 1)
+      linii.push(plan.reconLegs.map(r => `${r.label}: ${r.stare.ok ? 'DA' : 'NU'}`).join(' · '));
+    if (reconDraftMesaj) linii.push(reconDraftMesaj);
+    legs.textContent = linii.join(' — ');
+  }
 }
 
 // ── GPS live + cursă ────────────────────────────────────────────────────────
@@ -238,10 +288,25 @@ async function legUrmator() {
 }
 
 // ── recunoașterea: înregistrează urma + ancorele ────────────────────────────
+// Înregistrarea se leagă de LEG-UL ACTIV (numerele de box și km-ii repornesc la fiecare
+// leg) și se salvează DIN MERS, nu doar la STOP: pe telefon, pagina moare des în plină
+// înregistrare (ecran stins, cameră, memorie) — până azi, un drum de recunoaștere de 20
+// de minute se pierdea în întregime, fără o urmă în jurnal că a existat vreodată.
 function startRecon() {
+  if (!plan.boxes.length) {
+    alert('Scanează întâi roadbook-ul: recunoașterea se leagă de un leg, iar ancorele sunt boxuri.');
+    return;
+  }
   stopGps();
-  reconRec = { raw: [], samples: [], anchors: [] };
-  let cum = 0, lastPt = null;
+  const legKey = plan.legKey, legLabel = plan.legLabel || 'leg';
+  reconRec = { raw: [], samples: [], anchors: [], legKey, legLabel };
+  let cum = 0, lastPt = null, ultimaSalvare = 0;
+  const salveazaDraft = async () => {
+    try {
+      await store.put('recon_draft', { legKey, raw: reconRec.raw, samples: reconRec.samples,
+                                       anchors: reconRec.anchors, at: Date.now() });
+    } catch (e) {}
+  };
   gps = makeLiveGps({
     onFix: f => {
       reconRec.raw.push({ lat: f.lat, lng: f.lng, tMs: f.tMs, speedMs: f.speedMs, accM: f.accM });
@@ -252,21 +317,37 @@ function startRecon() {
       lastPt = f;
       if (f.speedMs != null) reconRec.samples.push({ cumM: cum, kmh: f.speedMs * 3.6 });
       $('rec-dist').textContent = (cum / 1000).toFixed(2) + ' km';
+      // ciornă la fiecare 15 s: o tranzacție la 15 s nu încarcă telefonul, dar o
+      // închidere neașteptată nu mai costă tot drumul
+      if (Date.now() - ultimaSalvare > 15000) { ultimaSalvare = Date.now(); salveazaDraft(); }
     },
     onLost: () => {}, onBack: () => {}
   });
   reconRec.cum = () => cum;
-  gps.start();
+  const pornit = gps.start();
+  $('rec-leg').textContent = pornit
+    ? `înregistrez pentru ${legLabel} · ${plan.boxes.length} boxuri`
+    : '⚠ GPS INDISPONIBIL — nu se înregistrează nimic';
+  $('rec-dist').textContent = '0.00 km';
+  $('rec-anchors').textContent = '0 ancore';
+  try { store.log('recon_start', { legKey, legLabel, boxuri: plan.boxes.length, gps: !!pornit }, Date.now()); } catch (e) {}
   showScreen('recon');
+  if (!pornit) { alert('GPS indisponibil — recunoașterea n-ar înregistra nimic.'); return; }
   voice.say('Recunoaștere pornită. Marchează boxurile din mers.', 2);
 }
 
 async function reconMark() {
+  if (!reconRec) return;
   const num = parseInt($('rec-box').value, 10);
   if (!isFinite(num)) { alert('Pune numărul boxului.'); return; }
-  const b = boxesRaw.find(x => x.num === num);
-  if (!b) { alert(`Boxul ${num} nu e în roadbook.`); return; }
+  // boxurile LEG-ULUI înregistrat, nu toate boxurile scanate: cu două leg-uri, „box 4"
+  // există de două ori, iar căutarea globală lua mereu km-ul primului leg — ancoră pusă
+  // pe kilometrajul altui traseu (04.08.2026)
+  const b = plan.boxes.find(x => x.num === num);
+  if (!b) { alert(`Boxul ${num} nu e în ${reconRec.legLabel}.`); return; }
   reconRec.anchors.push({ officialKm: b.sumKm, traceM: reconRec.cum() });
+  try { store.log('recon_ancora', { legKey: reconRec.legKey, boxNum: num,
+                                    officialKm: b.sumKm, traceM: Math.round(reconRec.cum()) }, Date.now()); } catch (e) {}
   voice.tone('tick'); voice.say(`Box ${num} marcat.`, 1);
   $('rec-box').value = String(num + 1);
   $('rec-anchors').textContent = reconRec.anchors.length + ' ancore';
@@ -274,11 +355,43 @@ async function reconMark() {
 
 async function reconStop() {
   stopGps();
+  if (!reconRec) { showScreen('prep'); return; }
   const trace = buildTrace(reconRec.raw);
-  await store.put('recon', { trace, samples: reconRec.samples, anchors: reconRec.anchors, at: Date.now() });
+  const rec = { trace, samples: reconRec.samples, anchors: reconRec.anchors,
+                at: Date.now(), legKey: reconRec.legKey };
+  const harta = reconPune(await store.get('recon'), reconRec.legKey, rec);
+  await store.put('recon', harta);
+  await store.del('recon_draft');
+  try { store.log('recon_salvat', { legKey: reconRec.legKey, puncte: trace.pts.length,
+                                    km: Math.round(trace.totalM) / 1000,
+                                    ancore: reconRec.anchors.length }, Date.now()); } catch (e) {}
+  const st = reconStatus(rec);
+  reconRec = null;
   await rebuildPlan();
-  voice.say(`Recunoaștere salvată: ${(trace.totalM / 1000).toFixed(1)} kilometri, ${reconRec.anchors.length} ancore.`, 2);
+  // fără ancore, urma nu se poate lega de kilometrajul roadbook-ului — se spune ACUM,
+  // cât mai poți repeta drumul, nu la 40 km/h în cursă
+  voice.say(st.ok
+    ? `Recunoaștere salvată: ${(trace.totalM / 1000).toFixed(1)} kilometri, ${rec.anchors.length} ancore.`
+    : 'Recunoaștere salvată, dar FĂRĂ ancore — nu se poate folosi. Marchează boxuri la următoarea tură.', 2);
   showScreen('prep');
+}
+
+// Ciorna rămasă de la o înregistrare întreruptă (aplicație închisă în plin drum).
+// Decizia stă în route.js (funcție pură, verificată de teste); aici doar stocarea.
+async function recupereazaDraftRecon() {
+  let d = null;
+  try { d = await store.get('recon_draft'); } catch (e) { return; }
+  const r = reconRecupereaza(d, await store.get('recon'));
+  if (r.stare === 'gol') return;
+  if (r.stare === 'exista_deja') {
+    reconDraftMesaj = `ciornă de recunoaștere nefolosită (${r.km.toFixed(2)} km) — leg-ul are deja geometrie`;
+    return;
+  }
+  await store.put('recon', reconPune(await store.get('recon'), r.legKey, r.rec));
+  await store.del('recon_draft');
+  reconDraftMesaj = `recuperată o înregistrare întreruptă: ${r.km.toFixed(2)} km, ${r.rec.anchors.length} ancore`;
+  try { store.log('recon_recuperat', { legKey: r.legKey, puncte: r.rec.trace.pts.length,
+                                       km: r.km, ancore: r.rec.anchors.length }, Date.now()); } catch (e) {}
 }
 
 // ── repetiția-fantomă: aceeași mașină, sursă sintetică ──────────────────────
@@ -678,10 +791,29 @@ function bind() {
   });
   $('btn-scan-rb').addEventListener('click', doScanRoadbook);
   $('btn-scan-tc').addEventListener('click', doScanTimecard);
+  // Ștergerea roadbook-ului NU mai ia geometria cu ea din reflex. Măsurat în jurnalul
+  // din 04.08: la 10:54 s-au scanat 6 pagini și TOATE cele 24 de boxuri au intrat ca
+  // „noi", adică depozitul era gol — singurul drum care-l golește e butonul ăsta, care
+  // ștergea în aceeași apăsare și `recon`, și `rt_speeds`. O rescanare a roadbook-ului
+  // (lucru normal dimineața) arunca deci recunoașterea făcută cu o zi înainte, tăcut.
   $('btn-clear-rb').addEventListener('click', async () => {
-    if (!confirm('Ștergi roadbook-ul și recunoașterea?')) return;
-    boxesRaw = []; await store.del('plan_raw'); await store.del('recon');
-    await store.del('rt_speeds'); await rebuildPlan();
+    if (!confirm('Ștergi roadbook-ul scanat și vitezele probelor?')) return;
+    boxesRaw = []; await store.del('plan_raw'); await store.del('rt_speeds');
+    const harta = reconNormalize(await store.get('recon'), plan.legKey);
+    const legi = Object.keys(harta.legs || {});
+    if (legi.length) {
+      const rez = legi.map(k => {
+        const s = reconStatus(harta.legs[k]);
+        return `${k.replace('|', '/')}: ${s.km.toFixed(2)} km, ${s.ancore} ancore`;
+      }).join('\n');
+      if (confirm(`Ștergi ȘI recunoașterea?\n\n${rez}\n\nOK = șterg geometria · Anulează = o păstrez`)) {
+        await store.del('recon');
+        try { store.log('recon_sters', { legi }, Date.now()); } catch (e) {}
+      } else {
+        try { store.log('recon_pastrat', { legi }, Date.now()); } catch (e) {}
+      }
+    }
+    await rebuildPlan();
   });
   $('btn-recon').addEventListener('click', startRecon);
   $('btn-rec-mark').addEventListener('click', reconMark);

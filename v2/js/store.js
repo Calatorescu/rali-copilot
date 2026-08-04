@@ -83,12 +83,16 @@ export function makeMemStore() {
 
 // ── export / preluare ──────────────────────────────────────────────────────
 export async function exportDay(store) {
-  const [journal, plan, speeds, recon, tcs] = await Promise.all([
+  // `recon_draft` intră și el în export: o recunoaștere întreruptă (telefon închis în
+  // plin drum) e o măsurătoare făcută, iar exportul e singurul loc din care se poate
+  // afla de pe birou că a existat. Vezi main.js, recupereazaDraftRecon.
+  const [journal, plan, speeds, recon, tcs, draft] = await Promise.all([
     store.journalAll(), store.get('plan_raw'), store.get('rt_speeds'),
-    store.get('recon'), store.get('tc_schedule')
+    store.get('recon'), store.get('tc_schedule'), store.get('recon_draft')
   ]);
   return { _app: 'RALI2', _ver: 1, at: Date.now(), journal, plan_raw: plan || null,
-           rt_speeds: speeds || null, recon: recon || null, tc_schedule: tcs || null };
+           rt_speeds: speeds || null, recon: recon || null, tc_schedule: tcs || null,
+           recon_draft: draft || null };
 }
 
 export async function importDay(store, dump) {
@@ -101,6 +105,7 @@ export async function importDay(store, dump) {
   if (dump.plan_raw) await store.put('plan_raw', dump.plan_raw);
   if (dump.rt_speeds) await store.put('rt_speeds', dump.rt_speeds);
   if (dump.recon) await store.put('recon', dump.recon);
+  if (dump.recon_draft) await store.put('recon_draft', dump.recon_draft);
   if (dump.tc_schedule) await store.put('tc_schedule', dump.tc_schedule);
 }
 

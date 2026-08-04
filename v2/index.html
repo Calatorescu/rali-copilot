@@ -49,8 +49,12 @@
     </div>
 
     <div class="card">
-      <p class="lbl">RECUNOAȘTERE</p>
-      <p id="prep-recon" class="line">fără recunoaștere</p>
+      <p class="lbl">RECUNOAȘTERE (GEOMETRIA TRASEULUI)</p>
+      <!-- verdictul se citește ÎNAINTE de START: fără geometrie, paznicul de direcție
+           și proiecția fără drift nu există — iar un paznic care tace arată exact ca
+           unul mulțumit (două zile de test, 03-04.08.2026, fără ca nimic s-o spună) -->
+      <p id="prep-recon" class="line">Geometrie: —</p>
+      <p id="prep-recon-legs" class="line dim"></p>
       <div class="row">
         <button class="btn sec" id="btn-recon">🛰 Înregistrează traseul</button>
         <button class="btn sec" id="btn-rehearse">👻 Repetiție</button>
@@ -160,6 +164,9 @@
   <section id="scr-recon" class="hidden">
     <div class="card center">
       <p class="lbl">ÎNREGISTREZ TRASEUL</p>
+      <!-- pentru CARE leg se înregistrează: km-ii și numerele de box repornesc la
+           fiecare leg, deci o urmă fără leg e o urmă pusă pe alt traseu -->
+      <p id="rec-leg" class="line dim">—</p>
       <p id="rec-dist" class="bignum">0.00 km</p>
       <p id="rec-anchors" class="line dim">0 ancore</p>
       <div class="row">
