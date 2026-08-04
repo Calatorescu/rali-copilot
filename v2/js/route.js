@@ -81,7 +81,12 @@ export function sanitizeBoxes(raw) {
     sumKm: num(b.sumKm), sectionKm: num(b.sectionKm),
     dir: DIR_OK.has(b.dir) ? b.dir : null,
     flag: FLAG_OK.has(b.flag) ? b.flag : null,
-    comment: typeof b.comment === 'string' ? b.comment.slice(0, 120) : ''
+    comment: typeof b.comment === 'string' ? b.comment.slice(0, 120) : '',
+    // Reperul geocodabil, cerut explicit la scanare (vezi ROADBOOK_PROMPT). E tot text
+    // din același răspuns extern, deci trece prin aceeași sită: șir scurt, fără
+    // caractere de control. Când lipsește, se deduce din comentariu (repere.js).
+    reper: typeof b.reper === 'string' && b.reper.trim()
+      ? b.reper.replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 80) : null
   })).filter(b => b.sumKm !== null);
   out.sort((a, b) => a.sumKm - b.sumKm);
   return out;
