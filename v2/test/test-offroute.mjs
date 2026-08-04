@@ -38,7 +38,8 @@ const TRESOR = sanitizeBoxes([
 // umple difuzorul cu cifre de ritm); restul kilometrajului e cel din roadbook.
 
 function lume(boxes = TRESOR, opts = {}) {
-  let wall = 0, lat = 45.78, lng = 21.24;
+  // lng deplasat cu -10 fata de zona reala, ca in toate fixturile (vezi test-audit.mjs)
+  let wall = 0, lat = 45.78, lng = 11.24;
   const clock = makeClock({ now: () => wall, mono: () => wall });
   const store = makeMemStore();
   const said = [];
