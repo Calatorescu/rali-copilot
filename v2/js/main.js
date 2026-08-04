@@ -730,7 +730,11 @@ async function gasesteTraseulPeHarta() {
   const harta = {};
   // doar boxurile CU numar: sanitizeBoxes lasa num:null pentru randurile pe care
   // scanarea nu le-a putut numerota, iar toate ar ajunge sub aceeasi cheie „null"
-  for (const a of v.bune) if (Number.isFinite(a.num)) harta[a.num] = { lat: a.lat, lng: a.lng };
+  // incertitudinea ancorei calatoreste cu ea: verificarea geometrica din masina o
+  // aduna la prag, ca eroarea unui centru de strada sa nu fie citita ca abatere
+  for (const a of v.bune) if (Number.isFinite(a.num))
+    harta[a.num] = Number.isFinite(a.incM) ? { lat: a.lat, lng: a.lng, incM: a.incM }
+                                           : { lat: a.lat, lng: a.lng };
   const tot = (await store.get('harta')) || {};
   tot[plan.legKey] = harta;
   await store.put('harta', tot);

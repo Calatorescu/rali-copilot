@@ -195,6 +195,29 @@ export const NOMINATIM = 'https://nominatim.openstreetmap.org/search';
 // rafală de sute de cereri către un serviciu gratuit.
 export const MAX_CERERI = 60;
 
+// CÂT DE PRECISĂ E O ANCORĂ GEOCODATĂ. Serviciile de geocodare întorc, pentru o stradă,
+// MIJLOCUL ei — nu colțul unde e boxul. Pe Str. Quasar, la 21:48 pe 04.08.2026, diferența
+// a fost de ~245 m și a produs o alarmă falsă de ieșire de pe traseu în 27 de secunde de
+// la start. Deci fiecare ancoră cară cu ea cât de mult poate greși.
+//
+// Nominatim întoarce `boundingbox` [sud, nord, vest, est] — pentru o stradă, cutia
+// acoperă toată calea. Jumătate din diagonala ei e o măsură cinstită a incertitudinii:
+// oriunde pe stradă ar fi boxul, nu e mai departe de-atât de centrul întors. Când
+// cutia lipsește, se ia o valoare generoasă — mai bine o alarmă în minus.
+export const INC_IMPLICIT_M = 300, INC_MIN_M = 40, INC_MAX_M = 800;
+
+export function incertitudine(rez, lat) {
+  const bb = rez && rez.boundingbox;
+  if (!Array.isArray(bb) || bb.length < 4) return INC_IMPLICIT_M;
+  const s = parseFloat(bb[0]), n = parseFloat(bb[1]), v = parseFloat(bb[2]), e = parseFloat(bb[3]);
+  if (![s, n, v, e].every(Number.isFinite)) return INC_IMPLICIT_M;
+  const dLat = Math.abs(n - s) * 111320;
+  const dLng = Math.abs(e - v) * 111320 * Math.cos((lat || 45) * Math.PI / 180);
+  const jumDiag = Math.sqrt(dLat * dLat + dLng * dLng) / 2;
+  if (!Number.isFinite(jumDiag) || jumDiag <= 0) return INC_IMPLICIT_M;
+  return Math.round(Math.min(INC_MAX_M, Math.max(INC_MIN_M, jumDiag)));
+}
+
 export function faGeocoder({ fetchFn, pauzaMs = 1100, timeoutMs = 8000, baza = NOMINATIM,
                              maxCereri = MAX_CERERI } = {}) {
   const f = fetchFn || (typeof fetch === 'function' ? fetch.bind(globalThis) : null);
@@ -227,7 +250,7 @@ export function faGeocoder({ fetchFn, pauzaMs = 1100, timeoutMs = 8000, baza = N
         const lat = parseFloat(j[0] && j[0].lat), lng = parseFloat(j[0] && j[0].lon);
         if (!Number.isFinite(lat) || !Number.isFinite(lng)) { cache.set(q, null); return null; }
         if (Math.abs(lat) > 90 || Math.abs(lng) > 180) { cache.set(q, null); return null; }
-        const p = { lat, lng };
+        const p = { lat, lng, incM: incertitudine(j[0], lat) };
         cache.set(q, p);
         return p;
       } finally { if (t) clearTimeout(t); }
@@ -246,7 +269,8 @@ export async function geocodeazaRepere(repere, geocoder, { onPas = null } = {}) 
     if (!r.reper) { ratate.push({ num: r.num, motiv: 'fără reper geocodabil' }); if (onPas) onPas(i, repere.length, r); continue; }
     try {
       const p = await geocoder.cauta(r.reper);
-      if (p) ancore.push({ num: r.num, sumKm: r.sumKm, reper: r.reper, lat: p.lat, lng: p.lng });
+      if (p) ancore.push({ num: r.num, sumKm: r.sumKm, reper: r.reper,
+                           lat: p.lat, lng: p.lng, incM: p.incM });
       else ratate.push({ num: r.num, motiv: 'negăsit pe hartă', reper: r.reper });
     } catch (e) {
       ratate.push({ num: r.num, motiv: String(e && e.message || e).slice(0, 60), reper: r.reper });

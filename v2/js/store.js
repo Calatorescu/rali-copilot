@@ -150,7 +150,8 @@ export async function importDay(store, dump, { confirmat = false } = {}) {
         if (!/^\d{1,3}$/.test(num) || !p || typeof p !== 'object') continue;
         if (!Number.isFinite(p.lat) || !Number.isFinite(p.lng)) continue;
         if (Math.abs(p.lat) > 90 || Math.abs(p.lng) > 180) continue;
-        ok[num] = { lat: p.lat, lng: p.lng };
+        ok[num] = Number.isFinite(p.incM) && p.incM > 0 && p.incM < 5000
+          ? { lat: p.lat, lng: p.lng, incM: p.incM } : { lat: p.lat, lng: p.lng };
       }
       if (Object.keys(ok).length >= 2) bune[k] = ok;
     }

@@ -116,7 +116,7 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
     corectie: null,        // ultima corecție de poziție, pentru ECRAN (vezi anuntaCorectia)
     // ieșirea de pe traseu: starea, semnele strânse și firimiturile de drum
     offRoute: null, offRouteOn: opts.offRoute !== false, _offSemne: [], _urme: [],
-    _offVorbaMono: 0, _offSector: null, _hdg: null,
+    _offVorbaMono: 0, _offSector: null, _hdg: null, _hartaIst: {},
     // auto-calibrarea odometrului (vezi calibreaza + makeCalibrator din geo.js)
     calFactor: 1, _rawSinceAnchor: 0, _calAnchorKm: 0, _calN: 0,
     _anchorKm: 0,
@@ -378,7 +378,21 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
   // s-a depărtat de traseu cu 50 km/h, iar aplicația a continuat să anunțe boxurile 4, 5
   // și 6 pentru că odometrul mergea înainte. Kilometrajul nu poate ști că ai greșit
   // drumul; coordonata, da.
+  // Marja de zgomot (GPS + drift de odometru), peste incertitudinea ancorei.
+  //
+  // 04.08.2026, 21:48 — ALARMĂ FALSĂ pe traseu corect, în 27 de secunde de la start.
+  // Măsurat în jurnal: boxul 3 avea ancora geocodată la 512 m de mașină, iar roadbook-ul
+  // spunea 268 m de drum → „depășire" 243 m, peste pragul fix de 200. Numai că mașina SE
+  // APROPIA: 512, 507, 502, 497, 495, 492, 488, 483, 478, 471, 466, 460, 455 m, treisprezece
+  // fixuri la rând, iar aplicația însăși măsurase cu 1 secundă înainte că merge SPRE box
+  // (directie_start_harta, difGrd 16). Depășirea rămânea constantă la ~245 m fiindcă
+  // ancora era mijlocul străzii Quasar, nu colțul ei: o eroare de poziție a ANCOREI,
+  // citită ca abatere de traseu. Trei apărări, fiecare suficientă singură:
+  //  • incertitudinea ancorei intră în prag (300 m implicit pentru geocodare);
+  //  • dacă distanța până la ancoră scade pe ultimele 8 fixuri, nu se dă niciun semn;
+  //  • dacă botul mașinii arată spre ancoră (±40°), la fel.
   const HARTA_MARJA_M = 200;
+  const HARTA_INC_IMPLICIT_M = 300, HARTA_TREND_N = 8, HARTA_TREND_MIN = 4, HARTA_SPRE_GRD = 40;
 
   function hartaOffCheck() {
     if (!plan.harta || M.offRoute || !M._lastPos || M.rt) return;
@@ -389,9 +403,38 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
       const dreaptaM = haversineM(M._lastPos.lat, M._lastPos.lng, p.lat, p.lng);
       const drumM = Math.max(0, (b.sumKm - M.routeKm) * 1000);
       const depasireM = dreaptaM - drumM;
-      if (depasireM > HARTA_MARJA_M) {
+      // CÂT DE BINE ȘTIM UNDE E ANCORA. O coordonată geocodată e MIJLOCUL străzii, nu
+      // colțul: pe o stradă de 400 m, boxul poate fi la 200 m de punctul întors de
+      // serviciu. Incertitudinea vine cu ancora (vezi repere.js), iar aici se adună la
+      // marjă — altfel eroarea ancorei se citește ca abatere de traseu.
+      const incM = Number.isFinite(p.incM) ? p.incM : HARTA_INC_IMPLICIT_M;
+      const prag = incM + HARTA_MARJA_M;
+      // Istoricul distanței până la ancoră: dacă SCADE, mașina merge spre box. Poate fi
+      // pe alt drum, dar nu se depărtează — iar un semn de „ai ieșit de pe traseu" dat
+      // în timp ce te apropii de boxul următor e o alarmă falsă prin construcție.
+      const ist = (M._hartaIst[b.num] = M._hartaIst[b.num] || []);
+      ist.push(Math.round(dreaptaM));
+      if (ist.length > HARTA_TREND_N) ist.shift();
+      // Fără fereastra plină nu se acuză nimic: lipsa dovezii nu e dovadă. (Prima
+      // versiune dădea semnul chiar la primul fix al zilei, când n-avea nici istoric,
+      // nici direcție de mers — exact ce s-a întâmplat la 21:48:32, la 14 secunde de
+      // la START ZIUA.)
+      // Fereastra e de 8 fixuri, dar se judecă de la 4: pe un roadbook des, boxul
+      // urmarit se schimba la fiecare cateva fixuri si o fereastra plina n-ar veni
+      // niciodata. Sub 4, nu se acuza nimic.
+      const destuleFixuri = ist.length >= HARTA_TREND_MIN;
+      const seApropie = destuleFixuri && ist[ist.length - 1] < ist[0] - 20;
+      // …și direcția de mers: dacă botul mașinii arată spre ancoră, drumul ăsta duce
+      // acolo, oricât de lung ar fi ocolul.
+      const spre = bearingDeg(M._lastPos.lat, M._lastPos.lng, p.lat, p.lng);
+      const spreBox = M._hdg != null && Math.abs(angDiff(spre, M._hdg)) <= HARTA_SPRE_GRD;
+      if (depasireM > prag) {
         log('harta_off', { boxNum: b.num, dreaptaM: Math.round(dreaptaM),
-                           drumM: Math.round(drumM), depasireM: Math.round(depasireM) });
+                           drumM: Math.round(drumM), depasireM: Math.round(depasireM),
+                           incM: Math.round(incM), prag: Math.round(prag),
+                           seApropie, spreBox, destuleFixuri });
+        // veto: n-am destule fixuri / te apropii / mergi spre el
+        if (!destuleFixuri || seApropie || spreBox) return;
         semnOffRoute('mai_departe_decat_drumul', b.num, i);
         incearcaOffRoute();
       }
@@ -1206,11 +1249,16 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
     if (!M.offRouteOn || M.offRoute) return;
     const acum = clock.mono();
     M._offSemne = M._offSemne.filter(s => acum - s.mono <= OFF_FEREASTRA_MS);
-    // Semnele DECISIVE sunt cele geometrice: coridorul recunoașterii și distanța până la
-    // coordonata boxului. Amândouă măsoară direct „nu sunt pe drumul ăla", spre deosebire
-    // de semnele deduse din kilometraj, care pot fi și poziție greșită.
-    const decisiv = M._offSemne.some(s => s.tip === 'in_afara_coridorului' ||
-                                          s.tip === 'mai_departe_decat_drumul');
+    // DECISIV e un singur semn: ieșirea din coridorul RECUNOAȘTERII. Aia e o urmă
+    // condusă de noi, punct cu punct, la 45 m toleranță — măsoară direct „nu sunt pe
+    // drumul ăla".
+    //
+    // Semnul din HARTĂ nu e niciodată decisiv singur, oricât de geometric ar arăta:
+    // ancorele geocodate sunt centre de stradă, cu eroare de sute de metri (04.08,
+    // 21:48: o alarmă falsă declanșată de o singură ancoră, la 27 de secunde de la
+    // start, pe traseu corect). Echivalarea lui cu coridorul recunoașterii a fost o
+    // greșeală de judecată: aceeași formă matematică, cu totul altă precizie a datelor.
+    const decisiv = M._offSemne.some(s => s.tip === 'in_afara_coridorului');
     if (!decisiv && M._offSemne.length < OFF_SEMNE_CERUTE) return;
     // GARDURI: nu se declară pe GPS mort sau proaspăt înviat, nu în probă (acolo
     // poziția nu se atinge — audit #8), nu la ieșirea din parcare.

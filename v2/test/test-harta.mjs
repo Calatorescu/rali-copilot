@@ -198,14 +198,21 @@ console.log('\n═══ Ce PRINDE greșeala de azi: linia dreaptă vs. drumul r
   w.drept(210, 211);                    // până la bifurcație, ca în teren
   ok('până aici totul e în regulă', !w.m.M.offRoute, JSON.stringify(w.m.M.offRoute));
   w.drept(300, 295);                    // ramura greșită, spre vest-nord-vest
-  ok('ieșirea de pe traseu se declară din geometrie, nu din kilometraj',
-     !!w.m.M.offRoute, JSON.stringify(w.jurnal('offroute_semn')));
-  ok('semnul spune exact ce s-a măsurat',
+  ok('măsurătoarea se face imediat și intră în jurnal cu cifrele ei',
      w.jurnal('harta_off').length >= 1 && w.jurnal('harta_off')[0].depasireM > 200,
      JSON.stringify(w.jurnal('harta_off')[0]));
-  ok('un semn geometric e de ajuns — nu se mai așteaptă al doilea',
-     w.jurnal('offroute_semn').filter(s => s.tip === 'mai_departe_decat_drumul').length === 1 &&
-     w.jurnal('offroute_intrare').length === 1,
+  // …dar SINGUR nu declară nimic: ancorele geocodate sunt centre de stradă, iar pe
+  // 04.08 la 21:48 un asemenea semn a produs o alarmă falsă pe traseu corect, în 27 de
+  // secunde de la start. Trebuie un al doilea semn, ca la orice semn nedecisiv.
+  ok('un semn de hartă SINGUR nu mai declară ieșirea de pe traseu',
+     !w.m.M.offRoute && w.jurnal('offroute_intrare').length === 0,
+     JSON.stringify(w.jurnal('offroute_semn')));
+  w.drept(400, 295);                    // mai departe pe drumul greșit: boxurile rămân în urmă
+  ok('semnul din hartă apare după ce se adună destule fixuri',
+     w.jurnal('offroute_semn').some(s => s.tip === 'mai_departe_decat_drumul'),
+     JSON.stringify(w.jurnal('offroute_semn')));
+  ok('și, cu al doilea semn (box de manevră depășit fără viraj), se declară',
+     !!w.m.M.offRoute && w.jurnal('offroute_semn').length >= 2,
      JSON.stringify(w.jurnal('offroute_semn')));
   ok('și nu se mai dictează niciun viraj de pe traseul părăsit',
      !w.said.some(s => /dreapta acum|stânga acum/.test(s.t) &&
@@ -218,7 +225,7 @@ console.log('\n═══ Ținta de reintrare vine din hartă, nu din firimituri 
   const v = verificaHarta(HARTA_BUNA, GRUPURI);
   const w = lume(hartaPentruLeg(v.harta, '1|1'));
   w.drept(210, 211);
-  w.drept(300, 295);
+  w.drept(700, 295);
   const o = w.m.M.offRoute;
   ok('punctul de reintrare e o coordonată de pe hartă',
      !!o && o.pct && o.pct.sursa === 'harta', JSON.stringify(o));
@@ -292,6 +299,87 @@ console.log('\n═══ Un box fără număr nu poate primi coordonate ══�
   ] } } }, g);
   ok('boxul fără număr e refuzat cu motiv, nu tăcut',
      !v.ok && v.probleme.some(p => /număr invalid/.test(p)), JSON.stringify(v.probleme));
+}
+
+console.log('\n═══ ALARMA FALSĂ din 21:48 — pe aceleași date, nu se mai declanșează ═══');
+{
+  // Tura de la 21:48:17, traseu Marte–Gramma. Andreas conducea CORECT, iar aplicația a
+  // declarat ieșirea de pe traseu în 27 de secunde de la start. Din jurnal:
+  //   21:48:31  directie_start_harta difGrd 16  (mergea SPRE boxul 3)
+  //   21:48:32  harta_off box 3: dreaptaM 512, drumM 268, depasireM 243
+  //   …13 fixuri: dreaptaM 512→455, SCADE la fiecare, depasireM rămâne ~245
+  //   21:48:44  offroute_intrare cu UN SINGUR semn
+  // Cauza: ancora geocodată a Str. Quasar e MIJLOCUL străzii, la ~245 m de colțul unde
+  // e boxul. Eroarea ancorei a fost citită ca abatere de traseu.
+  const MARTE = sanitizeBoxes([
+    { day: 1, leg: 1, num: 1, sumKm: 0.00, dir: 'ÎNAINTE', flag: 'TC', comment: 'START · TC 1' },
+    { day: 1, leg: 1, num: 2, sumKm: 0.20, dir: 'STÂNGA', comment: 'Stânga pe Str. Fervența' },
+    { day: 1, leg: 1, num: 3, sumKm: 0.36, dir: 'DREAPTA', comment: 'Dreapta pe Str. Quasar' },
+    { day: 1, leg: 1, num: 4, sumKm: 0.40, dir: 'ÎNAINTE', flag: 'RT_START_AUTO', comment: 'START RT 1 · 30 km/h' },
+    { day: 1, leg: 1, num: 5, sumKm: 0.71, dir: 'ÎNAINTE', flag: 'RT_FINISH', comment: 'FINISH RT 1' }
+  ]);
+  // Pozițiile sunt cele din jurnal (21:48:18-21:48:58), cu longitudinea deplasată cu −10.
+  const TRASEU_REAL = [
+    { lat: 45.784869, lng: 11.245902 }, { lat: 45.785092, lng: 11.246081 },
+    { lat: 45.785427, lng: 11.246331 }, { lat: 45.785700, lng: 11.246519 },
+    { lat: 45.785863, lng: 11.246646 }, { lat: 45.786141, lng: 11.246930 },
+    { lat: 45.786422, lng: 11.247151 }, { lat: 45.786710, lng: 11.247265 }
+  ];
+  // Ancora boxului 3, reconstruită din cifrele aplicației: 512 m pe azimut 12° față de
+  // poziția de la 21:48:32 — adică mijlocul străzii, cu ~245 m dincolo de box.
+  const ancora3 = m2g(45.78567, 11.246480, 512, 12);
+
+  const lumeMarte = (incM) => {
+    let wall = 0, lat = TRASEU_REAL[0].lat, lng = TRASEU_REAL[0].lng;
+    const clock = makeClock({ now: () => wall, mono: () => wall });
+    const store = makeMemStore();
+    const said = [];
+    const harta = { 3: { lat: ancora3.lat, lng: ancora3.lng, incM } };
+    const m = makeMachine({ plan: buildPlan(MARTE, {}, null, harta), clock, store,
+      driver: makeDriverModel(),
+      voice: { say: (t, p, c, cl) => said.push({ t, p, c, cl }), tone() {}, flush() {} },
+      ui: { render() {} } });
+    m.start();
+    wall += 1000; m.onFix({ lat, lng, tMs: wall, speedMs: 0, headingDeg: 28, accM: 15 });
+    // se merge PE traseul real, fix cu fix, cu pași mici între pozițiile logate ca să
+    // existe destule fixuri pentru trend (în teren GPS-ul bătea la ~1 s)
+    for (let i = 1; i < TRASEU_REAL.length; i++) {
+      const a = TRASEU_REAL[i - 1], b = TRASEU_REAL[i];
+      for (let k = 1; k <= 5; k++) {
+        lat = a.lat + (b.lat - a.lat) * k / 5;
+        lng = a.lng + (b.lng - a.lng) * k / 5;
+        wall += 1200;
+        m.onFix({ lat, lng, tMs: wall, speedMs: 6, headingDeg: 28, accM: 4 });
+      }
+    }
+    return { m, store, said, jurnal: t => store.journal.filter(e => e.type === t) };
+  };
+
+  const w = lumeMarte(300);        // ancoră geocodată: incertitudine implicită
+  ok('niciun semn de ieșire de pe traseu pe secvența reală',
+     w.jurnal('offroute_semn').length === 0, JSON.stringify(w.jurnal('offroute_semn')));
+  ok('și nicio declarare — Andreas conducea corect',
+     !w.m.M.offRoute && w.jurnal('offroute_intrare').length === 0,
+     JSON.stringify(w.jurnal('offroute_intrare')));
+  ok('incertitudinea ancorei acoperă singură eroarea de 245 m',
+     w.jurnal('harta_off').length === 0, JSON.stringify(w.jurnal('harta_off')));
+  ok('nici pilotului nu i se spune nimic despre traseu',
+     !w.said.some(s => /ieșit de pe traseu/.test(s.t)), JSON.stringify(w.said.map(s => s.t)));
+
+  // …și dacă ancora ar fi fost declarată precisă (hartă din rutare, incertitudine mică),
+  // vetourile trebuie să taie singure alarma: mașina SE APROPIE și merge SPRE box.
+  const w2 = lumeMarte(40);
+  ok('cu ancoră „precisă", măsurătoarea se face și se scrie în jurnal',
+     w2.jurnal('harta_off').length >= 1, JSON.stringify(w2.jurnal('harta_off')[0]));
+  ok('dar vetoul „mă apropii / merg spre el" oprește semnul',
+     w2.jurnal('harta_off').every(e => e.seApropie || e.spreBox || !e.destuleFixuri) &&
+     !w2.jurnal('offroute_semn').some(s => s.tip === 'mai_departe_decat_drumul'),
+     JSON.stringify({ off: w2.jurnal('harta_off').slice(-1), semne: w2.jurnal('offroute_semn') }));
+  ok('deci tot nicio alarmă falsă', !w2.m.M.offRoute);
+  // dovada că distanța chiar scădea, ca în teren (512 → 455 m)
+  const d = w2.jurnal('harta_off').map(e => e.dreaptaM);
+  ok('distanța până la ancoră scade, exact ca în jurnal',
+     d.length >= 2 && d[d.length - 1] < d[0], JSON.stringify([d[0], d[d.length - 1]]));
 }
 
 console.log(`\n──────── ${pass} trecute, ${fail} căzute ────────`);
