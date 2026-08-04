@@ -32,7 +32,7 @@ function lume() {
   const clock = makeClock({ now: () => wall, mono: () => wall });
   const store = makeMemStore();
   const said = [];
-  const m = makeMachine({ plan: buildPlan(BOX, {}, null), clock, store,
+  const m = makeMachine({ opts: { offRoute: false }, plan: buildPlan(BOX, {}, null), clock, store,
     driver: makeDriverModel(), voice: { say: t => said.push(t), tone() {}, flush() {} },
     ui: { render() {} } });
   m.start();

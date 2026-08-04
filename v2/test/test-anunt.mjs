@@ -34,7 +34,7 @@ function lume(boxes = BUCLA, driver = makeDriverModel()) {
   const clock = makeClock({ now: () => wall, mono: () => wall });
   const store = makeMemStore();
   const said = [];
-  const m = makeMachine({ plan: buildPlan(boxes, {}, null), clock, store,
+  const m = makeMachine({ opts: { offRoute: false }, plan: buildPlan(boxes, {}, null), clock, store,
     driver,
     voice: { say: (t, p, cat, cls) => said.push({ t, p, cat, cls }), tone() {}, flush() {} },
     ui: { render() {} } });

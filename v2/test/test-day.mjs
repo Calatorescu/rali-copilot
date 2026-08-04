@@ -97,7 +97,7 @@ ok('RT1 are zona lentă din recunoaștere', plan.rts[0].zones.length === 1 &&
    plan.rts[0].zones[0].fromM > 350 && plan.rts[0].zones[0].fromM < 500,
    JSON.stringify(plan.rts[0].zones));
 
-const mach = makeMachine({ ...world, plan });
+const mach = makeMachine({ ...world, plan, opts: { offRoute: false } });
 mach.start();
 mach.setTcSchedule([{ name: 'TC 1', time: '12:00' }, { name: 'TC 2', time: '12:25' }]);
 
@@ -158,7 +158,7 @@ console.log('═══ Preluarea pe al doilea telefon (failover) ═══');
   // până în mijlocul lui RT2, apoi exportăm și preluăm pe o lume nouă
   const w2 = makeWorld();
   const p2 = buildPlan(BOXES, {}, recon);
-  const m2 = makeMachine({ ...w2, plan: p2 });
+  const m2 = makeMachine({ ...w2, plan: p2, opts: { offRoute: false } });
   m2.start();
   const lm = p2.anchorMap.traceM(4.348);
   let mm = drive(w2, m2, recon, 0, lm, 40);
@@ -176,7 +176,7 @@ console.log('═══ Preluarea pe al doilea telefon (failover) ═══');
   const st = resumeStateFromJournal(await s3.journalAll());
   ok('starea reconstruită: RT_RUN, poziție, index probă', st.state === 'RT_RUN' && st.routeKm > 4.3,
      JSON.stringify(st));
-  const m3 = makeMachine({ clock: w3.clock, voice: w3.voice, store: s3, ui: w3.ui, driver: w3.driver, plan: p2 });
+  const m3 = makeMachine({ clock: w3.clock, voice: w3.voice, store: s3, ui: w3.ui, driver: w3.driver, plan: p2, opts: { offRoute: false } });
   m3.resume(st);
   ok('telefonul 2 e în probă, cu distanța corectă', m3.M.state === 'RT_RUN' &&
      Math.abs(m3.M.rt.distKm - (st.routeKm - 4.35)) < 0.05, JSON.stringify({ d: m3.M.rt.distKm }));
@@ -190,7 +190,7 @@ console.log('═══ Suspendare: salt peste fereastra monotonă → full-scan 
 {
   const w = makeWorld();
   const p = buildPlan(BOXES, {}, recon);
-  const mm2 = makeMachine({ ...w, plan: p });
+  const mm2 = makeMachine({ ...w, plan: p, opts: { offRoute: false } });
   mm2.start();
   drive(w, mm2, recon, 0, 800, 40);
   ok('poziția înainte de suspendare ~0.8 km', Math.abs(mm2.M.routeKm - 0.8) < 0.05,
@@ -211,7 +211,7 @@ console.log('═══ Modul umbră (recunoaștere fără voce) ═══');
 {
   const w = makeWorld();
   const p = buildPlan(BOXES, {}, recon);
-  const ms = makeMachine({ ...w, plan: p, opts: { shadow: true } });
+  const ms = makeMachine({ ...w, plan: p, opts: { shadow: true, offRoute: false } });
   ms.start();
   drive(w, ms, recon, 0, 800, 40);
   ok('umbra tace', w.said.filter(s => s.t).length === 0, JSON.stringify(w.said.slice(0, 3)));

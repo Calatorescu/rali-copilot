@@ -64,6 +64,38 @@ const ACUM_MAX_M = 60;
 // anunțurile ei normale, după ce proba s-a închis.
 const COADA_FINISH_M = 200;
 
+// ── IEȘIREA DE PE TRASEU ────────────────────────────────────────────────────
+// Cererea lui Andreas (04.08.2026): „să verifice pe GPS unde sunt și dacă o iau pe alt
+// drum să-și dea seama și să-mi refacă traseul înapoi cât mai repede".
+//
+// Cazul-etalon e tot tura Tresor, secvența 16:34:28-16:39:01: virajul de la boxul 12
+// (stânga, la 55 m după finish-ul probei 2) a fost ratat, iar aplicația a continuat ca
+// și cum nimic — ba mai rău, a POTRIVIT viraje de pe drumul greșit cu boxuri din
+// roadbook (sync „turn" pe boxul 13 cu −92 m la 16:37:18, pe boxul 17 cu −133 m la
+// 16:39:01) și a dat cue-uri pentru boxurile 15, 16, 17, 18. Primele avertizări de
+// desincronizare au venit abia la 259 și 261 m după boxuri (16:38:05 și 16:38:25).
+//
+// PRAGURILE, din secvența aia:
+//  • 120 m — cât se lasă un box de manevră în urmă, fără viraj confirmat, până devine
+//    SEMN. Măsurat: la 16:35:11 mașina era deja la 140 m după boxul 12, adică semnul
+//    exista la ~40 s după virajul ratat; regula veche de 250 m l-a produs abia după
+//    3 minute și jumătate. Sub 120 m nu se coboară: atâta poate greși singură poziția
+//    după o gaură de GPS (măsurat în aceeași tură: sărituri de podea de 58 și 24 m).
+//  • DOUĂ semne independente, în 3 minute, ca să se declare starea. Un singur semn
+//    poate fi poziția, nu drumul — exact confuzia care a născut „te-am prins, recalez".
+//    Excepție: cu geometrie de recunoaștere, ieșirea din coridor e semn SINGUR și
+//    decisiv, fiindcă e singura măsurătoare care spune direct „nu sunt pe drumul ăla".
+//  • 20 s de liniște după revenirea GPS-ului. În secvența etalon sunt două găuri de
+//    16 s (16:35:40 și 16:36:38); poziția de imediat după e cea mai proastă din zi și
+//    n-are voie să declare nimic.
+//  • 40° — sub atât, drumul pe la boxul ăla a fost DREPT. Peste, s-a virat acolo, chiar
+//    dacă detectorul n-a prins virajul (măsurat 03.08: un viraj sub 8 km/h nu produce
+//    nicio detectare, în ambele ture). Fără discriminarea asta, două viraje reale dar
+//    nedetectate ar declara „ai ieșit de pe traseu" fix acolo unde pilotul conduce bine.
+const OFF_BOX_M = 120, OFF_SEMNE_CERUTE = 2, OFF_FEREASTRA_MS = 180000;
+const OFF_DUPA_GPS_MS = 20000, OFF_PRINS_M = 40, OFF_VORBA_MS = 12000;
+const OFF_COT_GRD = 40, OFF_DRIFT_M = 250, OFF_VORBA_MAX_M = 2000;
+
 export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }) {
   const M = {
     state: 'PREP',
@@ -82,6 +114,9 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
     _dirEtapa: 0, _dirStart: null, dirAlerta: null,
     _lastToneT: 0, _extSpeedKmh: null, _extSpeedT: 0,
     corectie: null,        // ultima corecție de poziție, pentru ECRAN (vezi anuntaCorectia)
+    // ieșirea de pe traseu: starea, semnele strânse și firimiturile de drum
+    offRoute: null, offRouteOn: opts.offRoute !== false, _offSemne: [], _urme: [],
+    _offVorbaMono: 0, _offSector: null, _hdg: null,
     // auto-calibrarea odometrului (vezi calibreaza + makeCalibrator din geo.js)
     calFactor: 1, _rawSinceAnchor: 0, _calAnchorKm: 0, _calN: 0,
     _anchorKm: 0,
@@ -144,7 +179,12 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
   function onFix(fix) {
     // După o gaură lungă de GPS, tick() a avansat deja poziția pe estimare —
     // odometrul NU are voie să adune și el aceeași gaură (fixul nou vs. cel vechi).
-    if (M._lastFixMono != null && clock.mono() - M._lastFixMono > 15000) odo.reset();
+    if (M._lastFixMono != null && clock.mono() - M._lastFixMono > 15000) {
+      odo.reset();
+      // momentul revenirii semnalului: poziția de imediat după o gaură e cea mai proastă
+      // din zi, deci nu are voie să declare ieșirea de pe traseu (vezi OFF_DUPA_GPS_MS)
+      M._gpsRevenitMono = clock.mono();
+    }
     M._lastFixMono = clock.mono();
     M._lastPos = { lat: fix.lat, lng: fix.lng };
     // Prima ancoră geografică = primul fix după START. La start() poziția încă nu e
@@ -188,6 +228,10 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
         M._projMiss = (M._projMiss || 0) + 1;
         if (M.traceM != null) M.traceM += incM;
         M.routeKm += incM / 1000;
+        // Trei fixuri la rând în afara coridorului de recunoaștere = singura măsurătoare
+        // care spune DIRECT „nu sunt pe drumul ăla". De-aia e semn singur și decisiv.
+        // (În tura Tresor n-a existat: recunoașterea era goală, plan.trace null.)
+        if (M._projMiss >= 3) semnOffRoute('in_afara_coridorului', null, M.nextBoxIdx);
       }
     } else {
       // Fără geometrie (cazul REAL de la Sibiu: roadbook-ul vine cu o oră înainte de
@@ -210,10 +254,27 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
     // anunța virajele doar în legătură: în RT_RUN pilotul ținea viteza pe drum
     // necunoscut și nimeni nu-i mai spunea unde se virează, iar ecranul îngheța pe
     // boxul de start toată proba. (Audit 02.08, #2.)
-    if (M.state !== 'PREP' && M.state !== 'DAY_END') { directieCheck(fix); announceBoxes(); desyncCheck(); }
+    // FIRIMITURILE de drum: unde am fost, la ce kilometru credeam că sunt. Fără
+    // recunoaștere, ăsta e SINGURUL loc din care se poate afla poziția geografică a
+    // unui box — și fără ea, „întoarce-te la boxul 12" n-ar avea unde să arate.
+    if (M.state !== 'PREP' && fix.lat != null) {
+      const u = M._urme[M._urme.length - 1];
+      if (!u || haversineM(u.lat, u.lng, fix.lat, fix.lng) >= 10) {
+        M._urme.push({ lat: fix.lat, lng: fix.lng, km: M.routeKm });
+        if (M._urme.length > 800) M._urme.shift();     // ~8 km de drum, memorie neglijabilă
+      }
+    }
+    if (fix.headingDeg != null && M.speedKmh > 5) M._hdg = fix.headingDeg;
+    if (M.state !== 'PREP' && M.state !== 'DAY_END') {
+      directieCheck(fix);
+      offRouteCheck(); offRouteGhidaj(fix);
+      announceBoxes(); desyncCheck();
+    }
     // STAGED e tot „legătură" din punctul de vedere al tick-ului: fără el aici,
     // plecarea de pe linia standing n-ar mai porni proba niciodată (prins de teste).
-    if (M.state === 'LIAISON' || M.state === 'STAGED') liaisonTick();
+    // Pe dinafară nu se pornește nicio probă: kilometrajul de pe drumul greșit ar
+    // trece „linia de start" într-un loc care n-are nicio legătură cu ea.
+    if ((M.state === 'LIAISON' || M.state === 'STAGED') && !M.offRoute) liaisonTick();
     tcTick();
     // Jurnalul poziției: o dată la 5 s de timp REAL. Testul cu fereastra pe modulo
     // („mono % 5000 < 600") scria de zeci de ori pe secundă când fixurile veneau rapid —
@@ -280,7 +341,9 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
   function liaisonTick() {
     const rt = plan.rts[M.rtIdx];
     if (!rt) {
-      if (plan.totalKm && M.routeKm >= plan.totalKm - 0.03 && M.state !== 'DAY_END') dayEnd();
+      // pe dinafară, kilometrajul crește pe drumuri care nu sunt ale traseului — ziua
+      // n-are voie să se declare terminată din rătăcire
+      if (plan.totalKm && M.routeKm >= plan.totalKm - 0.03 && M.state !== 'DAY_END' && !M.offRoute) dayEnd();
       return;
     }
     const dTo = rt.startKm - M.routeKm;
@@ -357,6 +420,10 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
   }
 
   function announceBoxes() {
+    // Pe dinafară, planul ÎNGHEAȚĂ. În teren, aplicația a continuat să dea cue-uri
+    // pentru boxurile 15, 16, 17 și 18 în timp ce mașina era pe alte străzi — instrucțiuni
+    // de virat aplicate unui drum pe care nu se afla. Tăcerea e mai bună.
+    if (M.offRoute) return;
     const boxes = plan.boxes;
     while (M.nextBoxIdx < boxes.length && M.routeKm > pragTrecere(M.nextBoxIdx)) M.nextBoxIdx++;
     const b = boxes[M.nextBoxIdx];
@@ -635,6 +702,10 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
     // Alarmă falsă prin construcție: distanța de la box nu spune nimic dacă virajul
     // ăla a fost DEJA făcut.
     M._confirmedIdx = Math.max(M._confirmedIdx != null ? M._confirmedIdx : -1, i);
+    // „SUNT LA BOX" apăsat de pilot = adevărul de referință: orice bănuială de ieșire
+    // de pe traseu strânsă până acum se șterge, altfel o bănuială veche ar bloca
+    // potrivirea virajelor trei minute după ce omul a lămurit unde e.
+    if (how === 'manual') M._offSemne = [];
     // Poziția devine kilometrul boxului + lag-ul REAL de detectare (zero la apăsare
     // manuală). Fără constante inventate (vechiul +20 m umbla la riglă — audit #13),
     // dar și fără să te tragă în urmă cu întârzierea detectorului (tura 5).
@@ -774,6 +845,18 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
     if (clock.mono() - M._lastSnapT < 10000) return;
     if (M.routeKm < 0.15) { log('snap_refuzat', { motiv: 'start_leg', routeKm: r2(M.routeKm) }); return; }
     const right = acc > 0;
+    // PE DINAFARĂ: virajele de pe drumul greșit NU se mai potrivesc cu roadbook-ul.
+    // Măsurat în teren exact contrariul: două viraje rătăcite au fost lipite de boxurile
+    // 13 și 17 (−92 și −133 m), ceea ce a convins aplicația că totul e în regulă.
+    // Singurul viraj care contează acum e cel de la punctul de reintrare.
+    if (M.offRoute) {
+      const b = plan.boxes[M.offRoute.idx];
+      const potrivit = b && M.offRoute.distM <= 150 &&
+        (/^GIRATORIU/.test(b.dir || '') || (right ? /^DREAPTA/ : /^STÂNGA/).test(b.dir || ''));
+      if (potrivit) { iesiOffRoute('viraj'); return; }
+      log('snap_ignorat_offroute', { spreDreapta: right, distM: M.offRoute.distM });
+      return;
+    }
     // ÎNTÂRZIEREA DETECTĂRII (tura 5, 02.08): virajul se confirmă abia la ~2,5 s după
     // ce s-a terminat — timp în care mașina a mai mers 60-130 m. Snapul care punea
     // poziția FIX la box te trăgea sistematic în urmă cu distanța aia (−99/−133/−121 m
@@ -817,6 +900,36 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
                           prevIdx: M.nextBoxIdx - 1 };
       log('snap_refuzat', { motiv: 'fara_candidat', routeKm: r2(M.routeKm),
                             virajKm: r2(virajKm), lagM: Math.round(lagM), spreDreapta: right });
+      // …și poate fi un SEMN de ieșire de pe traseu: ai virat unde roadbook-ul nu știe
+      // de niciun viraj. Două condiții, amândouă din date:
+      //  • doar în afara probei — în tura Tresor, două din cele trei „fara_candidat"
+      //    au fost înăuntrul probei 1, pe traseu, la viteză (16:28:20 și 16:28:59);
+      //  • și doar dacă virajul ăsta nu se explică prin POZIȚIE. Dacă la ±250 m există
+      //    un box de viraj neconfirmat în sensul potrivit, atunci nu ești pe alt drum,
+      //    ci poziția a rămas în urmă — cazul „te-am prins, recalez" (03.08, măsurat:
+      //    virajul de la T confirmat la 160-170 m după kilometrul oficial al boxului).
+      const explicatDePozitie = plan.boxes.some((bb, ii) =>
+        ii > (M._confirmedIdx != null ? M._confirmedIdx : -1) &&
+        TURN_DIRS.has(bb.dir || '') &&
+        Math.abs(bb.sumKm - virajKm) * 1000 <= OFF_DRIFT_M &&
+        (/^GIRATORIU/.test(bb.dir) || (right ? /^DREAPTA/ : /^STÂNGA/).test(bb.dir)));
+      if (!M.rt && !explicatDePozitie)
+        semnOffRoute('viraj_fara_box', Math.round(virajKm * 1000), M.nextBoxIdx - 1);
+      return;
+    }
+    // VIRAJ DUPĂ O MANEVRĂ RATATĂ: nu se mai potrivește cu boxuri de mai încolo.
+    // Momentul-cheie din tura Tresor, 16:37:18: exista deja semnul că boxul 12 fusese
+    // depășit fără viraj, iar aplicația a lipit virajul următor de boxul 13 (−92 m) —
+    // și de acolo a mers convinsă că e pe traseu încă două minute. Dacă boxul 12 chiar
+    // a fost ratat, strada boxului 13 n-a fost niciodată atinsă: virajul ăsta e de pe
+    // alt drum, iar potrivirea lui nu e o corecție, e o minciună confortabilă.
+    const ratareVie = M.offRouteOn && M._offSemne.some(s =>
+      s.tip === 'manevra_neconfirmata' && s.idx <= best);
+    if (ratareVie) {
+      log('snap_refuzat', { motiv: 'dupa_manevra_ratata', routeKm: r2(M.routeKm),
+                            virajKm: r2(virajKm), boxCandidat: plan.boxes[best].num });
+      semnOffRoute('viraj_dupa_ratare', plan.boxes[best].num, best);
+      incearcaOffRoute();
       return;
     }
     M._lastSnapT = clock.mono();
@@ -860,6 +973,7 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
   // la testul din Dumbrăvița. Dacă am depășit cu >250 m un box de VIRAJ fără ca
   // detectorul să fi văzut vreun viraj, spunem cu voce tare că suntem pe dinafară.
   function desyncCheck() {
+    if (M.offRoute) return;        // se știe deja că nu ești pe traseu; nu se mai latră
     const prevIdx = M.nextBoxIdx - 1;
     const prev = plan.boxes[prevIdx];
     if (!prev || !TURN_DIRS.has(prev.dir || '')) return;
@@ -905,9 +1019,195 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
     tone('alarm');
   }
 
+  // ── IEȘIREA DE PE TRASEU ──────────────────────────────────────────────────
+  // Pragurile și cazul-etalon: sus, la OFF_BOX_M. Aici sunt cele patru bucăți:
+  // strângerea semnelor, declararea, ghidajul înapoi și prinderea.
+  //
+  // LIMITA, spusă pe față: aplicația NU are hartă rutieră. Ghidajul e „punctul de
+  // reintrare e la atâția metri, în direcția aia" — linie dreaptă, ca o busolă, nu
+  // traseu pe străzi. Rerutarea adevărată ar cere date de drumuri (offline sau API) și
+  // e alt proiect. Pe un drum de raliu, unde pilotul tocmai a greșit o intersecție pe
+  // care o are în roadbook, busola către punctul ratat e de obicei destul.
+
+  // Punctul geografic al unui kilometru de traseu, din firimiturile pe care chiar
+  // le-am condus. Cu recunoaștere există și urma, dar firimiturile sunt disponibile
+  // ÎNTOTDEAUNA — inclusiv în tura Tresor, unde recunoaștere nu exista.
+  function idxUrmaLaKm(km) {
+    let bi = -1, bd = Infinity;
+    for (let i = 0; i < M._urme.length; i++) {
+      const d = Math.abs(M._urme[i].km - km);
+      if (d < bd) { bd = d; bi = i; }
+    }
+    return bd < 0.25 ? bi : -1;
+  }
+
+  function punctLaKm(km) {
+    const i = idxUrmaLaKm(km);
+    return i >= 0 ? { lat: M._urme[i].lat, lng: M._urme[i].lng } : null;
+  }
+
+  // firimitura aflată la ~`dist` metri înainte (+) sau înapoi (−) de indexul dat
+  function urmaLaDistanta(i, dist) {
+    const pas = dist > 0 ? 1 : -1;
+    let d = 0;
+    for (let j = i; j + pas >= 0 && j + pas < M._urme.length; j += pas) {
+      d += haversineM(M._urme[j].lat, M._urme[j].lng, M._urme[j + pas].lat, M._urme[j + pas].lng);
+      if (d >= Math.abs(dist)) return M._urme[j + pas];
+    }
+    return null;
+  }
+
+  // AM VIRAT ACOLO SAU AM MERS DREPT? Întrebarea care desparte „am ratat boxul" de
+  // „am virat, dar detectorul n-a văzut" — a doua se întâmplă des și e deja tratată
+  // („te-am prins, recalez"). Măsurat 03.08: un viraj făcut sub 8 km/h nu produce
+  // niciun viraj detectat, în ambele ture.
+  // Se compară direcția pe 60 m ÎNAINTE de box cu cea pe 60 m DUPĂ — coardă lungă,
+  // deci zgomotul GPS (±8 m) intră cu vreo 8°, nu cu 30 ca la pași de 10 m.
+  function schimbareDirectieLaKm(km) {
+    const i = idxUrmaLaKm(km);
+    if (i < 0) return null;
+    const b = M._urme[i], a = urmaLaDistanta(i, -60), c = urmaLaDistanta(i, 60);
+    if (!a || !c) return null;
+    return Math.abs(angDiff(bearingDeg(b.lat, b.lng, c.lat, c.lng),
+                            bearingDeg(a.lat, a.lng, b.lat, b.lng)));
+  }
+
+  function semnOffRoute(tip, boxNum, idx) {
+    if (!M.offRouteOn || M.offRoute) return;
+    const acum = clock.mono();
+    const cheie = `${tip}:${boxNum}`;
+    M._offSemne = M._offSemne.filter(s => acum - s.mono <= OFF_FEREASTRA_MS);
+    if (M._offSemne.some(s => s.cheie === cheie)) return;
+    M._offSemne.push({ cheie, tip, boxNum, idx, mono: acum });
+    log('offroute_semn', { tip, boxNum, semne: M._offSemne.length });
+  }
+
+  function offRouteCheck() {
+    if (!M.offRouteOn || M.offRoute) return;
+    // SEMN: box de manevră lăsat în urmă fără viraj confirmat. Se caută independent de
+    // nextBoxIdx — în teren indexul trecuse deja peste boxul ratat (12) când distanța
+    // a devenit concludentă, iar alarma veche s-a pierdut exact așa.
+    const de = Math.max(0, (M._confirmedIdx != null ? M._confirmedIdx : -1) + 1);
+    for (let i = de; i < plan.boxes.length; i++) {
+      const b = plan.boxes[i];
+      if (b.sumKm > M.routeKm - OFF_BOX_M / 1000) break;
+      if (!TURN_DIRS.has(b.dir || '')) continue;
+      // …dar numai dacă mașina chiar a mers DREPT pe acolo. Fără verificarea asta,
+      // două viraje făcute și nedetectate (bucla József, la 7 km/h) ar fi declarat
+      // ieșirea de pe traseu exact în locul unde pilotul conducea corect.
+      const cot = schimbareDirectieLaKm(b.sumKm);
+      if (cot == null || cot >= OFF_COT_GRD) continue;
+      semnOffRoute('manevra_neconfirmata', b.num, i);
+    }
+    incearcaOffRoute();
+  }
+
+  function incearcaOffRoute() {
+    if (!M.offRouteOn || M.offRoute) return;
+    const acum = clock.mono();
+    M._offSemne = M._offSemne.filter(s => acum - s.mono <= OFF_FEREASTRA_MS);
+    const decisiv = M._offSemne.some(s => s.tip === 'in_afara_coridorului');
+    if (!decisiv && M._offSemne.length < OFF_SEMNE_CERUTE) return;
+    // GARDURI: nu se declară pe GPS mort sau proaspăt înviat, nu în probă (acolo
+    // poziția nu se atinge — audit #8), nu la ieșirea din parcare.
+    if (M.rt || M.routeKm < 0.15) return;
+    const deLaFix = M._lastFixMono != null ? acum - M._lastFixMono : Infinity;
+    if (deLaFix > 15000 || acum - (M._gpsRevenitMono || 0) < OFF_DUPA_GPS_MS) return;
+    declaraOffRoute('automat');
+  }
+
+  // Punctul de reintrare: boxul ratat sau ultimul box confirmat — cel mai APROPIAT
+  // dintre ele în linie dreaptă. Ce ratezi într-o buclă strânsă poate fi la 50 m în
+  // spate, în timp ce boxul confirmat e la un kilometru.
+  function punctDeReintrare() {
+    const cand = [];
+    const ratat = M._offSemne.find(s => s.tip === 'manevra_neconfirmata');
+    if (ratat && plan.boxes[ratat.idx]) cand.push(plan.boxes[ratat.idx]);
+    if (M._confirmedIdx != null && plan.boxes[M._confirmedIdx]) cand.push(plan.boxes[M._confirmedIdx]);
+    let best = null;
+    for (const b of cand) {
+      const p = punctLaKm(b.sumKm);
+      if (!p || !M._lastPos) continue;
+      const d = haversineM(M._lastPos.lat, M._lastPos.lng, p.lat, p.lng);
+      if (!best || d < best.distM) best = { box: b, idx: plan.boxes.indexOf(b), pct: p, distM: d };
+    }
+    return best;
+  }
+
+  function declaraOffRoute(cum) {
+    const t = punctDeReintrare();
+    if (!t) { log('offroute_fara_tinta', { semne: M._offSemne.length, urme: M._urme.length }); return; }
+    M.offRoute = { boxNum: t.box.num, idx: t.idx, km: t.box.sumKm, pct: t.pct,
+                   distM: Math.round(t.distM), relDeg: null, de: clock.rally(), cum,
+                   kmLaIesire: M.routeKm };
+    M._offSector = null; M._offVorbaMono = 0;
+    log('offroute_intrare', { cum, boxNum: t.box.num, distM: Math.round(t.distM),
+                              semne: M._offSemne.map(s => s.tip), routeKm: r2(M.routeKm) });
+    say(`Ai ieșit de pe traseu. Întoarcere la boxul ${t.box.num}.`, 4, 'offroute', 'manevra');
+    tone('alarm');
+    ui.render(M, plan);
+  }
+
+  // unde e punctul față de botul mașinii, în cuvinte de pilot
+  function ceasRo(rel) {
+    const a = Math.abs(rel);
+    if (a <= 25) return 'drept în față';
+    if (a <= 70) return rel > 0 ? 'în față-dreapta' : 'în față-stânga';
+    if (a <= 110) return rel > 0 ? 'la dreapta' : 'la stânga';
+    if (a <= 155) return rel > 0 ? 'în spate-dreapta' : 'în spate-stânga';
+    return 'în spate';
+  }
+
+  function offRouteGhidaj(fix) {
+    if (!M.offRoute) return;
+    const o = M.offRoute;
+    if (!fix || fix.lat == null) return;
+    o.distM = Math.round(haversineM(fix.lat, fix.lng, o.pct.lat, o.pct.lng));
+    const brg = bearingDeg(fix.lat, fix.lng, o.pct.lat, o.pct.lng);
+    o.brgDeg = Math.round(brg);
+    o.relDeg = M._hdg != null ? Math.round(angDiff(brg, M._hdg)) : null;
+    // PRINS: ești la punctul de reintrare
+    if (o.distM <= OFF_PRINS_M) { iesiOffRoute('punct'); return; }
+    // vocea: doar când se schimbă sectorul (opt sferturi de ceas) sau la 12 s
+    const sector = o.relDeg != null ? Math.round(o.relDeg / 45) : null;
+    const acum = clock.mono();
+    // peste 2 km de punct, vocea tace: cifra rămâne pe ecran, dar „boxul 12 la 4
+    // kilometri, în spate" repetat nu ajută pe nimeni — ori te întorci, ori ai renunțat
+    if (o.distM > OFF_VORBA_MAX_M) return;
+    if (acum - M._offVorbaMono < OFF_VORBA_MS) return;
+    if (sector === M._offSector && acum - M._offVorbaMono < 30000) return;
+    M._offSector = sector; M._offVorbaMono = acum;
+    say(`Boxul ${o.boxNum} la ${distRo(o.distM)}` +
+        (o.relDeg != null ? `, ${ceasRo(o.relDeg)}.` : '.'), 3, 'offroute', 'manevra');
+  }
+
+  function iesiOffRoute(cum) {
+    const o = M.offRoute;
+    if (!o) return;
+    M.offRoute = null; M._offSemne = []; M._desyncSaid = null;
+    log('offroute_iesire', { cum, boxNum: o.boxNum, ratacitM: Math.round((M.routeKm - o.kmLaIesire) * 1000) });
+    M._lastSnapT = clock.mono();
+    snapToBox(o.idx, 'offroute_' + cum);
+    say(`Te-am prins, continuăm de la boxul ${o.boxNum}.`, 4, 'offroute', 'manevra');
+    tone('ok');
+    ui.render(M, plan);
+  }
+
   // ── API public ────────────────────────────────────────────────────────────
   return {
     M, onFix, atBox, setTcSchedule, previzualizeazaBox, boxuriApropiate,
+    // Butonul „am greșit drumul": pilotul știe primul, întotdeauna. Detectarea automată
+    // are nevoie de două semne și, în tura Tresor, al doilea a venit după 3 minute —
+    // o apăsare le sare pe amândouă.
+    offRouteManual() {
+      if (M.offRoute) return true;
+      if (!punctDeReintrare()) { say('N-am de unde să te iau înapoi — n-am destul drum în memorie.', 3, 'offroute', 'manevra'); return false; }
+      declaraOffRoute('manual');
+      return true;
+    },
+    // „am revenit" — pilotul confirmă că e la punctul de reintrare
+    offRouteRevenit() { if (M.offRoute) iesiOffRoute('manual'); },
+    setOffRoute(on) { M.offRouteOn = !!on; if (!on && M.offRoute) { M.offRoute = null; ui.render(M, plan); } },
     start() {
       // ZI (sau leg) NOUĂ, explicit și complet — nu jumătate de reset. Versiunea veche
       // reseta ancorele dar NU și routeKm: după STOP la km 3,18 + START, ancora spunea
@@ -919,6 +1219,8 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
       M.rtIdx = 0; M.rt = null; M.nextBoxIdx = 0; M.results = {}; M.lastDebrief = null;
       M._ann = {}; M._staged = false; M._warnedRt = {}; M._desyncSaid = null; M._confirmedIdx = -1;
       M._virajRefuzat = null; M._turnAcc = 0; M._lastHdg = null; M._lastSnapT = 0;
+      // leg nou = drum nou: firimiturile și semnele de ieșire de pe traseu nu se moștenesc
+      M.offRoute = null; M._offSemne = []; M._urme = []; M._offSector = null; M._offVorbaMono = 0;
       // paznicul de direcție se re-armează la fiecare zi/leg nou
       M._dirEtapa = 0; M.dirAlerta = null; M.corectie = null;
       M._dirStart = M._lastPos ? { ...M._lastPos } : null;

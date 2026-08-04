@@ -88,6 +88,10 @@ async function init() {
 let _audioCtx = null;
 function audioCtx() { return () => (_audioCtx = _audioCtx || new (window.AudioContext || window.webkitAudioContext)()); }
 
+// Detectarea ieșirii de pe traseu: PORNITĂ implicit, cum a cerut Andreas. Se poate opri
+// din panoul de pregătire — o singură dată, nu la fiecare pornire.
+function offRoutePornit() { return localStorage.getItem('r2_offroute') !== '0'; }
+
 async function rebuildPlan() {
   const speeds = (await store.get('rt_speeds')) || {};
   // Planul se construiește pe UN SINGUR leg (audit, #1) — km-ii și numerele de box
@@ -120,7 +124,8 @@ async function rebuildPlan() {
   // pentru care dintre ele
   plan.reconLegs = grupuri.map(gr => ({ label: gr.label,
     stare: reconStatus(reconPentruLeg(harta, gr.key)) }));
-  machine = makeMachine({ plan, clock, voice, store, ui, driver });
+  machine = makeMachine({ plan, clock, voice, store, ui, driver,
+                          opts: { offRoute: offRoutePornit() } });
   // programul TC scanat ieri nu se pierde la repornire — se reîncarcă din stocare
   // Time card-ul e al ZILEI (TC1..TCn în ordine), dar planul e al LEG-ului: fiecare
   // leg consumă din listă atâtea TC-uri câte boxuri TC are. Offset-ul se DERIVĂ din
@@ -790,6 +795,21 @@ function bind() {
   });
   // REPETĂ (propunerea 5): re-rostește ultimul anunț — remediul ieftin pentru
   // „n-am auzit ce-a zis", care la un pilot singur e momentul în care se greșește.
+  // ── ieșirea de pe traseu ─────────────────────────────────────────────────
+  const cbOff = $('set-offroute');
+  if (cbOff) {
+    cbOff.checked = offRoutePornit();
+    cbOff.addEventListener('change', () => {
+      localStorage.setItem('r2_offroute', cbOff.checked ? '1' : '0');
+      if (machine) machine.setOffRoute(cbOff.checked);
+    });
+  }
+  $('btn-offroute')?.addEventListener('click', () => {
+    if (!machine) return;
+    if (machine.M.offRoute) machine.offRouteRevenit();
+    else machine.offRouteManual();
+    ui.render(machine.M, plan);
+  });
   $('btn-repeat')?.addEventListener('click', () => {
     if (!voice.repeat()) voice.say('Nimic de repetat încă.', 2);
   });

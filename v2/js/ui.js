@@ -42,6 +42,28 @@ export function makeUi() {
         rtEl.classList.add('hidden'); navEl.classList.remove('compact');
       }
 
+      // ── ÎNTOARCEREA LA TRASEU ────────────────────────────────────────────
+      // Cât timp mașina e pe dinafară, ecranul nu mai are ce căuta în lista de boxuri:
+      // arată o singură întrebare — încotro e punctul de reintrare și cât mai e până
+      // la el. Săgeata e RELATIVĂ la botul mașinii, ca la o busolă de mână.
+      // LIMITA, scrisă pe ecran: e linie dreaptă, nu traseu pe străzi.
+      const nav = $('cp-nav'), offBtn = $('btn-offroute');
+      nav.classList.toggle('offroute', !!M.offRoute);
+      if (offBtn) offBtn.textContent = M.offRoute ? '✓ AM REVENIT PE TRASEU' : '↩ AM GREȘIT DRUMUL';
+      if (M.offRoute) {
+        const o = M.offRoute;
+        $('cp-next-dist').textContent = o.distM >= 1000
+          ? (o.distM / 1000).toFixed(1) + ' km' : o.distM + ' m';
+        $('cp-next-dir').textContent = sageata(o.relDeg);
+        $('cp-next-com').textContent = 'ÎNTOARCERE LA TRASEU';
+        $('cp-next-box').textContent = 'box ' + o.boxNum;
+        const af0 = $('cp-after');
+        af0.textContent = 'linie dreaptă către punct — nu traseu pe străzi';
+        af0.className = 'nx-after';
+        $('cp-rts').textContent = plan.rts.map(r => r.name).join('  ');
+        return;
+      }
+
       // următorul box
       const b = plan.boxes[M.nextBoxIdx];
       if (b) {
@@ -121,6 +143,13 @@ export function makeUi() {
       } else deb.classList.add('hidden');
     }
   };
+}
+
+// săgeata către punctul de reintrare, în opt sferturi de ceas față de botul mașinii
+function sageata(rel) {
+  if (rel == null) return '⊙';
+  const i = ((Math.round(rel / 45) % 8) + 8) % 8;
+  return ['↑', '↗', '→', '↘', '↓', '↙', '←', '↖'][i];
 }
 
 function dirGlyph(b) {

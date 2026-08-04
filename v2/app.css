@@ -68,6 +68,12 @@ input { background: var(--bg); border: 1px solid var(--border); border-radius: 1
    la 2 secunde după prima (bucla József, 03.08.2026) */
 .nx-after.inlantuit { font-size: 19px; font-weight: 800; color: var(--warn); }
 
+/* ÎNTOARCERE LA TRASEU — alt ecran, nu o notă. Când ești pe alt drum, singura
+   întrebare e „încotro și cât", iar culoarea spune din prima că nu ești pe traseu. */
+#cp-nav.offroute { background: #ff3b3018; border: 2px solid var(--bad); }
+#cp-nav.offroute .nx-com { color: var(--bad); font-weight: 800; letter-spacing: .5px; }
+#cp-nav.offroute .nx-dir { color: var(--bad); }
+
 /* banda TC — permanentă, verde/roșu dintr-o privire */
 .tcband { text-align: center; font-size: 15px; font-weight: 800; padding: 7px;
   border-radius: 10px; margin-bottom: 8px; font-variant-numeric: tabular-nums; }

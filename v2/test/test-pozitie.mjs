@@ -28,7 +28,7 @@ function lumeDreapta(eroareOdo, headingConst = 0) {
   const store = makeMemStore();
   const plan = buildPlan(BOX, {}, null);
   const said = [];
-  const m = makeMachine({ plan, clock, store, driver: makeDriverModel(),
+  const m = makeMachine({ opts: { offRoute: false }, plan, clock, store, driver: makeDriverModel(),
     voice: { say: t => said.push(t), tone() {}, flush() {} }, ui: { render() {} } });
   const fix = () => {
     wall += 1000;
@@ -91,7 +91,7 @@ console.log('\n═══ Drum cu viraje: linia dreaptă rămâne doar PODEA, nu 
   let wall = 0;
   const clock = makeClock({ now: () => wall, mono: () => wall });
   const plan = buildPlan(BOX, {}, null);
-  const m = makeMachine({ plan, clock, store: makeMemStore(), driver: makeDriverModel(),
+  const m = makeMachine({ opts: { offRoute: false }, plan, clock, store: makeMemStore(), driver: makeDriverModel(),
     voice: { say() {}, tone() {}, flush() {} }, ui: { render() {} } });
   m.start();
   let lat = 45, lng = 21;

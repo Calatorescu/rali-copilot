@@ -26,7 +26,7 @@ function lume(boxes = BOX) {
   const clock = makeClock({ now: () => wall, mono: () => wall });
   const store = makeMemStore();
   const said = [];
-  const m = makeMachine({ plan: buildPlan(boxes, {}, null), clock, store,
+  const m = makeMachine({ opts: { offRoute: false }, plan: buildPlan(boxes, {}, null), clock, store,
     driver: makeDriverModel(),
     voice: { say: (t, p) => said.push({ t, p }), tone() {}, flush() {} }, ui: { render() {} } });
   m.start();
@@ -133,7 +133,7 @@ console.log('\n═══ #14 — retro-datarea plafonată ═══');
   let wall = 0;
   const clock = makeClock({ now: () => wall, mono: () => wall });
   const said = [];
-  const m = makeMachine({ plan: buildPlan(BOX, {}, null), clock, store: makeMemStore(),
+  const m = makeMachine({ opts: { offRoute: false }, plan: buildPlan(BOX, {}, null), clock, store: makeMemStore(),
     driver: makeDriverModel(), voice: { say: t => said.push(t), tone() {}, flush() {} },
     ui: { render() {} } });
   m.start();
@@ -399,7 +399,7 @@ console.log('\n═══ Tura 5: snapul pe viraj ține cont de întârzierea det
   let wall = 0;
   const clock = makeClock({ now: () => wall, mono: () => wall });
   const store = makeMemStore();
-  const m = makeMachine({ plan: buildPlan(boxes, {}, null), clock, store,
+  const m = makeMachine({ opts: { offRoute: false }, plan: buildPlan(boxes, {}, null), clock, store,
     driver: makeDriverModel(), voice: { say() {}, tone() {}, flush() {} }, ui: { render() {} } });
   m.start();
   let lat = 45, lng = 11;
@@ -444,7 +444,7 @@ function lumeCuBusola(boxes) {
   const clock = makeClock({ now: () => wall, mono: () => wall });
   const store = makeMemStore();
   const said = [];
-  const m = makeMachine({ plan: buildPlan(boxes, {}, null), clock, store,
+  const m = makeMachine({ opts: { offRoute: false }, plan: buildPlan(boxes, {}, null), clock, store,
     driver: makeDriverModel(),
     voice: { say: (t, p) => said.push({ t, p }), tone() {}, flush() {} }, ui: { render() {} } });
   m.start();
@@ -683,7 +683,7 @@ console.log('\n═══ Fără recunoaștere, paznicul tace (roadbook-ul n-are 
   let wall = 0;
   const clock = makeClock({ now: () => wall, mono: () => wall });
   const store = makeMemStore(), said = [];
-  const m = makeMachine({ plan: buildPlan(BOX_LEG, {}, null), clock, store,
+  const m = makeMachine({ opts: { offRoute: false }, plan: buildPlan(BOX_LEG, {}, null), clock, store,
     driver: makeDriverModel(),
     voice: { say: t => said.push(t), tone() {}, flush() {} }, ui: { render() {} } });
   m.start();

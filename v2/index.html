@@ -61,6 +61,18 @@
       </div>
     </div>
 
+    <div class="card">
+      <p class="lbl">DACĂ O IAU PE ALT DRUM</p>
+      <label class="row" style="align-items:center;gap:10px">
+        <input type="checkbox" id="set-offroute" checked style="width:22px;height:22px">
+        <span class="line">Detectează ieșirea de pe traseu și ghidează înapoi</span>
+      </label>
+      <p class="line dim">Când se prinde, planul îngheață (nu-ți mai dictează viraje de pe
+        alt drum) și ecranul arată săgeata și distanța până la punctul de reintrare.
+        Atenție: ghidajul e în LINIE DREAPTĂ către punct, ca o busolă — aplicația n-are
+        hartă rutieră, deci nu-ți poate spune pe ce străzi s-o iei.</p>
+    </div>
+
     <button class="btn pri big" id="btn-start">▶ START ZIUA</button>
 
     <!-- A.R.E.S. art. 6.3: (declarat − realizat) × 2. Bateria și km-ii nu mai intră. -->
@@ -158,6 +170,10 @@
       </div>
       <button class="btn sec big" id="btn-talk">🎤</button>
     </div>
+    <!-- Ieșirea de pe traseu: pilotul o știe întotdeauna primul. Detectarea automată are
+         nevoie de două semne; în tura Tresor (04.08.2026) al doilea a venit după 3 minute
+         de condus pe alt drum. O apăsare le sare pe amândouă. -->
+    <button class="btn sec big" id="btn-offroute">↩ AM GREȘIT DRUMUL</button>
     <!-- apare doar la final de leg, când mai există unul -->
     <button class="btn pri big hidden" id="btn-nextleg">▶ LEG URMĂTOR</button>
     <button class="btn danger" id="btn-stop">■ STOP ZIUA</button>
