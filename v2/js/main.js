@@ -7,7 +7,7 @@ import { makeVoice, makeEars, secRo } from './voice.js';
 import { makeLiveGps, makeSyntheticGps, makeReplayGps } from './gps.js';
 import { buildPlan, detectRts, sanitizeBoxes, groupByLeg, verifyRoadbook,
          reconNormalize, reconPentruLeg, reconPune, reconStatus,
-         reconRecupereaza } from './route.js';
+         reconRecupereaza, verificaHarta, hartaPentruLeg } from './route.js';
 import { makeMachine } from './machine.js';
 import { makeDriverModel } from './learn.js';
 import { makeUi, startHeaderClock } from './ui.js';
@@ -113,7 +113,13 @@ async function rebuildPlan() {
   // Se dă mașinii DOAR o geometrie folosibilă: o urmă fără ancore nu poate produce
   // anchorMap, iar mașina ar ignora-o oricum — dar tăcut. Așa, „Geometrie: DA" din
   // panou înseamnă exact „proiecția și paznicul de direcție funcționează".
-  plan = buildPlan(g ? g.boxes : [], speeds, reconStare.ok ? rec : null);
+  // Harta traseului: coordonatele boxurilor leg-ului activ, dacă au fost încărcate.
+  // Ordinea de încredere e recon > hartă > firimituri (vezi machine.pctBox) — harta nu
+  // înlocuiește geometria înregistrată, dar e singurul reper absolut pe un roadbook nou.
+  const hartaTot = (await store.get('harta')) || null;
+  const hartaLeg = hartaPentruLeg(hartaTot, cheia);
+  plan = buildPlan(g ? g.boxes : [], speeds, reconStare.ok ? rec : null, hartaLeg);
+  plan.hartaTot = hartaTot;
   plan.legKey = cheia;
   plan.legGroups = grupuri;
   const idx = grupuri.findIndex(x => x.key === cheia);
@@ -144,6 +150,16 @@ async function rebuildPlan() {
 }
 
 function renderPrep() {
+  // starea hărții: câte boxuri din leg-ul activ au coordonate, spus înainte de START
+  const hEl = $('prep-harta');
+  if (hEl) {
+    const n = plan.harta ? Object.keys(plan.harta).length : 0;
+    const total = plan.boxes.length;
+    hEl.textContent = n
+      ? `Hartă: DA — ${n} din ${total} boxuri cu coordonate` +
+        (n < total ? ' (restul cad pe kilometraj)' : '')
+      : 'Hartă: — (fără ea nu știu unde e boxul dacă greșești drumul)';
+  }
   $('prep-boxes').textContent = boxesRaw.length
     ? `${plan.boxes.length} boxuri în ${plan.legLabel || 'leg'} · 0–${plan.totalKm.toFixed(2)} km` +
       (plan.legGroups.length > 1 ? ` · ${plan.legGroups.length} leg-uri scanate` : '')
@@ -635,6 +651,38 @@ function doImport() {
   inp.click();
 }
 
+// Încărcarea hărții traseului. Fișierul e CONȚINUT EXTERN: se citește, se verifică față
+// de roadbook-ul scanat și se refuză cu motive scrise pe ecran. O hartă greșită e mai rea
+// decât niciuna — trimite pilotul cu încredere în direcția greșită.
+function incarcaHarta() {
+  const inp = document.createElement('input');
+  inp.type = 'file'; inp.accept = 'application/json,.json';
+  inp.onchange = () => {
+    const f = inp.files && inp.files[0];
+    if (!f) return;
+    if (f.size > 2 * 1024 * 1024) { $('prep-harta-st').textContent = 'Fișier prea mare (peste 2 MB).'; return; }
+    const r = new FileReader();
+    r.onload = async () => {
+      const st = $('prep-harta-st');
+      let raw;
+      try { raw = JSON.parse(String(r.result)); }
+      catch (e) { st.textContent = 'Fișierul nu e JSON valid.'; return; }
+      const v = verificaHarta(raw, groupByLeg(boxesRaw));
+      if (!v.ok) {
+        st.textContent = 'REFUZAT: ' + v.probleme.slice(0, 4).join(' · ');
+        try { store.log('harta_refuzata', { probleme: v.probleme.slice(0, 6) }, clock.rally()); } catch (e) {}
+        return;
+      }
+      await store.put('harta', v.harta);
+      try { store.log('harta_incarcata', { legs: Object.keys(v.harta), boxuri: v.rezumat.boxuri }, clock.rally()); } catch (e) {}
+      await rebuildPlan();
+      st.textContent = `Încărcată: ${v.rezumat.boxuri} boxuri cu coordonate, ${v.rezumat.legs} leg-uri.`;
+    };
+    r.readAsText(f);
+  };
+  inp.click();
+}
+
 // ── ecrane + legături ───────────────────────────────────────────────────────
 function showScreen(name) {
   for (const s of ['prep', 'run', 'recon', 'set']) $('scr-' + s).classList.toggle('hidden', s !== name);
@@ -799,6 +847,15 @@ function bind() {
   });
   // REPETĂ (propunerea 5): re-rostește ultimul anunț — remediul ieftin pentru
   // „n-am auzit ce-a zis", care la un pilot singur e momentul în care se greșește.
+  // ── harta traseului ──────────────────────────────────────────────────────
+  $('btn-harta')?.addEventListener('click', incarcaHarta);
+  $('btn-harta-clear')?.addEventListener('click', async () => {
+    if (!confirm('Ștergi harta traseului?')) return;
+    await store.put('harta', null);
+    await rebuildPlan();
+    $('prep-harta-st').textContent = 'Harta a fost ștearsă.';
+  });
+
   // ── ieșirea de pe traseu ─────────────────────────────────────────────────
   const cbOff = $('set-offroute');
   if (cbOff) {

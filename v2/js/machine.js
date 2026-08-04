@@ -267,7 +267,7 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
     if (fix.headingDeg != null && M.speedKmh > 5) M._hdg = fix.headingDeg;
     if (M.state !== 'PREP' && M.state !== 'DAY_END') {
       directieCheck(fix);
-      offRouteCheck(); offRouteGhidaj(fix);
+      hartaOffCheck(); offRouteCheck(); offRouteGhidaj(fix);
       announceBoxes(); desyncCheck();
     }
     // STAGED e tot „legătură" din punctul de vedere al tick-ului: fără el aici,
@@ -313,7 +313,7 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
 
   function directieCheck(fix) {
     if (M._dirEtapa >= 2 || !M._dirStart) return;
-    if (!plan.trace || !plan.trace.pts || plan.trace.pts.length < 2) return;
+    if (!plan.trace || !plan.trace.pts || plan.trace.pts.length < 2) return hartaDirectieCheck(fix);
     const strM = haversineM(M._dirStart.lat, M._dirStart.lng, fix.lat, fix.lng);
     if (strM < DIR_PRAG_M * (M._dirEtapa + 1)) return;
     // de unde pleacă traseul: kilometrul primului box al leg-ului, tradus pe urmă
@@ -334,6 +334,69 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
     log('directie_gresita', { difGrd: Math.round(dif), azimutMers: Math.round(mers),
                               azimutTraseu: Math.round(traseu), deplasareM: Math.round(strM),
                               aDouaOara: M._dirEtapa >= 2 });
+  }
+
+  // PAZNICUL DE PLECARE, cu harta traseului. Fără urmă de recunoaștere, singura direcție
+  // absolută pe care o avem e cea către coordonata boxului următor. Se compară coarda
+  // primilor ~80 m de mers cu azimutul spre el: peste 100° înseamnă că boxul e în spate.
+  // 80 m, nu 120 ca la paznicul cu urmă, fiindcă aici comparăm cu un PUNCT, nu cu un
+  // traseu — reperul nu se pierde dacă drumul face o curbă între timp.
+  const HARTA_START_M = 80, HARTA_START_GRD = 100;
+
+  function hartaDirectieCheck(fix) {
+    if (!plan.harta || M._dirEtapa >= 2 || !M._dirStart) return;
+    const strM = haversineM(M._dirStart.lat, M._dirStart.lng, fix.lat, fix.lng);
+    if (strM < HARTA_START_M) return;
+    // primul box de după cel de start care are coordonată
+    let tinta = null;
+    for (let i = 1; i < plan.boxes.length && i <= 4; i++) {
+      const p = plan.harta[plan.boxes[i].num];
+      if (p) { tinta = { box: plan.boxes[i], p }; break; }
+    }
+    if (!tinta) { M._dirEtapa = 2; return; }
+    const mers = bearingDeg(M._dirStart.lat, M._dirStart.lng, fix.lat, fix.lng);
+    const spre = bearingDeg(M._dirStart.lat, M._dirStart.lng, tinta.p.lat, tinta.p.lng);
+    const dif = Math.abs(angDiff(mers, spre));
+    M._dirEtapa = 2;
+    log('directie_start_harta', { difGrd: Math.round(dif), azimutMers: Math.round(mers),
+                                  azimutBox: Math.round(spre), boxNum: tinta.box.num,
+                                  deplasareM: Math.round(strM) });
+    if (dif <= HARTA_START_GRD) { M.dirAlerta = null; return; }
+    M.dirAlerta = { text: `Direcție greșită — boxul ${tinta.box.num} e în spatele tău`,
+                    difGrd: Math.round(dif) };
+    say(`Direcție greșită. Boxul ${tinta.box.num} e în spatele tău.`, 4, 'dir', 'manevra');
+    tone('alarm');
+  }
+
+  // LINIA DREAPTĂ NU POATE FI MAI LUNGĂ DECÂT DRUMUL. Cu coordonata boxului următor,
+  // asta devine o măsurătoare, nu o presupunere: dacă distanța în linie dreaptă până la
+  // el depășește drumul care ți-a mai rămas până acolo (din roadbook), nu ești pe traseu.
+  // Nu e un prag de reglat — e o imposibilitate geometrică. Marja de 200 m acoperă
+  // zgomotul GPS și driftul de odometru.
+  //
+  // Ăsta e semnul care lipsea în tura poligon: după virajul greșit de la boxul 2, mașina
+  // s-a depărtat de traseu cu 50 km/h, iar aplicația a continuat să anunțe boxurile 4, 5
+  // și 6 pentru că odometrul mergea înainte. Kilometrajul nu poate ști că ai greșit
+  // drumul; coordonata, da.
+  const HARTA_MARJA_M = 200;
+
+  function hartaOffCheck() {
+    if (!plan.harta || M.offRoute || !M._lastPos || M.rt) return;
+    for (let i = M.nextBoxIdx; i < plan.boxes.length && i <= M.nextBoxIdx + 3; i++) {
+      const b = plan.boxes[i];
+      const p = plan.harta[b.num];
+      if (!p) continue;
+      const dreaptaM = haversineM(M._lastPos.lat, M._lastPos.lng, p.lat, p.lng);
+      const drumM = Math.max(0, (b.sumKm - M.routeKm) * 1000);
+      const depasireM = dreaptaM - drumM;
+      if (depasireM > HARTA_MARJA_M) {
+        log('harta_off', { boxNum: b.num, dreaptaM: Math.round(dreaptaM),
+                           drumM: Math.round(drumM), depasireM: Math.round(depasireM) });
+        semnOffRoute('mai_departe_decat_drumul', b.num, i);
+        incearcaOffRoute();
+      }
+      return;   // se judecă după primul box cu coordonată, nu după toate
+    }
   }
 
   // ── legătura ──────────────────────────────────────────────────────────────
@@ -1143,7 +1206,11 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
     if (!M.offRouteOn || M.offRoute) return;
     const acum = clock.mono();
     M._offSemne = M._offSemne.filter(s => acum - s.mono <= OFF_FEREASTRA_MS);
-    const decisiv = M._offSemne.some(s => s.tip === 'in_afara_coridorului');
+    // Semnele DECISIVE sunt cele geometrice: coridorul recunoașterii și distanța până la
+    // coordonata boxului. Amândouă măsoară direct „nu sunt pe drumul ăla", spre deosebire
+    // de semnele deduse din kilometraj, care pot fi și poziție greșită.
+    const decisiv = M._offSemne.some(s => s.tip === 'in_afara_coridorului' ||
+                                          s.tip === 'mai_departe_decat_drumul');
     if (!decisiv && M._offSemne.length < OFF_SEMNE_CERUTE) return;
     // GARDURI: nu se declară pe GPS mort sau proaspăt înviat, nu în probă (acolo
     // poziția nu se atinge — audit #8), nu la ieșirea din parcare.

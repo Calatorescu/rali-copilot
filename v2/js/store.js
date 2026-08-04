@@ -88,13 +88,14 @@ export async function exportDay(store) {
   // `recon_draft` intră și el în export: o recunoaștere întreruptă (telefon închis în
   // plin drum) e o măsurătoare făcută, iar exportul e singurul loc din care se poate
   // afla de pe birou că a existat. Vezi main.js, recupereazaDraftRecon.
-  const [journal, plan, speeds, recon, tcs, draft] = await Promise.all([
+  const [journal, plan, speeds, recon, tcs, draft, harta] = await Promise.all([
     store.journalAll(), store.get('plan_raw'), store.get('rt_speeds'),
-    store.get('recon'), store.get('tc_schedule'), store.get('recon_draft')
+    store.get('recon'), store.get('tc_schedule'), store.get('recon_draft'),
+    store.get('harta')
   ]);
   return { _app: 'RALI2', _ver: 1, at: Date.now(), journal, plan_raw: plan || null,
            rt_speeds: speeds || null, recon: recon || null, tc_schedule: tcs || null,
-           recon_draft: draft || null };
+           recon_draft: draft || null, harta: harta || null };
 }
 
 // Importul ȘTERGE jurnalul local. Până acum ștergea ÎNAINTE de orice verificare — aceeași
@@ -136,6 +137,25 @@ export async function importDay(store, dump, { confirmat = false } = {}) {
   }
   if (reconRecupereaza(dump.recon_draft, null).stare !== 'gol')
     await store.put('recon_draft', dump.recon_draft);
+  // Harta traseului (coordonatele boxurilor) intră ca restul, dar NU se crede pe cuvânt:
+  // se scriu doar leg-urile cu forma corecta — { legKey: { num: {lat,lng} } }, numere
+  // finite, in plaja Pamantului. Validarea completa, fata de roadbook, se face la
+  // incarcarea in plan (route.verificaHarta); aici e granita de forma.
+  if (dump.harta && typeof dump.harta === 'object' && !Array.isArray(dump.harta)) {
+    const bune = {};
+    for (const [k, pts] of Object.entries(dump.harta)) {
+      if (!/^\d+\|\d+$/.test(k) || !pts || typeof pts !== 'object') continue;
+      const ok = {};
+      for (const [num, p] of Object.entries(pts)) {
+        if (!/^\d{1,3}$/.test(num) || !p || typeof p !== 'object') continue;
+        if (!Number.isFinite(p.lat) || !Number.isFinite(p.lng)) continue;
+        if (Math.abs(p.lat) > 90 || Math.abs(p.lng) > 180) continue;
+        ok[num] = { lat: p.lat, lng: p.lng };
+      }
+      if (Object.keys(ok).length >= 2) bune[k] = ok;
+    }
+    if (Object.keys(bune).length) await store.put('harta', bune);
+  }
 }
 
 // Starea de cursă reconstruită din jurnal — inima preluării pe alt telefon:

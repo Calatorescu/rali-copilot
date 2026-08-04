@@ -62,6 +62,19 @@
     </div>
 
     <div class="card">
+      <p class="lbl">HARTA TRASEULUI (COORDONATELE BOXURILOR)</p>
+      <!-- Roadbook-ul spune „la 0,41 km, dreapta pe Str. Pluto" — o instrucțiune relativă.
+           Harta spune UNDE e boxul 4. Fără ea, aplicația nu poate ști nici dacă ai plecat
+           în direcția bună, nici încotro s-o iei înapoi când ai greșit (tura din 18:00). -->
+      <p id="prep-harta" class="line">Hartă: —</p>
+      <div class="row">
+        <button class="btn sec" id="btn-harta">🗺 Încarcă harta traseului (JSON)</button>
+        <button class="btn danger sm" id="btn-harta-clear">✕</button>
+      </div>
+      <p id="prep-harta-st" class="line dim"></p>
+    </div>
+
+    <div class="card">
       <p class="lbl">DACĂ O IAU PE ALT DRUM</p>
       <label class="row" style="align-items:center;gap:10px">
         <input type="checkbox" id="set-offroute" checked style="width:22px;height:22px">

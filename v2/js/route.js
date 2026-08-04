@@ -8,7 +8,7 @@
 // liniară. Cu 3-4 ancore pe leg, kilometrul oficial se citește direct din poziție.
 
 import { slowZones } from './pace.js';
-import { buildTrace } from './geo.js';
+import { buildTrace, haversineM } from './geo.js';
 
 export const TURN_DIRS = new Set(['STÂNGA', 'DREAPTA', 'STÂNGA-T', 'DREAPTA-T',
   'GIRATORIU-1', 'GIRATORIU-2', 'GIRATORIU-3', 'GIRATORIU-4']);
@@ -136,6 +136,111 @@ export function verifyRoadbook(allBoxes) {
     }
   }
   return { probleme, legs: grupuri.map(g => ({ key: g.key, label: g.label, boxuri: g.boxes.length })) };
+}
+
+// ── HARTA TRASEULUI: coordonatele boxurilor ─────────────────────────────────
+// De ce există. Roadbook-ul spune „la 0,41 km, dreapta pe Str. Pluto" — o instrucțiune
+// relativă, care nu poate răspunde la întrebarea „unde e boxul 4?". Fără răspunsul ăla,
+// aplicația nu poate ști nici dacă ai plecat în direcția bună, nici încotro s-o iei
+// înapoi când ai greșit. Roadbook-urile de test sunt generate dintr-o rutare, deci
+// coordonatele EXISTĂ la generare — doar că nu ajungeau niciodată în telefon.
+//
+// Formatul (îl produce generatorul de roadbook, îl citește file picker-ul din panou):
+//   {
+//     "_app": "RALI2_HARTA",
+//     "day": 1,
+//     "legs": {
+//       "D1L1": { "boxes": [ { "num": 1, "lat": 45.782532, "lng": 11.246190 }, … ] }
+//     }
+//   }
+// Cheia de leg se scrie „D1L1" (sau „1|1" — se acceptă ambele) și trebuie să corespundă
+// leg-ului din roadbook-ul scanat. Boxurile lipsă sunt permise: harta e opțională și
+// parțială; ce lipsește cade pe sursele mai slabe (recunoaștere, firimituri).
+//
+// Harta e CONȚINUT EXTERN (fișier de pe telefon, generat de altcineva), deci trece prin
+// aceeași graniță de încredere ca scanarea: se validează totul, se refuză cu motiv.
+export const HARTA_APP = 'RALI2_HARTA';
+const HARTA_MAX_BOXURI = 400;
+
+function cheieLeg(k) {
+  const s = String(k).trim().toUpperCase();
+  let m = s.match(/^D(\d+)L(\d+)$/);
+  if (m) return `${+m[1]}|${+m[2]}`;
+  m = s.match(/^(\d+)\|(\d+)$/);
+  if (m) return `${+m[1]}|${+m[2]}`;
+  return null;
+}
+
+// `grupuri` = ieșirea lui groupByLeg pe roadbook-ul scanat; harta se verifică FAȚĂ DE EL.
+export function verificaHarta(raw, grupuri = []) {
+  const probleme = [];
+  const harta = {};
+  let nBoxuri = 0;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw))
+    return { ok: false, harta: null, probleme: ['Fișierul nu conține un obiect JSON.'] };
+  if (raw._app !== HARTA_APP)
+    return { ok: false, harta: null,
+             probleme: [`Nu e o hartă RALI 2 (aștept _app: "${HARTA_APP}", am găsit "${raw._app}").`] };
+  const legs = raw.legs;
+  if (!legs || typeof legs !== 'object' || Array.isArray(legs) || !Object.keys(legs).length)
+    return { ok: false, harta: null, probleme: ['Harta n-are nicio secțiune `legs`.'] };
+
+  for (const [k, val] of Object.entries(legs)) {
+    const cheie = cheieLeg(k);
+    if (!cheie) { probleme.push(`Cheie de leg necitibilă: „${String(k).slice(0, 20)}" (aștept „D1L1").`); continue; }
+    const g = grupuri.find(x => x.key === cheie);
+    if (!g) {
+      probleme.push(`Harta are leg-ul ${cheie.replace('|', ' · leg ')}, dar roadbook-ul scanat nu.`);
+      continue;
+    }
+    const lista = val && Array.isArray(val.boxes) ? val.boxes : null;
+    if (!lista) { probleme.push(`Leg-ul ${cheie}: lipsește lista de boxuri.`); continue; }
+    if (lista.length > HARTA_MAX_BOXURI) { probleme.push(`Leg-ul ${cheie}: ${lista.length} boxuri, peste limita de ${HARTA_MAX_BOXURI}.`); continue; }
+    const numeriPlan = new Set(g.boxes.map(b => b.num));
+    const pts = {};
+    const necunoscute = [];
+    for (const b of lista) {
+      const num = typeof b?.num === 'number' ? b.num : parseInt(b?.num, 10);
+      const lat = typeof b?.lat === 'number' ? b.lat : parseFloat(b?.lat);
+      const lng = typeof b?.lng === 'number' ? b.lng : parseFloat(b?.lng);
+      if (!Number.isFinite(num) || num < 1 || num > 999) { probleme.push(`Leg-ul ${cheie}: box cu număr invalid (${JSON.stringify(b?.num)}).`); continue; }
+      if (!Number.isFinite(lat) || !Number.isFinite(lng) ||
+          Math.abs(lat) > 90 || Math.abs(lng) > 180) {
+        probleme.push(`Leg-ul ${cheie}, boxul ${num}: coordonate invalide (${JSON.stringify(b?.lat)}, ${JSON.stringify(b?.lng)}).`);
+        continue;
+      }
+      if (!numeriPlan.has(num)) { necunoscute.push(num); continue; }
+      pts[num] = { lat, lng };
+    }
+    if (necunoscute.length)
+      probleme.push(`Leg-ul ${cheie}: boxurile ${necunoscute.slice(0, 8).join(', ')}${necunoscute.length > 8 ? '…' : ''} nu există în roadbook-ul scanat.`);
+    // COERENȚA cu kilometrajul: linia dreaptă dintre două boxuri nu poate fi mai lungă
+    // decât drumul dintre ele. Dacă e, coordonatele sunt de pe alt traseu — iar o hartă
+    // greșită e mai rea decât niciuna: trimite pilotul cu încredere în direcția greșită.
+    const nums = g.boxes.filter(b => pts[b.num]).sort((a, b) => a.sumKm - b.sumKm);
+    for (let i = 1; i < nums.length; i++) {
+      const a = nums[i - 1], b = nums[i];
+      const drumM = Math.abs(b.sumKm - a.sumKm) * 1000;
+      const dreaptaM = haversineM(pts[a.num].lat, pts[a.num].lng, pts[b.num].lat, pts[b.num].lng);
+      if (dreaptaM > drumM * 1.5 + 200) {
+        probleme.push(`Leg-ul ${cheie}: între boxurile ${a.num} și ${b.num} roadbook-ul are ${Math.round(drumM)} m, ` +
+                      `dar coordonatele sunt la ${Math.round(dreaptaM)} m în linie dreaptă — harta nu e a acestui traseu.`);
+        break;
+      }
+    }
+    const n = Object.keys(pts).length;
+    if (n < 2) { probleme.push(`Leg-ul ${cheie}: doar ${n} box cu coordonate — prea puțin ca să însemne ceva.`); continue; }
+    harta[cheie] = pts;
+    nBoxuri += n;
+  }
+  const ok = probleme.length === 0 && Object.keys(harta).length > 0;
+  return { ok, harta: ok ? harta : null, probleme,
+           rezumat: { legs: Object.keys(harta).length, boxuri: nBoxuri } };
+}
+
+// coordonatele boxurilor pentru un singur leg: { num → {lat,lng} }
+export function hartaPentruLeg(harta, legKey) {
+  return harta && legKey && harta[legKey] ? harta[legKey] : null;
 }
 
 // Probele, detectate din flag-uri; viteza din comentariu dacă organizatorul a scris-o.
@@ -275,7 +380,8 @@ export function rtSlowZones(rt, samples, anchorMap, targetKmh) {
 }
 
 // Planul zilei: totul, gata de dat mașinii de stări.
-export function buildPlan(boxes, savedSpeeds, recon /* {trace, samples, anchors} | null */) {
+export function buildPlan(boxes, savedSpeeds, recon /* {trace, samples, anchors} | null */,
+                          harta /* { num → {lat,lng} } | null */) {
   const rts = detectRts(boxes, savedSpeeds);
   const anchorMap = recon && recon.anchors && recon.anchors.length
     ? makeAnchorMap(recon.anchors) : null;
@@ -288,6 +394,7 @@ export function buildPlan(boxes, savedSpeeds, recon /* {trace, samples, anchors}
     trace: recon ? recon.trace : null,
     samples: recon ? recon.samples : null,
     anchorMap,
+    harta: harta || null,
     totalKm: boxes.length ? boxes[boxes.length - 1].sumKm : 0
   };
 }
