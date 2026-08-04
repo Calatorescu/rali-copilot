@@ -57,12 +57,22 @@ input { background: var(--bg); border: 1px solid var(--border); border-radius: 1
 #cp-rem.aproape { color: var(--warn); }
 #cp-rem.final { color: var(--bad); }
 
-#cp-nav { background: var(--surf); border-radius: 16px; padding: 14px; text-align: center; margin-bottom: 10px; }
-#cp-nav.compact .nx-dir { font-size: 44px; } #cp-nav.compact .nx-dist { font-size: 22px; }
-.nx-dist { font-size: 34px; font-weight: 800; font-variant-numeric: tabular-nums; }
-.nx-dir { font-size: 84px; line-height: 1.1; }
-.nx-com { font-size: 15px; color: var(--text); min-height: 20px; }
-.nx-box { font-size: 12px; color: var(--dim); }
+/* ECRANUL DE CONDUS. Andreas, 04.08.2026, după tura Tresor: „textul e prea mic și semnul
+   de direcție mult prea mic". Are dreptate — se citește cu o privire de trei zecimi de
+   secundă, cu mașina în mers, prin ochelari de soare. Deci ierarhia e explicită:
+     săgeata = elementul dominant (de la 84 px la ~190 — mai mult decât dublu),
+     distanța = a doua ca mărime, tot mare (34 → 64),
+     numele străzii = secundar, în gri: îl citești dacă ai timp, nu ca să virezi.
+   În probă (compact) rămâne mai mică, fiindcă acolo cifra de deviere e cea urmărită —
+   dar tot dublă față de cât era (44 → 96). */
+#cp-nav { background: var(--surf); border-radius: 16px; padding: 10px 14px 14px; text-align: center; margin-bottom: 10px; }
+#cp-nav.compact .nx-dir { font-size: clamp(72px, 24vw, 96px); }
+#cp-nav.compact .nx-dist { font-size: clamp(28px, 10vw, 40px); }
+.nx-dist { font-size: clamp(44px, 17vw, 68px); font-weight: 800; line-height: 1.05;
+  font-variant-numeric: tabular-nums; }
+.nx-dir { font-size: clamp(118px, 46vw, 190px); line-height: .95; font-weight: 700; }
+.nx-com { font-size: 16px; color: var(--dim); min-height: 20px; line-height: 1.25; }
+.nx-box { font-size: 13px; color: var(--dim); }
 .nx-after { font-size: 13px; color: var(--dim); margin-top: 6px; border-top: 1px solid var(--border); padding-top: 6px; }
 /* boxuri înlănțuite (sub 60 m): a doua manevră nu mai e o notă de subsol — o faci
    la 2 secunde după prima (bucla József, 03.08.2026) */
