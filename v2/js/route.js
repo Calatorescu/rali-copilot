@@ -219,20 +219,7 @@ export function verificaHarta(raw, grupuri = []) {
     }
     if (necunoscute.length)
       probleme.push(`Leg-ul ${cheie}: boxurile ${necunoscute.slice(0, 8).join(', ')}${necunoscute.length > 8 ? '…' : ''} nu există în roadbook-ul scanat.`);
-    // COERENȚA cu kilometrajul: linia dreaptă dintre două boxuri nu poate fi mai lungă
-    // decât drumul dintre ele. Dacă e, coordonatele sunt de pe alt traseu — iar o hartă
-    // greșită e mai rea decât niciuna: trimite pilotul cu încredere în direcția greșită.
-    const nums = g.boxes.filter(b => pts[b.num]).sort((a, b) => a.sumKm - b.sumKm);
-    for (let i = 1; i < nums.length; i++) {
-      const a = nums[i - 1], b = nums[i];
-      const drumM = Math.abs(b.sumKm - a.sumKm) * 1000;
-      const dreaptaM = haversineM(pts[a.num].lat, pts[a.num].lng, pts[b.num].lat, pts[b.num].lng);
-      if (dreaptaM > drumM * 1.5 + 200) {
-        probleme.push(`Leg-ul ${cheie}: între boxurile ${a.num} și ${b.num} roadbook-ul are ${Math.round(drumM)} m, ` +
-                      `dar coordonatele sunt la ${Math.round(dreaptaM)} m în linie dreaptă — harta nu e a acestui traseu.`);
-        break;
-      }
-    }
+    for (const p of coerentaHarta(pts, g.boxes).probleme) probleme.push(`Leg-ul ${cheie}: ${p}`);
     const n = Object.keys(pts).length;
     if (n < 2) { probleme.push(`Leg-ul ${cheie}: doar ${n} box cu coordonate — prea puțin ca să însemne ceva.`); continue; }
     harta[cheie] = pts;
@@ -241,6 +228,31 @@ export function verificaHarta(raw, grupuri = []) {
   const ok = probleme.length === 0 && Object.keys(harta).length > 0;
   return { ok, harta: ok ? harta : null, probleme,
            rezumat: { legs: Object.keys(harta).length, boxuri: nBoxuri } };
+}
+
+// COERENȚA cu kilometrajul: linia dreaptă dintre două boxuri nu poate fi mai lungă decât
+// drumul dintre ele. Dacă e, coordonatele sunt de pe alt traseu — iar o hartă greșită e
+// mai rea decât niciuna: trimite pilotul cu încredere în direcția greșită.
+//
+// Se cheamă în DOUĂ locuri: la încărcarea unui fișier de hartă (acolo refuză fișierul) și
+// la fiecare construire de plan, ca plasă de siguranță peste harta deja stocată. A doua
+// oară e cea care contează: coordonatele stau în IndexedDB legate de cheia de leg, iar
+// cheia e aproape mereu „1|1" — o hartă rămasă de la alt eveniment se potrivește perfect
+// ca formă și e complet greșită ca fond.
+export function coerentaHarta(pts, boxes) {
+  const probleme = [];
+  const nums = (boxes || []).filter(b => pts && pts[b.num]).sort((a, b) => a.sumKm - b.sumKm);
+  for (let i = 1; i < nums.length; i++) {
+    const a = nums[i - 1], b = nums[i];
+    const drumM = Math.abs(b.sumKm - a.sumKm) * 1000;
+    const dreaptaM = haversineM(pts[a.num].lat, pts[a.num].lng, pts[b.num].lat, pts[b.num].lng);
+    if (dreaptaM > drumM * 1.5 + 200) {
+      probleme.push(`între boxurile ${a.num} și ${b.num} roadbook-ul are ${Math.round(drumM)} m, ` +
+                    `dar coordonatele sunt la ${Math.round(dreaptaM)} m în linie dreaptă — harta nu e a acestui traseu.`);
+      break;
+    }
+  }
+  return { ok: probleme.length === 0, probleme, boxuri: nums.length };
 }
 
 // coordonatele boxurilor pentru un singur leg: { num → {lat,lng} }

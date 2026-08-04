@@ -4,6 +4,7 @@
 // mașina de stări decide, ecranul doar arată. În teste, ui e un obiect nul.
 
 import { fmtHMS } from './time.js';
+import { linkNavigare as linkMaps } from './maps.js';
 
 const $ = id => document.getElementById(id);
 
@@ -50,6 +51,13 @@ export function makeUi() {
       const nav = $('cp-nav'), offBtn = $('btn-offroute');
       nav.classList.toggle('offroute', !!M.offRoute);
       if (offBtn) offBtn.textContent = M.offRoute ? '✓ AM REVENIT PE TRASEU' : '↩ AM GREȘIT DRUMUL';
+      // butonul care predă ghidajul lui Google Maps — doar când avem unde trimite
+      const mb = $('btn-maps-off');
+      if (mb) {
+        const link = M.offRoute && M.offRoute.pct ? linkMaps(M.offRoute.pct) : null;
+        mb.classList.toggle('hidden', !link);
+        if (link) { mb.href = link; mb.textContent = `📍 NAVIGHEAZĂ CU MAPS LA BOXUL ${M.offRoute.boxNum}`; }
+      }
       if (M.offRoute) {
         const o = M.offRoute;
         const af0 = $('cp-after');
@@ -69,7 +77,10 @@ export function makeUi() {
           ? (o.distM / 1000).toFixed(1) + ' km' : o.distM + ' m';
         $('cp-next-dir').textContent = sageata(o.relDeg);
         $('cp-next-com').textContent = 'ÎNTOARCERE LA TRASEU';
-        $('cp-next-box').textContent = 'box ' + o.boxNum;
+        // DE UNDE ȘTIM unde e punctul — pilotul are dreptul să știe cât de bună e cifra
+        // pe care o urmează: urma condusă la recunoaștere e exactă, coordonata de pe
+        // hartă e la nivel de stradă, iar firimiturile sunt unde CREDEAM că suntem.
+        $('cp-next-box').textContent = 'box ' + o.boxNum + ' · ' + sursaRo(o.pct && o.pct.sursa);
         af0.textContent = 'linie dreaptă către punct — nu traseu pe străzi';
         af0.className = 'nx-after';
         $('cp-rts').textContent = plan.rts.map(r => r.name).join('  ');
@@ -155,6 +166,14 @@ export function makeUi() {
       } else deb.classList.add('hidden');
     }
   };
+}
+
+// cât de bine știm unde e punctul de reintrare, spus în trei cuvinte
+function sursaRo(s) {
+  if (s === 'recon') return 'din recunoaștere';
+  if (s === 'harta') return 'din hartă — precizie de stradă';
+  if (s === 'urme') return 'din drumul parcurs — aproximativ';
+  return 'sursă necunoscută';
 }
 
 // săgeata către punctul de reintrare, în opt sferturi de ceas față de botul mașinii

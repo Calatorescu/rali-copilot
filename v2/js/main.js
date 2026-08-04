@@ -7,12 +7,14 @@ import { makeVoice, makeEars, secRo } from './voice.js';
 import { makeLiveGps, makeSyntheticGps, makeReplayGps } from './gps.js';
 import { buildPlan, detectRts, sanitizeBoxes, groupByLeg, verifyRoadbook,
          reconNormalize, reconPentruLeg, reconPune, reconStatus,
-         reconRecupereaza, verificaHarta, hartaPentruLeg } from './route.js';
+         reconRecupereaza, verificaHarta, hartaPentruLeg, coerentaHarta } from './route.js';
 import { makeMachine } from './machine.js';
 import { makeDriverModel } from './learn.js';
 import { makeUi, startHeaderClock } from './ui.js';
 import { scanRoadbookPage, scanTimeCard } from './scan.js';
 import { makeBleSpeed } from './ble.js';
+import { repereBoxuri, faGeocoder, geocodeazaRepere, verificaAncore } from './repere.js';
+import { linkuriTraseu, linkNavigare } from './maps.js';
 import { makeSync } from './sync.js';
 import { efficiencyPoints, efficiencyGap } from './pace.js';
 
@@ -23,11 +25,13 @@ let boxesRaw = [], reconRec = null;
 // panoul de pregătire — pilotul trebuie s-o vadă ÎNAINTE de START, nu s-o deducă din
 // comportament (04.08.2026: două zile de test fără geometrie, fără ca nimic s-o spună)
 let reconStare = null, reconDraftMesaj = null;
+// motivul pentru care harta stocata a fost respinsa la construirea planului (daca a fost)
+let hartaIncoerenta = null;
 
 // Versiunea build-ului — se ține SINCRON cu CACHE din sw.js la fiecare deploy.
 // Vizibilă în antet și scrisă în jurnal la fiecare pornire: „ce versiune rulează
 // telefonul?" se citește, nu se ghicește (02.08, seara — nu se putea ști).
-const BUILD = 'v32';
+const BUILD = 'v33';
 
 async function init() {
   store = await makeStore();
@@ -117,7 +121,19 @@ async function rebuildPlan() {
   // Ordinea de încredere e recon > hartă > firimituri (vezi machine.pctBox) — harta nu
   // înlocuiește geometria înregistrată, dar e singurul reper absolut pe un roadbook nou.
   const hartaTot = (await store.get('harta')) || null;
-  const hartaLeg = hartaPentruLeg(hartaTot, cheia);
+  let hartaLeg = hartaPentruLeg(hartaTot, cheia);
+  // PLASA DE SIGURANȚĂ: harta stocată se verifică față de kilometrajul roadbook-ului
+  // ACTIV, la fiecare construire de plan. Coordonatele stau legate de cheia de leg, iar
+  // cheia e aproape mereu „1|1" — o hartă rămasă de la alt eveniment arată perfect
+  // valabilă ca formă. Dacă nu se potrivește cu drumul, nu intră în plan deloc.
+  if (hartaLeg && g) {
+    const c = coerentaHarta(hartaLeg, g.boxes);
+    if (!c.ok) {
+      try { store.log('harta_incoerenta', { leg: cheia, probleme: c.probleme }, Date.now()); } catch (e) {}
+      hartaLeg = null;
+      hartaIncoerenta = c.probleme[0] || 'nu se potrivește cu kilometrajul';
+    } else hartaIncoerenta = null;
+  } else hartaIncoerenta = null;
   plan = buildPlan(g ? g.boxes : [], speeds, reconStare.ok ? rec : null, hartaLeg);
   plan.hartaTot = hartaTot;
   plan.legKey = cheia;
@@ -155,10 +171,28 @@ function renderPrep() {
   if (hEl) {
     const n = plan.harta ? Object.keys(plan.harta).length : 0;
     const total = plan.boxes.length;
-    hEl.textContent = n
-      ? `Hartă: DA — ${n} din ${total} boxuri cu coordonate` +
-        (n < total ? ' (restul cad pe kilometraj)' : '')
-      : 'Hartă: — (fără ea nu știu unde e boxul dacă greșești drumul)';
+    hEl.textContent = hartaIncoerenta
+      ? `Hartă: RESPINSĂ — ${hartaIncoerenta}`
+      : n
+        ? `Hartă: DA — ${n} din ${total} boxuri cu coordonate` +
+          (n < total ? ' (restul cad pe kilometraj)' : '')
+        : 'Hartă: — (fără ea nu știu unde e boxul dacă greșești drumul)';
+  }
+  // TRASEUL PE GOOGLE MAPS: linkuri gata făcute, de deschis pe telefon. Aplicația
+  // noastră nu rutează nimic — dă punctele și lasă Maps să conducă.
+  const mw = $('prep-maps');
+  if (mw) {
+    mw.textContent = '';
+    const ancore = plan.harta
+      ? plan.boxes.filter(b => plan.harta[b.num])
+          .map(b => ({ num: b.num, sumKm: b.sumKm, flag: b.flag, ...plan.harta[b.num] }))
+      : [];
+    for (const l of linkuriTraseu(ancore)) {
+      const a = document.createElement('a');
+      a.className = 'btn sec'; a.href = l.url; a.target = '_blank'; a.rel = 'noopener noreferrer';
+      a.textContent = `📍 ${l.eticheta}`;
+      mw.appendChild(a);
+    }
   }
   $('prep-boxes').textContent = boxesRaw.length
     ? `${plan.boxes.length} boxuri în ${plan.legLabel || 'leg'} · 0–${plan.totalKm.toFixed(2)} km` +
@@ -570,6 +604,16 @@ async function doScanRoadbook() {
     all.sort((a, b) => a.sumKm - b.sumKm);
     boxesRaw = all;
     await store.put('plan_raw', boxesRaw);
+    // ROADBOOK NOU = HARTĂ VECHE, ARUNCATĂ. Coordonatele sunt legate de boxuri prin
+    // numărul lor și prin cheia de leg, iar cheia e aproape mereu „1|1": fără linia
+    // asta, boxul 4 al evenimentului de azi ar moșteni coordonata boxului 4 de acum
+    // două săptămâni și ar hrăni paznicul de direcție și ieșirea de pe traseu — în
+    // cursă, cu date de pe alt traseu. Se caută din nou pe hartă, e un buton.
+    const hartaVeche = await store.get('harta');
+    if (hartaVeche && Object.keys(hartaVeche).length) {
+      await store.del('harta');
+      try { store.log('harta_stearsa', { legi: Object.keys(hartaVeche), cum: 'scanare nouă' }, Date.now()); } catch (e) {}
+    }
     await rebuildPlan();
     const cazute = rezultate.filter(r => !r.ok);
     const detaliu = rezultate.map(r => r.ok ? `p${r.pag} ✓${r.boxuri}` : `p${r.pag} ✗`).join(' · ');
@@ -649,6 +693,59 @@ function doImport() {
     r.readAsText(f);
   };
   inp.click();
+}
+
+// ── HARTA DIN ROADBOOK: repere → geocodare → ancore ─────────────────────────
+// Cererea lui Andreas (04.08.2026): la Sibiu roadbook-ul vine tipărit de la organizator,
+// deci nimeni nu ne dă coordonate. Dar comentariile LUI conțin adrese — „Dreapta pe Str.
+// Avram Imbroane". Butonul ăsta le caută pe hartă, o dată, acasă, și le leagă de boxuri.
+async function gasesteTraseulPeHarta() {
+  const st = $('prep-harta-st');
+  const btn = $('btn-geocod');
+  if (!plan.boxes.length) { st.textContent = 'Întâi scanează roadbook-ul.'; return; }
+  const localitate = ($('set-localitate').value || '').trim();
+  if (localitate) localStorage.setItem('r2_localitate', localitate);
+  const r = repereBoxuri(plan.boxes.map(b => ({ ...b, comment: b.comment })));
+  // localitatea scrisă de om bate ce s-a dedus din text; fără niciuna, se caută oricum,
+  // dar rata de nimereală scade — și se spune pe ecran, nu se ascunde
+  const loc = localitate || r.localitate;
+  const repere = r.repere.map(x => ({
+    ...x, reper: x.reper && loc && !x.reper.includes(loc) ? `${x.reper}, ${loc}` : x.reper
+  }));
+  const cuReper = repere.filter(x => x.reper).length;
+  if (!cuReper) { st.textContent = 'Niciun box n-are un reper căutabil în comentariu.'; return; }
+  btn.disabled = true;
+  st.textContent = `Caut ${cuReper} repere${loc ? ' în ' + loc : ' (fără localitate — poate nimeri altundeva)'}…`;
+  const geo = faGeocoder({});
+  let rez;
+  try {
+    rez = await geocodeazaRepere(repere.filter(x => x.reper), geo,
+      { onPas: (i, n) => { st.textContent = `Caut… ${i} din ${n}`; } });
+  } catch (e) {
+    st.textContent = 'Fără internet — căutarea pe hartă merge doar cu semnal.';
+    btn.disabled = false; return;
+  }
+  // ancorele care contrazic kilometrajul se aruncă (o „Str. Turda" din alt oraș)
+  const v = verificaAncore(rez.ancore.map(a => ({ ...a, flag: (plan.boxes.find(b => b.num === a.num) || {}).flag })));
+  const harta = {};
+  // doar boxurile CU numar: sanitizeBoxes lasa num:null pentru randurile pe care
+  // scanarea nu le-a putut numerota, iar toate ar ajunge sub aceeasi cheie „null"
+  for (const a of v.bune) if (Number.isFinite(a.num)) harta[a.num] = { lat: a.lat, lng: a.lng };
+  const tot = (await store.get('harta')) || {};
+  tot[plan.legKey] = harta;
+  await store.put('harta', tot);
+  try {
+    store.log('geocodare', { leg: plan.legKey, localitate: loc || null,
+      cerute: cuReper, gasite: rez.ancore.length, pastrate: v.bune.length,
+      aruncate: v.aruncate.map(a => ({ num: a.num, motiv: a.motiv })),
+      ratate: rez.ratate.slice(0, 20) }, clock.rally());
+  } catch (e) {}
+  await rebuildPlan();
+  btn.disabled = false;
+  st.textContent = `Ancore la ${v.bune.length} din ${plan.boxes.length} boxuri` +
+    (v.aruncate.length ? ` · ${v.aruncate.length} aruncate (nu se potriveau cu kilometrajul)` : '') +
+    (rez.ratate.length ? ` · ${rez.ratate.length} fără răspuns` : '');
+  renderPrep();
 }
 
 // Încărcarea hărții traseului. Fișierul e CONȚINUT EXTERN: se citește, se verifică față
@@ -848,6 +945,12 @@ function bind() {
   // REPETĂ (propunerea 5): re-rostește ultimul anunț — remediul ieftin pentru
   // „n-am auzit ce-a zis", care la un pilot singur e momentul în care se greșește.
   // ── harta traseului ──────────────────────────────────────────────────────
+  const locInp = $('set-localitate');
+  if (locInp) {
+    locInp.value = localStorage.getItem('r2_localitate') || '';
+    locInp.addEventListener('change', () => localStorage.setItem('r2_localitate', locInp.value.trim()));
+  }
+  $('btn-geocod')?.addEventListener('click', gasesteTraseulPeHarta);
   $('btn-harta')?.addEventListener('click', incarcaHarta);
   $('btn-harta-clear')?.addEventListener('click', async () => {
     if (!confirm('Ștergi harta traseului?')) return;
@@ -921,6 +1024,21 @@ function bind() {
         try { store.log('recon_sters', { legi }, Date.now()); } catch (e) {}
       } else {
         try { store.log('recon_pastrat', { legi }, Date.now()); } catch (e) {}
+      }
+    }
+    // HARTA (coordonatele boxurilor) se întreabă la fel de explicit ca recunoașterea.
+    // Cheia de leg e aproape mereu „1|1", deci o hartă rămasă de la alt eveniment s-ar
+    // lipi pe boxurile roadbook-ului următor și ar hrăni paznicul de direcție și
+    // ieșirea de pe traseu, ÎN CURSĂ, cu coordonate de acum două săptămâni.
+    const hartaVeche = (await store.get('harta')) || {};
+    const legiH = Object.keys(hartaVeche);
+    if (legiH.length) {
+      const rezH = legiH.map(k => `${k.replace('|', '/')}: ${Object.keys(hartaVeche[k] || {}).length} boxuri cu coordonate`).join('\n');
+      if (confirm(`Ștergi ȘI harta traseului?\n\n${rezH}\n\nOK = șterg coordonatele · Anulează = le păstrez`)) {
+        await store.del('harta');
+        try { store.log('harta_stearsa', { legi: legiH, cum: 'la ștergerea roadbook-ului' }, Date.now()); } catch (e) {}
+      } else {
+        try { store.log('harta_pastrata', { legi: legiH }, Date.now()); } catch (e) {}
       }
     }
     await rebuildPlan();

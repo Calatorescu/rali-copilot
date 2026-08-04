@@ -5,7 +5,7 @@
 // folosi la volan. Verificările de aici pun cifrele alea în piatră, ca o reglare de CSS
 // făcută în grabă să nu le poată strica înapoi. Plus capcana care nu se vede decât pe
 // telefon: un id scris greșit face `render` să crape tăcut, în plină cursă.
-import { readFileSync } from 'fs';
+import { readFileSync, readdirSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 
@@ -87,9 +87,12 @@ console.log('\n═══ Versiunea: BUILD și CACHE nu au voie să se despartă 
   const cache = (sw.match(/const CACHE = 'rali2-([^']+)'/) || [])[1];
   ok('BUILD și CACHE sunt aceeași versiune', build && build === cache,
      JSON.stringify({ build, cache }));
-  ok('toate modulele din js/ sunt în lista de cache a service worker-ului',
-     ['machine', 'ui', 'voice', 'learn', 'route', 'main'].every(m => sw.includes(`./js/${m}.js`)),
-     'lipsesc module din ASSETS');
+  // lista se citește de pe disc, nu se scrie de mână: un modul nou uitat din ASSETS
+  // înseamnă că telefonul îl cere de pe rețea în cursă — adică nu-l are deloc
+  const module = readdirSync(join(aici, '..', 'js')).filter(f => f.endsWith('.js'));
+  const lipsa = module.filter(m => !sw.includes(`./js/${m}`));
+  ok(`toate cele ${module.length} module din js/ sunt în lista de cache a service worker-ului`,
+     lipsa.length === 0, JSON.stringify(lipsa));
 }
 
 console.log(`\n──────── ${pass} trecute, ${fail} căzute ────────`);

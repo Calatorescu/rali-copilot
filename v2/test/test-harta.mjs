@@ -9,7 +9,8 @@
 //
 // Roadbook-urile de test sunt generate dintr-o rutare, deci coordonatele boxurilor EXISTĂ
 // la generare. Fișierul de hartă le aduce în telefon.
-import { verificaHarta, hartaPentruLeg, groupByLeg, sanitizeBoxes, buildPlan } from '../js/route.js';
+import { verificaHarta, hartaPentruLeg, groupByLeg, sanitizeBoxes, buildPlan,
+         coerentaHarta } from '../js/route.js';
 import { makeMachine } from '../js/machine.js';
 import { makeMemStore } from '../js/store.js';
 import { makeClock } from '../js/time.js';
@@ -237,6 +238,60 @@ console.log('\n═══ Fără hartă, totul se poartă exact ca înainte ═�
   w.drept(600, 295);
   ok('și nicio declarare din geometrie',
      w.jurnal('harta_off').length === 0, JSON.stringify(w.jurnal('harta_off')));
+}
+
+console.log('\n═══ Plasa de siguranță: harta de la ALT eveniment nu intră în plan ═══');
+{
+  // Cheia de leg e aproape mereu „1|1", deci coordonatele rămase în telefon de la
+  // evenimentul trecut se potrivesc perfect ca FORMĂ peste roadbook-ul de azi. Singurul
+  // lucru care le desparte e kilometrajul: linia dreaptă dintre două boxuri nu poate fi
+  // mai lungă decât drumul dintre ele.
+  const v = verificaHarta(HARTA_BUNA, GRUPURI);
+  const buna = hartaPentruLeg(v.harta, '1|1');
+  ok('harta traseului de azi trece verificarea',
+     coerentaHarta(buna, POLIGON).ok, JSON.stringify(coerentaHarta(buna, POLIGON).probleme));
+
+  // O hartă de la alt eveniment are ALTE distanțe între boxuri decât kilometrajul de
+  // azi: aici, aceleași numere de box, dar spațiate de patru ori mai larg.
+  const alta = {};
+  const b0 = buna[1];
+  for (const [num, p] of Object.entries(buna))
+    alta[num] = { lat: b0.lat + (p.lat - b0.lat) * 4, lng: b0.lng + (p.lng - b0.lng) * 4 };
+  ok('harta cu alte distanțe între boxuri NU trece', !coerentaHarta(alta, POLIGON).ok);
+  ok('și motivul e în cifre, nu „hartă invalidă"',
+     /roadbook-ul are \d+ m/.test(coerentaHarta(alta, POLIGON).probleme[0]),
+     coerentaHarta(alta, POLIGON).probleme[0]);
+
+  // CE NU PRINDE VERIFICAREA, spus pe față: o hartă mutată în bloc (aceleași distanțe
+  // între boxuri, alt loc pe glob) e coerentă cu kilometrajul și trece. De-aia plasa
+  // asta e a doua linie de apărare, nu prima — prima e ștergerea hărții la scanare
+  // nouă și la ștergerea roadbook-ului.
+  const mutata = {};
+  for (const [num, p] of Object.entries(buna)) mutata[num] = { lat: p.lat + 0.36, lng: p.lng + 0.12 };
+  ok('o hartă mutată în bloc trece — limita verificării, cunoscută',
+     coerentaHarta(mutata, POLIGON).ok);
+
+  // planul construit cu ea nu primește coordonate deloc — asta e ce contează în cursă:
+  // fără hartă se cade pe kilometraj, cu hartă greșită s-ar conduce în direcția greșită
+  const w = lume(null);
+  ok('fără hartă în plan, nu există paznic de plecare pe coordonate',
+     w.jurnal('directie_start_harta').length === 0);
+}
+
+console.log('\n═══ Un box fără număr nu poate primi coordonate ═══');
+{
+  // sanitizeBoxes lasă num:null pe rândurile pe care scanarea nu le-a putut numerota;
+  // dacă ar intra în hartă, toate ar sta sub aceeași cheie „null"
+  const cuNull = sanitizeBoxes([
+    { day: 1, leg: 1, num: null, sumKm: 0.10, dir: 'DREAPTA', comment: 'rând fără număr' },
+    { day: 1, leg: 1, num: 2, sumKm: 0.22, dir: 'STÂNGA', comment: 'Stânga' }
+  ]);
+  const g = groupByLeg(cuNull);
+  const v = verificaHarta({ _app: 'RALI2_HARTA', legs: { D1L1: { boxes: [
+    { num: null, lat: 45.78, lng: 11.24 }, { num: 2, lat: 45.781, lng: 11.241 }
+  ] } } }, g);
+  ok('boxul fără număr e refuzat cu motiv, nu tăcut',
+     !v.ok && v.probleme.some(p => /număr invalid/.test(p)), JSON.stringify(v.probleme));
 }
 
 console.log(`\n──────── ${pass} trecute, ${fail} căzute ────────`);

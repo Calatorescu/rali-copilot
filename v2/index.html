@@ -5,7 +5,11 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
 <meta name="theme-color" content="#0a0a0c">
 <title>RALI 2</title>
-<meta http-equiv="Content-Security-Policy" content="default-src 'self' blob:; script-src 'self'; connect-src 'self' blob: https://api.anthropic.com https://api.github.com; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'none'; form-action 'none'">
+<!-- connect-src: Anthropic (scanarea roadbook-ului) · GitHub (sincronizarea jurnalului) ·
+     Nominatim/OpenStreetMap (căutarea reperelor pe hartă, DOAR la apăsarea butonului din
+     panoul de pregătire, niciodată în cursă). Ghidajul pe străzi NU e un serviciu apelat
+     de aplicație: se predă aplicației Google Maps printr-un link, deci nu apare aici. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'self' blob:; script-src 'self'; connect-src 'self' blob: https://api.anthropic.com https://api.github.com https://nominatim.openstreetmap.org; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'none'; form-action 'none'">
 <meta name="referrer" content="no-referrer">
 <link rel="manifest" href="manifest.json">
 <link rel="icon" href="icon.svg" type="image/svg+xml">
@@ -67,11 +71,24 @@
            Harta spune UNDE e boxul 4. Fără ea, aplicația nu poate ști nici dacă ai plecat
            în direcția bună, nici încotro s-o iei înapoi când ai greșit (tura din 18:00). -->
       <p id="prep-harta" class="line">Hartă: —</p>
+      <!-- Localitatea NU se ghicește: roadbook-ul o scrie rar, iar „Str. Turda" există
+           în zeci de orașe. Dacă lipsește din text, o scrie omul, o dată, aici. -->
+      <div class="row">
+        <input type="text" id="set-localitate" placeholder="localitatea traseului (ex. Timișoara)">
+      </div>
+      <div class="row">
+        <button class="btn pri" id="btn-geocod">🗺 Găsește traseul pe hartă</button>
+      </div>
+      <p class="line dim">Se apasă ACASĂ sau la hotel, cu internet: caută pe hartă reperele
+        din comentariile roadbook-ului (o cerere pe secundă, la OpenStreetMap) și le leagă
+        de boxuri. În cursă nu se mai cere nimic de pe internet.</p>
       <div class="row">
         <button class="btn sec" id="btn-harta">🗺 Încarcă harta traseului (JSON)</button>
         <button class="btn danger sm" id="btn-harta-clear">✕</button>
       </div>
       <p id="prep-harta-st" class="line dim"></p>
+      <!-- traseul dus pe telefon, în aplicația care are hărțile -->
+      <div id="prep-maps"></div>
     </div>
 
     <div class="card">
@@ -186,6 +203,9 @@
     <!-- Ieșirea de pe traseu: pilotul o știe întotdeauna primul. Detectarea automată are
          nevoie de două semne; în tura Tresor (04.08.2026) al doilea a venit după 3 minute
          de condus pe alt drum. O apăsare le sare pe amândouă. -->
+    <!-- Ghidajul pe străzi îl face Google Maps: RALI dă punctul, Maps dă vocea și
+         hărțile. Apare doar cât timp ești pe dinafară și avem coordonata boxului. -->
+    <a class="btn ok big hidden" id="btn-maps-off" target="_blank" rel="noopener noreferrer">📍 NAVIGHEAZĂ CU GOOGLE MAPS</a>
     <button class="btn sec big" id="btn-offroute">↩ AM GREȘIT DRUMUL</button>
     <!-- apare doar la final de leg, când mai există unul -->
     <button class="btn pri big hidden" id="btn-nextleg">▶ LEG URMĂTOR</button>

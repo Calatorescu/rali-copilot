@@ -21,8 +21,9 @@ TULIP: "ÎNAINTE","STÂNGA","DREAPTA","STÂNGA-T","DREAPTA-T","GIRATORIU-1".."GI
 ICOANE → "flag": steag+ceas="RT_START_AUTO" | steag+ceas+fulg="RT_START_STANDING" | dreptunghi+steag="RT_FINISH" | ceas+steag mare="TC" | P="PARKING" | fulger="EV" | altfel null.
 Ignoră adnotările de mână și transparența de pe verso.
 FIECARE rând numerotat din tabel = un box care APARE în răspuns — nu omite niciunul, oricât de neobișnuit i-ar fi comentariul sau simbolurile. Comentariul se transcrie scurtat dacă e lung, dar boxul nu dispare.
+REPER (câmpul "reper"): dacă în comentariu apare un loc care poate fi căutat pe hartă — nume de stradă, drum numerotat, giratoriu cu nume, obiectiv („Str. Avram Imbroane", „Calea Ghirodei", „DJ691", „giratoriu Kaufland") — scrie-l normalizat, cu tipul arterei în față („Str. Turda"). Adaugă localitatea DOAR dacă e scrisă pe pagină. Dacă boxul n-are niciun loc căutabil („tabela roșie", „drum drept"), scrie null. NU inventa și NU deduce localitatea.
 DOAR JSON array valid:
-[{"day":1,"leg":1,"page":2,"num":6,"sumKm":3.10,"sectionKm":0.45,"dir":"ÎNAINTE","comment":"...","flag":"RT_START_AUTO"},...]`;
+[{"day":1,"leg":1,"page":2,"num":6,"sumKm":3.10,"sectionKm":0.45,"dir":"ÎNAINTE","comment":"...","reper":"Str. Turda","flag":"RT_START_AUTO"},...]`;
 
 const TIMECARD_PROMPT = `Ești copilot de raliu. Pe fotografie e un TIME CARD / carnet de bord cu ore oficiale.
 Extrage toate controalele orare vizibile, în ordine, ca JSON array:
