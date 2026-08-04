@@ -261,31 +261,44 @@ export function hartaPentruLeg(harta, legKey) {
 }
 
 // Probele, detectate din flag-uri; viteza din comentariu dacă organizatorul a scris-o.
+//
+// O LINIE DE FINISH ÎNCHIDE O SINGURĂ PROBĂ. Regula veche căuta, pentru fiecare start,
+// primul FINISH de după el — fără să țină minte că acel finish fusese deja folosit. Așa
+// s-a născut proba-fantomă din tura de la 21:48 (04.08.2026): scanarea a pus din greșeală
+// flag de start de probă pe boxul 1, care e de fapt Time Control-ul de plecare, iar
+// aplicația a raportat DOUĂ probe — RT1 (0 → 0,71 km, fără viteză) și RT2 (0,40 → 0,71,
+// 30 km/h) — care se terminau amândouă la aceeași tabelă. Pilotul a auzit „Pornit. 2
+// probe, 1 fără viteză." și „START probă" în loc de „Time Control — ștampila", chiar la
+// primul box al zilei.
+//
+// Împerecherea se face acum ca la paranteze: fiecare FINISH închide startul DESCHIS cel
+// mai apropiat dinaintea lui. Un start rămas nepereche nu devine probă — și e exact ce
+// raportează verificatorul de roadbook („probă cu START fără FINISH"), adică semnul că
+// scanarea a citit greșit o icoană.
 export function detectRts(boxes, savedSpeeds = {}) {
   const rts = [];
+  const deschise = [];
   for (let i = 0; i < boxes.length; i++) {
     const f = boxes[i].flag;
-    if (f !== 'RT_START_AUTO' && f !== 'RT_START_STANDING') continue;
-    for (let j = i + 1; j < boxes.length; j++) {
-      if (boxes[j].flag === 'RT_FINISH') {
-        const dist = boxes[j].sumKm - boxes[i].sumKm;
-        if (dist > 0.05 && dist < 60) {
-          const key = `${boxes[i].num}_${Math.round(boxes[i].sumKm * 100)}`;
-          const m = String(boxes[i].comment || '').match(/(\d+(?:[.,]\d+)?)\s*km\s*\/?\s*h/i);
-          rts.push({
-            name: 'RT' + (rts.length + 1), key,
-            startIdx: i, finishIdx: j,
-            startKm: boxes[i].sumKm, finishKm: boxes[j].sumKm,
-            distKm: Math.round(dist * 100) / 100,
-            type: f === 'RT_START_STANDING' ? 'standing' : 'auto',
-            kmh: savedSpeeds[key] != null ? savedSpeeds[key]
-               : (m ? parseFloat(m[1].replace(',', '.')) : null)
-          });
-        }
-        break;
-      }
-    }
+    if (f === 'RT_START_AUTO' || f === 'RT_START_STANDING') { deschise.push(i); continue; }
+    if (f !== 'RT_FINISH' || !deschise.length) continue;
+    const s = deschise.pop();                       // startul cel mai apropiat, încă deschis
+    const dist = boxes[i].sumKm - boxes[s].sumKm;
+    if (!(dist > 0.05 && dist < 60)) continue;
+    const key = `${boxes[s].num}_${Math.round(boxes[s].sumKm * 100)}`;
+    const m = String(boxes[s].comment || '').match(/(\d+(?:[.,]\d+)?)\s*km\s*\/?\s*h/i);
+    rts.push({
+      key, startIdx: s, finishIdx: i,
+      startKm: boxes[s].sumKm, finishKm: boxes[i].sumKm,
+      distKm: Math.round(dist * 100) / 100,
+      type: boxes[s].flag === 'RT_START_STANDING' ? 'standing' : 'auto',
+      kmh: savedSpeeds[key] != null ? savedSpeeds[key]
+         : (m ? parseFloat(m[1].replace(',', '.')) : null)
+    });
   }
+  // numerotarea rămâne în ordinea de pe traseu, nu în ordinea în care s-au închis
+  rts.sort((a, b) => a.startKm - b.startKm);
+  rts.forEach((r, i) => { r.name = 'RT' + (i + 1); });
   return rts;
 }
 

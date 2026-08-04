@@ -1,6 +1,6 @@
 // RALI 2 — reparațiile auditului de funcționalitate din 02.08.2026.
 // Fiecare bloc reproduce scenariul care ar fi stricat o cursă, apoi verifică gardul.
-import { buildPlan, sanitizeBoxes, groupByLeg, verifyRoadbook } from '../js/route.js';
+import { buildPlan, sanitizeBoxes, groupByLeg, verifyRoadbook, detectRts } from '../js/route.js';
 import { makeMachine } from '../js/machine.js';
 import { makeMemStore } from '../js/store.js';
 import { makeClock } from '../js/time.js';
@@ -761,6 +761,49 @@ console.log('\n═══ Ritmul nu mai taie manevra (cazul 17:20:22 din jurnal) 
      spoken4[spoken4.length - 1] === 'stânga acum' &&
      taiate4.some(x => /Finish\./.test(x.txt) && x.de === 'intrerupt'),
      JSON.stringify({ spoken4, taiate4 }));
+}
+
+console.log('\n═══ 21:48: proba-fantomă dintr-o icoană citită greșit ═══');
+{
+  // Roadbook-ul real Marte–Gramma are UNA singură: START box 4 (auto, 30 km/h) →
+  // FINISH box 5. Scanarea a pus din greșeală flag de start de probă pe boxul 1, care e
+  // Time Control-ul de plecare — probabil din cauza cuvântului „START" din comentariu.
+  // Aplicația a raportat DOUĂ probe, amândouă terminându-se la aceeași tabelă:
+  // day_start la 21:48:17 → [RT1 auto kmh null, RT2 auto 30], iar pilotul a auzit
+  // „Pornit. 2 probe, 1 fără viteză." și „START probă" la Time Control-ul de plecare.
+  const scanatGresit = sanitizeBoxes([
+    { day: 1, leg: 1, num: 1, sumKm: 0.00, dir: 'ÎNAINTE', flag: 'RT_START_AUTO', comment: 'START · Time Control - TC 1' },
+    { day: 1, leg: 1, num: 2, sumKm: 0.20, dir: 'STÂNGA', comment: 'Stânga pe Str. Fervența' },
+    { day: 1, leg: 1, num: 3, sumKm: 0.36, dir: 'DREAPTA', comment: 'Dreapta — pregătește proba, startul auto la 40 m' },
+    { day: 1, leg: 1, num: 4, sumKm: 0.40, dir: 'ÎNAINTE', flag: 'RT_START_AUTO', comment: 'START RT 1 — auto-start, viteză medie 30 km/h' },
+    { day: 1, leg: 1, num: 5, sumKm: 0.71, dir: 'ÎNAINTE', flag: 'RT_FINISH', comment: 'FINISH RT 1 — tabela roșie' },
+    { day: 1, leg: 1, num: 6, sumKm: 0.76, dir: 'STÂNGA', comment: 'Stânga pe Str. Octavian Goga' },
+    { day: 1, leg: 1, num: 7, sumKm: 1.11, dir: 'ÎNAINTE', flag: 'TC', comment: 'Time Control - TC 2' }
+  ]);
+  const rts = detectRts(scanatGresit, {});
+  ok('o linie de finish închide o SINGURĂ probă', rts.length === 1,
+     JSON.stringify(rts.map(r => ({ n: r.name, s: r.startKm, f: r.finishKm, kmh: r.kmh }))));
+  ok('și rămâne proba adevărată, cu viteza ei',
+     rts[0] && rts[0].startKm === 0.40 && rts[0].finishKm === 0.71 && rts[0].kmh === 30,
+     JSON.stringify(rts[0]));
+  ok('startul rămas nepereche e raportat de verificator, ca semn de scanare greșită',
+     verifyRoadbook(scanatGresit).probleme.some(p => /START fără FINISH/.test(p)),
+     JSON.stringify(verifyRoadbook(scanatGresit).probleme));
+
+  // și, ca să nu stricăm cazul normal: două probe adevărate rămân două
+  const doua = sanitizeBoxes([
+    { day: 1, leg: 1, num: 1, sumKm: 0.00, dir: 'ÎNAINTE', flag: 'TC', comment: 'TC 1' },
+    { day: 1, leg: 1, num: 2, sumKm: 0.40, dir: 'ÎNAINTE', flag: 'RT_START_AUTO', comment: 'START RT · 40 km/h' },
+    { day: 1, leg: 1, num: 3, sumKm: 1.40, dir: 'ÎNAINTE', flag: 'RT_FINISH', comment: 'FINISH' },
+    { day: 1, leg: 1, num: 4, sumKm: 2.00, dir: 'ÎNAINTE', flag: 'RT_START_STANDING', comment: 'START RT · 26 km/h' },
+    { day: 1, leg: 1, num: 5, sumKm: 3.00, dir: 'ÎNAINTE', flag: 'RT_FINISH', comment: 'FINISH' },
+    { day: 1, leg: 1, num: 6, sumKm: 3.50, dir: 'ÎNAINTE', flag: 'TC', comment: 'TC 2' }
+  ]);
+  const r2 = detectRts(doua, {});
+  ok('două probe adevărate rămân două, numerotate de la start',
+     r2.length === 2 && r2[0].name === 'RT1' && r2[0].kmh === 40 &&
+     r2[1].name === 'RT2' && r2[1].type === 'standing',
+     JSON.stringify(r2.map(r => ({ n: r.name, s: r.startKm, kmh: r.kmh, t: r.type }))));
 }
 
 console.log(`\n──────── ${pass} trecute, ${fail} căzute ────────`);

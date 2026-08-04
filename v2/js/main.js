@@ -31,7 +31,7 @@ let hartaIncoerenta = null;
 // Versiunea build-ului — se ține SINCRON cu CACHE din sw.js la fiecare deploy.
 // Vizibilă în antet și scrisă în jurnal la fiecare pornire: „ce versiune rulează
 // telefonul?" se citește, nu se ghicește (02.08, seara — nu se putea ști).
-const BUILD = 'v33';
+const BUILD = 'v34';
 
 async function init() {
   store = await makeStore();
@@ -315,6 +315,21 @@ function startDay(dinPreluare) {
                  `${plan.boxes.length} boxuri · ${plan.totalKm.toFixed(2)} km · ${plan.rts.length} probe\n\n` +
                  `PLECI DE LA: ${unde}\n\n` +
                  `Ești fizic în punctul ăsta, gata de plecare?`)) return;
+    // O PROBĂ FĂRĂ VITEZĂ e aproape întotdeauna o eroare de scanare, nu o probă reală:
+    // în tura de la 21:48 (04.08.2026) o icoană citită greșit pe boxul 1 a produs o
+    // probă-fantomă fără viteză, iar pilotul a auzit „Pornit. 2 probe, 1 fără viteză"
+    // și „START probă" chiar la Time Control-ul de plecare. Aplicația spunea adevărul —
+    // dar la 21:48:18, în mers, nu la parcare. De-acum întreabă înainte, cu boxul în
+    // clar, fiindcă asta se repară în 10 secunde stând pe loc.
+    const fara = plan.rts.filter(r => r.kmh == null);
+    if (fara.length) {
+      const lista = fara.map(r => `${r.name}: boxurile ${plan.boxes[r.startIdx].num}→${plan.boxes[r.finishIdx].num}, ` +
+                                  `${r.distKm.toFixed(2)} km`).join('\n');
+      if (!confirm(`ATENȚIE: ${fara.length} probă/e FĂRĂ VITEZĂ:\n\n${lista}\n\n` +
+                   `O probă fără viteză e de obicei o icoană citită greșit la scanare — ` +
+                   `verifică boxurile de mai sus în roadbook.\n\n` +
+                   `Aplicația o va SĂRI. Pornim oricum?`)) return;
+    }
   }
   stopGps();
   // Pierderea semnalului se anunță ÎNTR-UN SINGUR LOC — mașina de stări, care știe dacă
