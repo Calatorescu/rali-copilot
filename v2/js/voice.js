@@ -15,7 +15,8 @@
 //   4 = IMEDIAT: manevre „acum", rezultatul probei — întrerupe orice și nu expiră
 //       repede. Înainte, totul important era 3, iar mesajele de 3 se ucideau între
 //       ele: un „dreapta acum" pus în spatele unui anunț lung de TC era ARUNCAT.
-export function makeVoice({ tts = null, audio = null, now = () => Date.now(), onDrop = null } = {}) {
+export function makeVoice({ tts = null, audio = null, now = () => Date.now(),
+                            onDrop = null, onSpeak = null } = {}) {
   const q = [];
   let cur = null, curAt = 0, last = null;
 
@@ -23,6 +24,10 @@ export function makeVoice({ tts = null, audio = null, now = () => Date.now(), on
   const A = audio;   // AudioContext factory — null în teste
 
   const drop = (m, de) => { if (onDrop) try { onDrop(m.text, de); } catch (e) {} };
+  // Ce a plecat CHIAR în difuzor. Jurnalul ținea minte doar ce s-a aruncat, deci la
+  // întrebarea „s-a auzit sau nu?" răspunsul se DEDUCEA din absența unei aruncări —
+  // adică se ghicea (04.08.2026, analiza turei Tresor). Acum se citește.
+  const spus = m => { if (onSpeak) try { onSpeak(m.text, m.cls || null, m.prio); } catch (e) {} };
 
   function ttl(m) {
     if (m.prio >= 4) return 12000;          // manevrele imediate nu se aruncă ușor
@@ -36,7 +41,32 @@ export function makeVoice({ tts = null, audio = null, now = () => Date.now(), on
   // avans. Nu opri lângă tabelă." e prio 4 și tăia un „150 de metri — dreapta" de prio 3.
   // Acum manevra bate ritmul indiferent de cifră: ritmul așteaptă, iar dacă între timp
   // se învechește, se aruncă — un ritm vechi e o cifră falsă oricum.
-  const MANEVRA = 'manevra', RITM = 'ritm';
+  // Clasele: 'manevra' (unde se virează) și 'ritm' (secunde, viteze, bancă). Orice
+  // altceva (null) se poartă ca ritmul — nu e o decizie de volan.
+  const MANEVRA = 'manevra';
+
+  // CINE TAIE PE CINE, în difuzor. Un mesaj tăiat la mijloc de cuvânt nu e „mai puțin
+  // mesaj", e zgomot: pilotul aude „150 de metri — dre—" și nu mai știe nici distanța,
+  // nici direcția. Măsurat în tura Tresor (04.08.2026): 5 fraze de manevră aruncate cu
+  // motivul „intrerupt", toate în aceeași secundă cu un alt anunț al aceleiași manevre.
+  // Trei reguli, în ordinea asta:
+  //  1. RITMUL nu taie niciodată MANEVRA (regula claselor, 03.08) — secundele de deviere
+  //     nu sunt la 2 secunde de volan, virajul da.
+  //  2. MANEVRA nu taie altă MANEVRĂ. Dacă amândouă sunt despre unde se virează, se
+  //     așteaptă: fraza care se rostește are 1-2 secunde, iar cea nouă pleacă imediat
+  //     după. Din coadă, oricum manevrele ies primele, iar duplicatele din aceeași
+  //     categorie se înlocuiesc înainte să apuce să vorbească.
+  //  3. MANEVRA taie RITMUL și la prioritate EGALĂ. Cazul real: „stânga acum" (prio 4)
+  //     a stat în coadă în spatele lui „Finish. 33 virgulă 8 în urmă. Nu opri lângă
+  //     tabelă." (tot prio 4) — patru secunde de vorbă, exact peste virajul de la 55 m
+  //     după linia de finish, pe care pilotul l-a ratat.
+  const poateIntrerupe = (clsNou, prioNou, curent) => {
+    if (!curent) return false;
+    if (clsNou !== MANEVRA && curent.cls === MANEVRA) return false;
+    if (clsNou === MANEVRA && curent.cls === MANEVRA) return false;
+    if (clsNou === MANEVRA && curent.cls !== MANEVRA) return prioNou >= curent.prio;
+    return prioNou > curent.prio;
+  };
 
   function pump() {
     if (cur || !q.length) return;
@@ -55,6 +85,7 @@ export function makeVoice({ tts = null, audio = null, now = () => Date.now(), on
     cur = q.splice(idx, 1)[0];
     curAt = nowMs;
     last = { text: cur.text, at: nowMs };    // pentru butonul REPETĂ
+    spus(cur);
     T.speak(cur.text, () => { cur = null; pump(); });
   }
 
@@ -76,11 +107,7 @@ export function makeVoice({ tts = null, audio = null, now = () => Date.now(), on
       if (!text) return;
       if (cat) for (let i = q.length - 1; i >= 0; i--)
         if (q[i].cat === cat) drop(q.splice(i, 1)[0], 'inlocuit');
-      // Un anunț de RITM nu întrerupe niciodată o manevră care se rostește — nici măcar
-      // cu prioritate mai mare. Manevra e la 2 secunde de volan; secundele de deviere,
-      // nu. Restul rămâne ca înainte: prioritatea mai mare taie.
-      const taieRitmulManevra = cls === RITM && cur && cur.cls === MANEVRA;
-      if (cur && prio > cur.prio && !taieRitmulManevra) {
+      if (poateIntrerupe(cls, prio, cur)) {
         T.cancel(); drop(cur, 'intrerupt'); cur = null;
       }
       q.push({ text, prio, cat, cls, at: now() });

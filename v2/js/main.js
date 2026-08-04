@@ -41,7 +41,9 @@ async function init() {
   // ce nu s-a auzit, nu doar ce s-a spus — altfel „de ce nu mi-a zis de viraj?"
   // rămânea fără răspuns.
   voice = makeVoice({ audio: audioCtx(),
-    onDrop: (text, de) => { try { store.log('voce_aruncata', { text, de }, clock.rally()); } catch (e) {} } });
+    onDrop: (text, de) => { try { store.log('voce_aruncata', { text, de }, clock.rally()); } catch (e) {} },
+    // …și ce a plecat în difuzor, ca „s-a auzit?" să fie o măsurătoare, nu o deducție
+    onSpeak: (text, cls) => { try { store.log('voce_rostita', { text, cls }, clock.rally()); } catch (e) {} } });
   ui = makeUi();
   driver = makeDriverModel(await store.get('driver_model') || {});
   startHeaderClock(clock);

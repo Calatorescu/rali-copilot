@@ -29,13 +29,13 @@ const BUCLA = sanitizeBoxes([
 // Lume cu busolă: fiecare pas mută mașina cu `metri` pe capul compas dat. Decalajul față
 // de roadbook se face conducând mai mult decât scrie oficial — exact zgomotul măsurat azi
 // (±40-70 m pe segment), fiindcă km-ii „oficiali" ai roadbook-ului de test vin din GPS.
-function lume(boxes = BUCLA) {
+function lume(boxes = BUCLA, driver = makeDriverModel()) {
   let wall = 0, lat = 45, lng = 11;
   const clock = makeClock({ now: () => wall, mono: () => wall });
   const store = makeMemStore();
   const said = [];
   const m = makeMachine({ plan: buildPlan(boxes, {}, null), clock, store,
-    driver: makeDriverModel(),
+    driver,
     voice: { say: (t, p, cat, cls) => said.push({ t, p, cat, cls }), tone() {}, flush() {} },
     ui: { render() {} } });
   m.start();
@@ -277,6 +277,80 @@ console.log('\n═══ În probă nu se schimbă nimic: doar cazul „imediat"
   ok('dar la 60 m coada rămâne — altfel anunțul ar veni după viraj',
      st.length === 1 && st[0].t === 'stânga acum, și imediat dreapta la T',
      JSON.stringify(w.said.map(s => s.t)));
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// TURA TRESOR, 04.08.2026, 16:26-16:39 — prima tură cu v31. Roadbook-ul de mai jos e
+// Leg 1 în întregime, exact cum l-a condus Andreas (19 boxuri).
+// ════════════════════════════════════════════════════════════════════════════
+const TRESOR = sanitizeBoxes([
+  { num: 1,  sumKm: 0.00, dir: 'ÎNAINTE', flag: 'TC', comment: 'START Leg 1 · TC 1' },
+  { num: 2,  sumKm: 0.19, dir: 'STÂNGA', comment: 'Stânga pe Str. Constructorilor' },
+  { num: 3,  sumKm: 0.24, dir: 'ÎNAINTE', comment: 'Înainte — devine Inelul IV' },
+  { num: 4,  sumKm: 0.50, dir: 'ÎNAINTE', flag: 'RT_START_AUTO', comment: 'START RT 1 · 40 km/h' },
+  { num: 5,  sumKm: 1.40, dir: 'ÎNAINTE', comment: 'reper la mijlocul probei' },
+  { num: 6,  sumKm: 2.14, dir: 'ÎNAINTE', flag: 'RT_FINISH', comment: 'FINISH RT 1 · tabela roșie' },
+  { num: 7,  sumKm: 2.28, dir: 'DREAPTA', comment: 'Dreapta pe Str. Avram Imbroane' },
+  { num: 8,  sumKm: 2.60, dir: 'ÎNAINTE', flag: 'TC', comment: 'CP 1 — Control de Trecere' },
+  { num: 9,  sumKm: 2.83, dir: 'STÂNGA', comment: 'Stânga pe Str. Gheorghe Adam' },
+  { num: 10, sumKm: 2.90, dir: 'ÎNAINTE', flag: 'RT_START_STANDING', comment: 'START RT 2 · 26 km/h' },
+  { num: 11, sumKm: 3.50, dir: 'ÎNAINTE', flag: 'RT_FINISH', comment: 'FINISH RT 2 · stânga în 55 m' },
+  { num: 12, sumKm: 3.55, dir: 'STÂNGA', comment: 'Stânga pe Str. Lorena' },
+  { num: 13, sumKm: 3.75, dir: 'DREAPTA', comment: 'Dreapta pe Aleea Pădurea Verde' },
+  { num: 14, sumKm: 3.81, dir: 'ÎNAINTE', comment: 'Înainte — devine Str. Orăștie' },
+  { num: 15, sumKm: 4.14, dir: 'DREAPTA', comment: 'Dreapta pe Str. Turda' },
+  { num: 16, sumKm: 4.43, dir: 'STÂNGA', comment: 'Stânga pe Calea Ghirodei' },
+  { num: 17, sumKm: 4.73, dir: 'DREAPTA', comment: 'Dreapta pe strada fără nume' },
+  { num: 18, sumKm: 4.90, dir: 'STÂNGA', comment: 'Stânga pe Str. Ionel Teodoreanu' },
+  { num: 19, sumKm: 5.13, dir: 'ÎNAINTE', flag: 'RT_FINISH', comment: 'FINISH Leg 1 · TC 2' }
+]);
+
+console.log('\n═══ „acum" nu mai pleacă de la 120 de metri (tura Tresor) ═══');
+{
+  // Modelul șoferului de pe telefon învățase o latență de 7-9 s: nu reacția lui Andreas,
+  // ci timpul în care detectorul de viraje se hotăra (GPS la 6 s + 2,5 s de direcție
+  // stabilă). Măsurat în tură: „acum" a plecat cu 32-124 m înainte de box.
+  const rau = makeDriverModel({ latencyS: 8.7, n: 12 });
+  ok('modelul salvat stricat se aduce în plajă la încărcare (max 4 s)',
+     rau.latencyS() <= 4, String(rau.latencyS()));
+  const d = makeDriverModel();
+  d.cueGiven(1, 0);
+  ok('o „reacție" de 8,7 s nu mai intră în model — aia e detectorul, nu pilotul',
+     d.turnDone(1, 8700) === null, String(d.latencyS()));
+  d.cueGiven(2, 0); d.turnDone(2, 2000);
+  ok('o reacție adevărată de 2 s intră', Math.abs(d.latencyS() - 2) < 0.6, String(d.latencyS()));
+
+  // și, la consumator, plafonul: chiar cu un model umflat ca cel de pe telefon, „acum"
+  // rămâne sub 60 m. Vitezele sunt cele din tură (49-59 km/h pe legătură).
+  const w = lume(TRESOR, makeDriverModel({ latencyS: 8.7, n: 12 }));
+  for (let i = 0; i < 100; i++) w.pas(15, 0);   // 1,5 km la 54 km/h
+  const cue = w.store.journal.filter(e => e.type === 'cue');
+  ok('niciun „acum" mai devreme de 60 m față de box (în tură: până la 124 m)',
+     cue.every(c => c.dM <= 60), JSON.stringify(cue.map(c => ({ b: c.boxNum, dM: c.dM, kmh: c.kmh }))));
+  ok('și totuși „acum" se rostește pentru boxurile de manevră',
+     cue.some(c => c.boxNum === 2), JSON.stringify(cue.map(c => c.boxNum)));
+  ok('distanța la care s-a vorbit intră în jurnal — ca să se măsoare, nu să se deducă',
+     cue.every(c => typeof c.dM === 'number' && typeof c.kmh === 'number'), JSON.stringify(cue[0]));
+}
+
+console.log('\n═══ Coada stă și pe ultima treaptă cu cifră, nu doar pe „acum" ═══');
+{
+  // boxurile 15 → 16 din tura Tresor: 290 m între ele. Anunțul de la 150 m e cel pe
+  // care pilotul îl aude sigur; „acum" poate ajunge târziu (la boxul 12 a plecat cu
+  // 13 m înainte de viraj, în spatele frazei de finish).
+  const w = lume(TRESOR);
+  drumDrept(w, 450);                          // 4,5 km: trecut de boxul 15
+  const treapta = w.said.filter(s => /de metri — dreapta, apoi/.test(s.t));
+  ok('treapta cu cifră a boxului 15 spune și stânga de la 290 m',
+     treapta.some(s => /^1\d0 de metri — dreapta, apoi în 300 de metri stânga$/.test(s.t)),
+     JSON.stringify(w.said.map(s => s.t).slice(-12)));
+  const acum = w.said.filter(s => /^dreapta acum, și/.test(s.t));
+  ok('și „acum"-ul aceluiași box o repetă, cu altă legătură',
+     acum.some(s => s.t === 'dreapta acum, și în 300 de metri stânga'),
+     JSON.stringify(acum.map(s => s.t)));
+  ok('legăturile sunt distincte: „apoi" pe treaptă, „și" pe acum',
+     treapta.every(s => !/, și /.test(s.t)) && acum.every(s => !/, apoi /.test(s.t)),
+     JSON.stringify({ treapta: treapta.map(s => s.t), acum: acum.map(s => s.t) }));
 }
 
 console.log(`\n──────── ${pass} trecute, ${fail} căzute ────────`);

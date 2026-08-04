@@ -731,16 +731,36 @@ console.log('\n═══ Ritmul nu mai taie manevra (cazul 17:20:22 din jurnal) 
   ok('din coadă pleacă întâi manevra, deși ritmul e prio 3 vs 2',
      spoken2[1] === '30 de metri — stânga', JSON.stringify(spoken2));
 
-  // iar o manevră „acum" tot are voie să taie o manevră veche (informația proaspătă bate)
-  const spoken3 = [];
-  let busy3 = false;
-  const v3 = makeVoice({ tts: { speak: txt => { spoken3.push(txt); busy3 = true; },
-                                cancel: () => { busy3 = false; }, busy: () => busy3 },
-                         now: () => t, onDrop: (txt, de) => taiate.push({ txt, de }) });
+  // 04.08, tura Tresor: o manevră nu mai taie altă manevră. Pilotul auzea „150 de metri
+  // — dre—" și pe urmă „dreapta acum" — măsurat, 5 fraze de manevră aruncate cu
+  // „intrerupt". Acum cea nouă așteaptă sfârșitul frazei (1-2 s) și pleacă imediat după.
+  const spoken3 = [], taiate3 = [];
+  let elibereaza3 = null;
+  const v3 = makeVoice({ tts: { speak: (txt, onEnd) => { spoken3.push(txt); elibereaza3 = onEnd; },
+                                cancel: () => { elibereaza3 = null; }, busy: () => !!elibereaza3 },
+                         now: () => t, onDrop: (txt, de) => taiate3.push({ txt, de }) });
   v3.say('150 de metri — dreapta', 3, 'turn', 'manevra');
   v3.say('dreapta acum', 4, 'turn', 'manevra');
-  ok('„acum" taie avertizarea veche a aceleiași manevre',
-     spoken3.includes('dreapta acum'), JSON.stringify(spoken3));
+  ok('„acum" NU mai taie fraza de manevră care se rostește',
+     !taiate3.some(x => x.de === 'intrerupt'), JSON.stringify(taiate3));
+  ok('…dar pleacă imediat ce difuzorul se eliberează',
+     (() => { const f = elibereaza3; elibereaza3 = null; f(); return spoken3[1] === 'dreapta acum'; })(),
+     JSON.stringify(spoken3));
+
+  // …iar o MANEVRĂ taie ritmul chiar la prioritate egală: cazul boxului 12 din tura
+  // Tresor, unde „stânga acum" a stat în spatele frazei de finish (ambele prio 4) și
+  // virajul de la 55 m după linie s-a ratat.
+  const spoken4 = [], taiate4 = [];
+  let busy4 = false;
+  const v4 = makeVoice({ tts: { speak: txt => { spoken4.push(txt); busy4 = true; },
+                                cancel: () => { busy4 = false; }, busy: () => busy4 },
+                         now: () => t, onDrop: (txt, de) => taiate4.push({ txt, de }) });
+  v4.say('Finish. 33 virgulă 8 în urmă. Nu opri lângă tabelă.', 4, 'race', 'ritm');
+  v4.say('stânga acum', 4, 'turn', 'manevra');
+  ok('manevra taie ritmul și la prioritate egală (4 vs 4)',
+     spoken4[spoken4.length - 1] === 'stânga acum' &&
+     taiate4.some(x => /Finish\./.test(x.txt) && x.de === 'intrerupt'),
+     JSON.stringify({ spoken4, taiate4 }));
 }
 
 console.log(`\n──────── ${pass} trecute, ${fail} căzute ────────`);

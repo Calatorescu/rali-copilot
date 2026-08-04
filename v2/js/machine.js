@@ -38,6 +38,19 @@ const TIERS_M = [300, 150];   // + „acum", calculat din modelul șoferului
 const COADA_IMEDIAT_M = 80;
 const COADA_MAX_M = 500;
 
+// CÂT DE DEVREME POATE FI ROSTIT „ACUM". Anticiparea vine din modelul șoferului
+// (learn.js), dar are nevoie de un plafon aici, la consumator: „acum" e un cuvânt care
+// spune „pune mâna pe volan", iar la 120 m de intersecție e pur și simplu fals.
+//
+// Măsurat în tura Tresor (04.08.2026): cele 14 anunțuri „acum" au plecat cu 32, 40, 59,
+// 62, 63, 81, 98, 101, 115, 121, 122, 124, 34 și 13 m înainte de box — la 49-59 km/h,
+// între 100 și 124 m. Două efecte, ambele rele: pilotul aude „stânga acum" cu 7 secunde
+// prea devreme, iar anunțul se lipește de treapta de 150 m și o taie la mijloc de cuvânt
+// (măsurat: 5 fraze de manevră aruncate cu „intrerupt", toate în aceeași secundă cu
+// „acum"-ul aceluiași box). 60 m = 3,6 s la 60 km/h și 4,3 s la 50 — destul ca să pui
+// mâna pe volan, prea puțin ca să uiți până acolo. Podeaua de 25 m rămâne.
+const ACUM_MAX_M = 60;
+
 export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }) {
   const M = {
     state: 'PREP',
@@ -338,7 +351,8 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
     const dM = (b.sumKm - M.routeKm) * 1000;
     const silent = b.dir === 'ÎNAINTE' && !b.flag;   // „drept înainte" nu se rostește
     const key = `${b.num}_${Math.round(b.sumKm * 100)}`;
-    const nowM = Math.max(25, driver.leadM(M.speedKmh || 30));  // anticipare personalizată
+    // anticipare personalizată, dar plafonată: vezi ACUM_MAX_M
+    const nowM = Math.min(ACUM_MAX_M, Math.max(25, driver.leadM(M.speedKmh || 30)));
 
     const tiers = [...TIERS_M, nowM].sort((a, b2) => b2 - a);
     // Se alege treapta cea mai APROPIATĂ care se aplică și nu s-a rostit — dacă apari
@@ -349,6 +363,9 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
     }
     if (ti === -1) return;
     const isNow = ti === tiers.length - 1;
+    // ULTIMA treaptă cu cifră (150 m) — vezi coada de mai jos: ea e anunțul pe care
+    // pilotul îl aude sigur, chiar dacă „acum" ajunge târziu sau se pierde.
+    const ultimaCuCifra = ti === tiers.length - 2;
     // Se marchează treapta aleasă și cele mai DEPĂRTATE — nu cele apropiate. Versiunea
     // veche le bifa pe cele apropiate: fiecare box era anunțat O DATĂ, la ~290 m, iar
     // „acum" nu se rostea NICIODATĂ — la 50 km/h, 21 de secunde de tăcere în care
@@ -358,21 +375,26 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
     if (!silent) {
       // „acum" = prio 4: întrerupe orice și nu expiră repede (audit, #9)
       let txt = turnText(b, dM, isNow);
-      // La ULTIMUL anunț al unei manevre (cel de „acum"), fraza spune și ce urmează:
-      // „dreapta acum, și imediat stânga" / „stânga acum, la T, și în 300 de metri
-      // dreapta". Momentul e ales: pilotul e cu mâinile pe volan și tocmai a aflat ce
-      // face ACUM — restul secundelor până la manevra următoare sunt singurele în care
-      // mai poate planifica banda și viteza. (Cererea lui Andreas, 04.08.2026.)
-      // Virgula dinaintea lui „și" nu e ortografie, e o pauză de TTS: fără ea, cele
-      // două manevre se lipesc într-un singur șir de cuvinte.
+      // CE URMEAZĂ DUPĂ MANEVRĂ, spus din timp: „dreapta acum, și imediat stânga" /
+      // „150 de metri — dreapta, apoi în 300 de metri stânga". Pilotul are nevoie de
+      // secvență cât mai are timp să aleagă banda și viteza. (Andreas, 04.08.2026.)
       //
-      // Doar boxurile de MANEVRĂ primesc coadă (un TC sau o linie de start n-au „ce
-      // urmează" de planificat), și doar în afara probei: în probă, urechea e pe cifrele
-      // de ritm, deci acolo rămâne exact cât era înainte — cazul „imediat", singurul în
-      // care un anunț separat ar ajunge după ce virajul a trecut.
-      if (isNow && TURN_DIRS.has(b.dir || '')) {
+      // Coada stă pe DOUĂ anunțuri, nu doar pe „acum": și pe ultima treaptă cu cifră
+      // (150 m). Motivul e măsurat în tura Tresor: „acum" poate ajunge la ureche prea
+      // târziu sau deloc — la boxul 12 a plecat cu 13 m înainte de viraj și a intrat în
+      // coadă în spatele frazei de finish, iar pilotul a ratat ieșirea. Treapta cu cifră
+      // e anunțul pe care îl aude sigur, la viteză, cu drum în față. Dublarea nu strică
+      // (aceeași informație, la 90 m distanță una de alta); lipsa costă un viraj.
+      // Legătura diferă, ca urechea să știe pe ce anunț e: „apoi" pe treapta cu cifră,
+      // „și" pe „acum". Virgula dinainte nu e ortografie, e pauza de TTS.
+      //
+      // Doar boxurile de MANEVRĂ primesc coadă (un TC n-are „ce urmează" de planificat),
+      // și doar în afara probei: în probă urechea e pe cifrele de ritm, deci acolo rămâne
+      // doar cazul „imediat" — singurul în care un anunț separat ar ajunge după viraj.
+      if ((isNow || ultimaCuCifra) && TURN_DIRS.has(b.dir || '')) {
         const coada = coadaManevra(M.nextBoxIdx);
-        if (coada && (!M.rt || coada.gapM <= COADA_IMEDIAT_M)) txt += `, și ${coada.text}`;
+        if (coada && (!M.rt || coada.gapM <= COADA_IMEDIAT_M))
+          txt += `${isNow ? ', și ' : ', apoi '}${coada.text}`;
       }
       // Clasa 'manevra' lipsea tocmai de la anunțurile de viraj — adică fix de la ce
       // descrie regula. Comitul „paznic de directie" (03.08) a pus clasele pe alarme și
@@ -382,7 +404,13 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
       // — stânga la T" (11:28:25) și „Start probă în 140 de metri" (11:28:55) apar toate
       // în `voce_aruncata` cu motivul „intrerupt".
       say(txt, isNow ? 4 : (M.rt ? 3 : 2), 'turn', 'manevra');
-      if (isNow) { driver.cueGiven(b.num, clock.wall()); log('cue', { boxNum: b.num }); }
+      // Distanța la care s-a rostit „acum" intră în jurnal. Fără ea, întrebarea „de la
+      // câți metri a vorbit?" se reconstruia din poziția logată la 5-6 s distanță, adică
+      // se estima (04.08, analiza turei Tresor — o eroare de până la 75 m la 54 km/h).
+      if (isNow) {
+        driver.cueGiven(b.num, clock.wall());
+        log('cue', { boxNum: b.num, dM: Math.round(dM), kmh: Math.round(M.speedKmh) });
+      }
     }
   }
 
