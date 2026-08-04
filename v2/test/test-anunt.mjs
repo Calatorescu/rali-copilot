@@ -30,7 +30,7 @@ const BUCLA = sanitizeBoxes([
 // de roadbook se face conducând mai mult decât scrie oficial — exact zgomotul măsurat azi
 // (±40-70 m pe segment), fiindcă km-ii „oficiali" ai roadbook-ului de test vin din GPS.
 function lume() {
-  let wall = 0, lat = 45, lng = 21;
+  let wall = 0, lat = 45, lng = 11;
   const clock = makeClock({ now: () => wall, mono: () => wall });
   const store = makeMemStore();
   const said = [];

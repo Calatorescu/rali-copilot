@@ -8,6 +8,8 @@
 // localStorage rămâne doar pentru preferințe mărunte (temă, cheie) — urmele GPS nu
 // încap acolo.
 
+import { reconStatus, reconRecupereaza } from './route.js';
+
 const DB = 'rali2', VER = 1;
 
 function openDb() {
@@ -95,18 +97,45 @@ export async function exportDay(store) {
            recon_draft: draft || null };
 }
 
-export async function importDay(store, dump) {
+// Importul ȘTERGE jurnalul local. Până acum ștergea ÎNAINTE de orice verificare — aceeași
+// clasă de defect ca incidentul deja documentat („o scriere goală poate șterge o zi de
+// date"): un fișier trunchiat, un export pornit greșit sau un JSON fără `journal` lăsa în
+// urmă o zi de cursă goală, ireversibil. De-acum: fără jurnal valid nu se atinge nimic,
+// iar dacă fișierul are MAI PUȚINE intrări decât jurnalul local, importul se OPREȘTE și
+// cere confirmare explicită, cu ambele cifre pe ecran. (Audit de securitate, 04.08.2026.)
+export async function importDay(store, dump, { confirmat = false } = {}) {
   if (!dump || dump._app !== 'RALI2') throw new Error('Nu e un export RALI 2');
+  if (!Array.isArray(dump.journal))
+    throw new Error('Exportul n-are jurnal — nu se importă nimic');
+  const local = await store.journalAll();
+  if (!confirmat && dump.journal.length < local.length) {
+    const e = new Error(`Fișierul are ${dump.journal.length} intrări, jurnalul local are ${local.length}`);
+    e.cerConfirmare = { dinFisier: dump.journal.length, local: local.length };
+    throw e;
+  }
   await store.journalClear();
-  for (const e of dump.journal || []) {
+  for (const e of dump.journal) {
     const { id, t, type, ...rest } = e;
     await store.log(type, rest, t);
   }
-  if (dump.plan_raw) await store.put('plan_raw', dump.plan_raw);
+  if (dump.plan_raw) await store.put('plan_raw', dump.plan_raw);   // sanitizat la încărcare
   if (dump.rt_speeds) await store.put('rt_speeds', dump.rt_speeds);
-  if (dump.recon) await store.put('recon', dump.recon);
-  if (dump.recon_draft) await store.put('recon_draft', dump.recon_draft);
   if (dump.tc_schedule) await store.put('tc_schedule', dump.tc_schedule);
+  // Geometria vine dintr-un FIȘIER, adică din conținut extern: se scrie doar ce are forma
+  // pe care o citește aplicația — aceeași verificare pe care o face și panoul de pregătire.
+  if (dump.recon && typeof dump.recon === 'object') {
+    if (dump.recon._v === 2 && dump.recon.legs && typeof dump.recon.legs === 'object') {
+      const bune = {};
+      for (const [k, rec] of Object.entries(dump.recon.legs))
+        if (reconStatus(rec).puncte >= 2) bune[k] = rec;
+      if (Object.keys(bune).length) await store.put('recon', { _v: 2, legs: bune });
+    } else if (reconStatus(dump.recon).puncte >= 2) {
+      // forma veche, validă: se scrie ca atare și se migrează la încărcare, marcată
+      await store.put('recon', dump.recon);
+    }
+  }
+  if (reconRecupereaza(dump.recon_draft, null).stare !== 'gol')
+    await store.put('recon_draft', dump.recon_draft);
 }
 
 // Starea de cursă reconstruită din jurnal — inima preluării pe alt telefon:

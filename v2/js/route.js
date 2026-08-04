@@ -209,10 +209,14 @@ export function reconNormalize(brut, legActiv) {
   if (!brut || typeof brut !== 'object') return { _v: 2, legs: {} };
   if (brut._v === 2 && brut.legs && typeof brut.legs === 'object')
     return { _v: 2, legs: { ...brut.legs } };
-  // forma VECHE (un singur obiect cu trace/anchors): se atribuie leg-ului activ — singura
-  // presupunere rezonabilă, fiindcă vechea aplicație o folosea exact pentru leg-ul activ.
-  if (brut.trace && legActiv)
-    return { _v: 2, legs: { [legActiv]: { ...brut, legKey: legActiv } }, _migrat: true };
+  // Forma VECHE (un singur obiect cu trace/anchors) se atribuie leg-ului activ — singura
+  // presupunere posibilă, fiindcă vechea cheie nu ținea minte pentru CE leg s-a înregistrat.
+  // Presupunerea poate fi greșită (leg-ul activ acum ≠ leg-ul înregistrat atunci), deci
+  // intrarea rămâne MARCATĂ și panoul cere confirmarea omului. Condiția e pe forma reală
+  // a urmei, nu pe „trace e adevărat": altfel orice obiect străin ajunge în legs.
+  if (brut.trace && Array.isArray(brut.trace.pts) && legActiv)
+    return { _v: 2, legs: { [legActiv]: { ...brut, legKey: legActiv, _dinFormaVeche: true } },
+             _migrat: true };
   return { _v: 2, legs: {} };
 }
 
@@ -236,7 +240,8 @@ export function reconStatus(rec) {
   const ancore = rec && Array.isArray(rec.anchors) ? rec.anchors.length : 0;
   const km = rec && rec.trace && isFinite(rec.trace.totalM) ? rec.trace.totalM / 1000 : 0;
   const at = rec && rec.at ? rec.at : null;
-  const baza = { puncte, ancore, km, at, recuperat: !!(rec && rec.recuperat) };
+  const baza = { puncte, ancore, km, at, recuperat: !!(rec && rec.recuperat),
+                 dinFormaVeche: !!(rec && rec._dinFormaVeche) };
   if (!rec) return { ok: false, ...baza, motiv: 'nu s-a înregistrat niciodată' };
   if (puncte < 2) return { ok: false, ...baza, motiv: 'urma e goală — înregistrarea n-a prins puncte GPS' };
   if (ancore < 1) return { ok: false, ...baza, motiv: 'fără ancore — urma nu se poate lega de kilometrajul din roadbook' };

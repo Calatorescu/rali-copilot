@@ -30,14 +30,14 @@ function lume(boxes = BOX) {
     driver: makeDriverModel(),
     voice: { say: (t, p) => said.push({ t, p }), tone() {}, flush() {} }, ui: { render() {} } });
   m.start();
-  wall += 1000; m.onFix({ lat: 45, lng: 21, tMs: wall, speedMs: 0, accM: 8 });
+  wall += 1000; m.onFix({ lat: 45, lng: 11, tMs: wall, speedMs: 0, accM: 8 });
   return { m, store, said, clock,
     get wall() { return wall; }, avanseazaTimp(ms) { wall += ms; },
     condu(panaLa, kmh = 45) {
       while (realKm < panaLa - 1e-9) {
         const pas = Math.min(kmh / 3600, panaLa - realKm);
         realKm += pas; wall += 1000;
-        m.onFix({ lat: 45 + realKm / 111.32, lng: 21, tMs: wall, speedMs: pas * 1000, accM: 8 });
+        m.onFix({ lat: 45 + realKm / 111.32, lng: 11, tMs: wall, speedMs: pas * 1000, accM: 8 });
       }
     } };
 }
@@ -137,14 +137,14 @@ console.log('\n═══ #14 — retro-datarea plafonată ═══');
     driver: makeDriverModel(), voice: { say: t => said.push(t), tone() {}, flush() {} },
     ui: { render() {} } });
   m.start();
-  wall += 1000; m.onFix({ lat: 45, lng: 21, tMs: wall, speedMs: 0, accM: 8 });
+  wall += 1000; m.onFix({ lat: 45, lng: 11, tMs: wall, speedMs: 0, accM: 8 });
   // condu până la 0,45 normal
   let realKm = 0;
   while (realKm < 0.45) { realKm += 45 / 3600; wall += 1000;
-    m.onFix({ lat: 45 + realKm / 111.32, lng: 21, tMs: wall, speedMs: 12.5, accM: 8 }); }
+    m.onFix({ lat: 45 + realKm / 111.32, lng: 11, tMs: wall, speedMs: 12.5, accM: 8 }); }
   // gaură de 30 s, mașina a mers; fixul următor e la 0,85 real (peste linie cu 250 m)
   wall += 30000; realKm = 0.85;
-  m.onFix({ lat: 45 + realKm / 111.32, lng: 21, tMs: wall, speedMs: 12.5, accM: 8 });
+  m.onFix({ lat: 45 + realKm / 111.32, lng: 11, tMs: wall, speedMs: 12.5, accM: 8 });
   ok('proba a pornit', m.M.state === 'RT_RUN', m.M.state);
   const elapsed = (clock.mono() - m.M.rt.t0Mono) / 1000;
   ok('cronometrul NU e retro-datat cu zeci de secunde', elapsed < 5.5, elapsed.toFixed(1) + 's');
@@ -339,18 +339,18 @@ console.log('\n═══ Tura 4 (02.08): jitterul de la stop nu mai intră în o
 {
   const { makeOdometer } = await import('../js/geo.js');
   const o = makeOdometer();
-  o.step({ lat: 45, lng: 21, tMs: 0, speedMs: 0, accM: 10 });
+  o.step({ lat: 45, lng: 11, tMs: 0, speedMs: 0, accM: 10 });
   // 20 s oprit la stop: poziția tremură cu 5-8 m pe fix (sub precizia de 10 m)
   let total = 0, lat = 45;
   for (let i = 1; i <= 20; i++) {
     lat = 45 + (i % 2 ? 6 : 0) / 111320;      // du-te-vino de 6 m
-    total += o.step({ lat, lng: 21, tMs: i * 1000, speedMs: 0, accM: 10 });
+    total += o.step({ lat, lng: 11, tMs: i * 1000, speedMs: 0, accM: 10 });
   }
   ok('20 s de tremur la stop ≈ 0 m (era ~60-120)', total < 5, total.toFixed(1) + ' m');
   // dar mișcarea REALĂ cu vitezometrul mut tot se contorizează
   const o2 = makeOdometer();
-  o2.step({ lat: 45, lng: 21, tMs: 0, speedMs: 0, accM: 10 });
-  const inc = o2.step({ lat: 45 + 60 / 111320, lng: 21, tMs: 2000, speedMs: 0, accM: 10 });
+  o2.step({ lat: 45, lng: 11, tMs: 0, speedMs: 0, accM: 10 });
+  const inc = o2.step({ lat: 45 + 60 / 111320, lng: 11, tMs: 2000, speedMs: 0, accM: 10 });
   ok('60 m reali cu viteza mută → tot haversine', inc > 50, inc.toFixed(1));
 }
 
@@ -402,7 +402,7 @@ console.log('\n═══ Tura 5: snapul pe viraj ține cont de întârzierea det
   const m = makeMachine({ plan: buildPlan(boxes, {}, null), clock, store,
     driver: makeDriverModel(), voice: { say() {}, tone() {}, flush() {} }, ui: { render() {} } });
   m.start();
-  let lat = 45, lng = 21;
+  let lat = 45, lng = 11;
   const fix = (dLatM, dLngM, hdg, spd = 12) => {
     lat += dLatM / 111320; lng += dLngM / (111320 * Math.cos(45 * Math.PI / 180));
     wall += 1000;
@@ -440,7 +440,7 @@ const BUCLA = sanitizeBoxes([
 
 // Lume cu direcție: fiecare pas mută mașina pe un cap compas dat, cu viteza dată.
 function lumeCuBusola(boxes) {
-  let wall = 0, lat = 45, lng = 21;
+  let wall = 0, lat = 45, lng = 11;
   const clock = makeClock({ now: () => wall, mono: () => wall });
   const store = makeMemStore();
   const said = [];
@@ -593,19 +593,24 @@ console.log('\n═══ 03.08: în probă, recalarea NU se execută (doar se sp
 // dublă continuă — ilegală. Andreas a făcut singura manevră legală (dreapta, spre NE),
 // aplicația conducea traseul spre SV, iar proba a pornit singură după 370 m în direcția
 // opusă. Măsurat: deplasarea față de plecare creștea monoton, 121 m la 11 s, 314 m la
-// 34 s, fără nicio revenire. Lanțurile de coordonate de mai jos sunt cele REALE.
-const LANT_NE = [[45.802871,21.250711,0],[45.803161,21.250729,12],[45.80358,21.251277,52],
-  [45.80421,21.252015,55],[45.804675,21.252602,42],[45.804886,21.252935,12],[45.80492,21.252973,0],
-  [45.804974,21.25305,17],[45.804882,21.253398,25],[45.804652,21.253767,27],[45.804575,21.254004,7],
-  [45.804532,21.253984,3],[45.804654,21.253826,22],[45.8049,21.253437,20],[45.804972,21.253339,0]];
-const LANT_SV = [[45.803844,21.251418,48],[45.803326,21.250782,46],[45.802799,21.250129,45],
-  [45.802439,21.249605,38],[45.802015,21.249051,39],[45.80162,21.248533,44],[45.801216,21.247961,47],
-  [45.800875,21.247533,43],[45.80036,21.246876,43],[45.799964,21.246343,36],[45.799678,21.24594,31],
-  [45.799329,21.245464,37]];
-const LANT_LEG2 = [[45.802826,21.250331,12],[45.803068,21.250603,42],[45.803662,21.251333,57],
-  [45.80431,21.252109,52],[45.804743,21.252668,30],[45.804925,21.252915,13],[45.804967,21.252969,0],
-  [45.804967,21.252971,0],[45.804967,21.252973,0],[45.804966,21.252971,0],[45.804969,21.252972,1],
-  [45.805235,21.253303,43],[45.805884,21.254025,59],[45.806447,21.254692,57]];
+// 34 s, fără nicio revenire. Lanțurile de coordonate de mai jos sunt cele REALE, dar
+// DEPLASATE DELIBERAT (audit de securitate, 04.08.2026): folderul v2/test/ se servește
+// PUBLIC pe GitHub Pages. Longitudinea e mutată cu −10 grade; latitudinea rămâne cea
+// măsurată, ca `kx` din geo.js (care depinde doar de latitudine) să fie identic și toate
+// distanțele, unghiurile și aserțiunile să rămână la sub un metru de original. ORICE lanț
+// nou se deplasează la fel ÎNAINTE de commit — altfel testul publică unde umblă mașina.
+const LANT_NE = [[45.802871,11.250711,0],[45.803161,11.250729,12],[45.80358,11.251277,52],
+  [45.80421,11.252015,55],[45.804675,11.252602,42],[45.804886,11.252935,12],[45.80492,11.252973,0],
+  [45.804974,11.25305,17],[45.804882,11.253398,25],[45.804652,11.253767,27],[45.804575,11.254004,7],
+  [45.804532,11.253984,3],[45.804654,11.253826,22],[45.8049,11.253437,20],[45.804972,11.253339,0]];
+const LANT_SV = [[45.803844,11.251418,48],[45.803326,11.250782,46],[45.802799,11.250129,45],
+  [45.802439,11.249605,38],[45.802015,11.249051,39],[45.80162,11.248533,44],[45.801216,11.247961,47],
+  [45.800875,11.247533,43],[45.80036,11.246876,43],[45.799964,11.246343,36],[45.799678,11.24594,31],
+  [45.799329,11.245464,37]];
+const LANT_LEG2 = [[45.802826,11.250331,12],[45.803068,11.250603,42],[45.803662,11.251333,57],
+  [45.80431,11.252109,52],[45.804743,11.252668,30],[45.804925,11.252915,13],[45.804967,11.252969,0],
+  [45.804967,11.252971,0],[45.804967,11.252973,0],[45.804966,11.252971,0],[45.804969,11.252972,1],
+  [45.805235,11.253303,43],[45.805884,11.254025,59],[45.806447,11.254692,57]];
 
 async function lumeGeo(lant, boxes) {
   const { buildTrace } = await import('../js/geo.js');

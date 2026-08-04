@@ -7,8 +7,13 @@ const ASSETS = ['./', './index.html', './app.css', './manifest.json', './icon.sv
   './js/geo.js', './js/pace.js', './js/route.js', './js/store.js', './js/scan.js',
   './js/time.js', './js/learn.js', './js/debrief.js', './js/ble.js', './js/sync.js'];
 
+// `cache: 'reload'` ocolește cache-ul HTTP al browserului la instalare. Fără el, două
+// deploy-uri în aceeași fereastră de max-age pot îngheța în CACHE un amestec de versiuni
+// (main.js v30 lângă route.js v29) — iar amestecul rămâne acolo permanent, fiindcă
+// service worker-ul nu mai cere niciodată fișierele alea. Un import care nu se potrivește
+// oprește init() cu totul: aplicația pornește și nu face NIMIC. (Audit, 04.08.2026.)
 self.addEventListener('install', e => {
-  e.waitUntil(caches.open(CACHE).then(c => c.addAll(ASSETS)));
+  e.waitUntil(caches.open(CACHE).then(c => c.addAll(ASSETS.map(u => new Request(u, { cache: 'reload' })))));
   self.skipWaiting();
 });
 self.addEventListener('activate', e => {

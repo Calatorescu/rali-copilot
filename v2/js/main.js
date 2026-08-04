@@ -220,8 +220,12 @@ function renderRecon() {
     const cand = d ? ` · ${String(d.getDate()).padStart(2, '0')}.${String(d.getMonth() + 1).padStart(2, '0')} ` +
       `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}` : '';
     el.textContent = `Geometrie: DA — ${s.puncte} puncte · ${s.ancore} ancore · ` +
-      `${s.km.toFixed(2)} km${cand}${s.recuperat ? ' (recuperată din înregistrarea întreruptă)' : ''}`;
-    el.style.color = 'var(--ok)';
+      `${s.km.toFixed(2)} km${cand}${s.recuperat ? ' (recuperată din înregistrarea întreruptă)' : ''}` +
+      // migrarea din forma veche ATRIBUIE geometria leg-ului activ, fiindcă vechea cheie
+      // nu ținea minte pentru care leg s-a înregistrat. Poate fi a altui leg — deci se
+      // spune, nu se tace.
+      (s.dinFormaVeche ? ' · ⚠ migrată din versiunea veche — confirmă că e a acestui leg' : '');
+    el.style.color = s.dinFormaVeche ? 'var(--warn)' : 'var(--ok)';
   } else {
     el.textContent = 'Geometrie: NU — paznic de direcție și proiecție fără drift INDISPONIBILE' +
       (s && s.motiv ? ` (${s.motiv})` : '');
@@ -316,7 +320,11 @@ function startRecon() {
       }
       lastPt = f;
       if (f.speedMs != null) reconRec.samples.push({ cumM: cum, kmh: f.speedMs * 3.6 });
-      $('rec-dist').textContent = (cum / 1000).toFixed(2) + ' km';
+      // afișarea e ULTIMA grijă: dacă nodul lipsește (index.html vechi din cache),
+      // un TypeError aici ar sări peste salvarea ciornei de mai jos — adică exact
+      // pierderea de date pe care ciorna o repară
+      const rd = $('rec-dist');
+      if (rd) rd.textContent = (cum / 1000).toFixed(2) + ' km';
       // ciornă la fiecare 15 s: o tranzacție la 15 s nu încarcă telefonul, dar o
       // închidere neașteptată nu mai costă tot drumul
       if (Date.now() - ultimaSalvare > 15000) { ultimaSalvare = Date.now(); salveazaDraft(); }
@@ -325,11 +333,15 @@ function startRecon() {
   });
   reconRec.cum = () => cum;
   const pornit = gps.start();
-  $('rec-leg').textContent = pornit
+  // Gardă pe fiecare nod nou: un index.html VECHI rămas în cache-ul PWA n-are `rec-leg`,
+  // iar un TypeError aici ar cădea DUPĂ pornirea GPS-ului și ÎNAINTE de showScreen —
+  // adică înregistrare pornită, fără ecran și fără buton de oprire. (Audit, 04.08.2026.)
+  const rl = $('rec-leg');
+  if (rl) rl.textContent = pornit
     ? `înregistrez pentru ${legLabel} · ${plan.boxes.length} boxuri`
     : '⚠ GPS INDISPONIBIL — nu se înregistrează nimic';
-  $('rec-dist').textContent = '0.00 km';
-  $('rec-anchors').textContent = '0 ancore';
+  const rd = $('rec-dist'); if (rd) rd.textContent = '0.00 km';
+  const ra = $('rec-anchors'); if (ra) ra.textContent = '0 ancore';
   try { store.log('recon_start', { legKey, legLabel, boxuri: plan.boxes.length, gps: !!pornit }, Date.now()); } catch (e) {}
   showScreen('recon');
   if (!pornit) { alert('GPS indisponibil — recunoașterea n-ar înregistra nimic.'); return; }
@@ -338,7 +350,8 @@ function startRecon() {
 
 async function reconMark() {
   if (!reconRec) return;
-  const num = parseInt($('rec-box').value, 10);
+  const inp = $('rec-box');
+  const num = parseInt(inp ? inp.value : '', 10);
   if (!isFinite(num)) { alert('Pune numărul boxului.'); return; }
   // boxurile LEG-ULUI înregistrat, nu toate boxurile scanate: cu două leg-uri, „box 4"
   // există de două ori, iar căutarea globală lua mereu km-ul primului leg — ancoră pusă
@@ -349,8 +362,9 @@ async function reconMark() {
   try { store.log('recon_ancora', { legKey: reconRec.legKey, boxNum: num,
                                     officialKm: b.sumKm, traceM: Math.round(reconRec.cum()) }, Date.now()); } catch (e) {}
   voice.tone('tick'); voice.say(`Box ${num} marcat.`, 1);
-  $('rec-box').value = String(num + 1);
-  $('rec-anchors').textContent = reconRec.anchors.length + ' ancore';
+  if (inp) inp.value = String(num + 1);
+  const ra = $('rec-anchors');
+  if (ra) ra.textContent = reconRec.anchors.length + ' ancore';
 }
 
 async function reconStop() {
@@ -581,7 +595,20 @@ function doImport() {
       try {
         const dump = JSON.parse(r.result);
         if (!confirm('Import + PRELUARE cursă? Datele locale se înlocuiesc.')) return;
-        await importDay(store, dump);
+        try {
+          await importDay(store, dump);
+        } catch (e) {
+          // Fișierul are mai puține intrări decât jurnalul local: se poate să fie un
+          // export vechi sau trunchiat, iar importul ar șterge ziua. Cifrele se pun pe
+          // ecran și decide omul. (Audit de securitate, 04.08.2026.)
+          if (!e.cerConfirmare) throw e;
+          const c = e.cerConfirmare;
+          if (!confirm(`ATENȚIE: fișierul are ${c.dinFisier} intrări, jurnalul local are ${c.local}.\n\n` +
+                       `Importul ȘTERGE jurnalul local (${c.local} intrări) și pune în loc cele ` +
+                       `${c.dinFisier} din fișier. Ce se șterge NU se mai poate recupera.\n\n` +
+                       `Sigur înlocuiești?`)) return;
+          await importDay(store, dump, { confirmat: true });
+        }
         // Sanitizat la ÎNCĂRCARE, nu doar la scanare: planul poate veni și din import
   // (fișier de pe alt telefon = conținut extern) sau dintr-un IndexedDB scris de o
   // versiune veche. Singurul punct prin care trec toate căile. (Audit 02.08.2026, P3.)
