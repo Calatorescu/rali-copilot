@@ -21,6 +21,23 @@ import { parseRallyTime } from './time.js';
 
 const TIERS_M = [300, 150];   // + „acum", calculat din modelul șoferului
 
+// COADA anunțului „acum" — ce urmează DUPĂ manevra tocmai anunțată (cererea lui Andreas,
+// 04.08.2026: „fă acum la dreapta și următoarea la stânga", „fă acum stânga și în 300 de
+// metri la dreapta"). Pragurile, cu jurnalele reale în față (02-04.08.2026):
+//  • manevrele consecutive din roadbook-urile conduse până acum sunt la 30, 70 și 90 m
+//    (bucla József), apoi sar direct la 2600 m. Între 100 și 2500 m nu s-a măsurat NIMIC,
+//    deci pragurile nu pot fi citite dintr-o distribuție — se aleg pe TIMP, la vitezele
+//    măsurate acolo (în buclă: mediana 18 km/h; pe legătură: mediana 37, p90 61 km/h).
+//  • 80 m ≈ 5 s la 61 km/h și ≈ 8 s la 37 km/h. Sub atât, o cifră („în 50 de metri") e
+//    consumată înainte să se termine fraza care o rostește, deci se spune „imediat".
+//    Regula veche de boxuri înlănțuite tăia la 60 m și lăsa pe dinafară exact bucla din
+//    04.08 (70 și 90 m între manevre) — de-aia pragul urcă la 80.
+//  • 500 m e primul prag peste treapta de 300 m: de acolo în sus manevra își primește
+//    oricum anunțul propriu în câteva secunde, iar coada n-ar face decât să lungească
+//    fraza fix în virajul în care pilotul are nevoie de cuvinte puține.
+const COADA_IMEDIAT_M = 80;
+const COADA_MAX_M = 500;
+
 export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }) {
   const M = {
     state: 'PREP',
@@ -284,17 +301,33 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
     return nb ? Math.min(prag, (b.sumKm + nb.sumKm) / 2) : prag;
   }
 
-  // Boxul de DUPĂ cel curent, când e atât de aproape încât un anunț separat ar veni
-  // prea târziu (sub 60 m). Fraza lui intră în ACELAȘI anunț cu „acum".
-  function boxInlantuit(i) {
-    const b = plan.boxes[i], nb = plan.boxes[i + 1];
-    if (!b || !nb) return null;
-    const gapM = Math.round((nb.sumKm - b.sumKm) * 1000);
-    if (gapM > 60) return null;
-    if (nb.dir === 'ÎNAINTE' && !nb.flag) return null;      // „drept înainte" nu se rostește
-    return { box: nb, gapM,
-             text: nb.flag ? turnText(nb, gapM, false)
-                           : `${maneuver(nb.dir, false)} la ${distRo(Math.max(20, gapM))}` };
+  // MANEVRA URMĂTOARE, pentru coada anunțului „acum". Generalizarea regulii de boxuri
+  // înlănțuite din v28: „înlănțuit" a devenit pur și simplu cazul „imediat" de mai jos,
+  // ca să existe UN SINGUR loc care produce fraza dublă.
+  //
+  // Ce intră în coadă: doar VIRAJELE și GIRATORIILE (TURN_DIRS). Un „ÎNAINTE", un reper,
+  // un TC sau o linie de probă nu sunt decizii de volan — se sar, dar căutarea merge mai
+  // departe, iar distanța rostită e cea până la MANEVRA găsită, nu până la boxul sărit.
+  // Distanța e cea dintre BOXURI (nu de la poziția de acum): pilotul aude coada în timp
+  // ce ia virajul, deci „în 300 de metri" înseamnă 300 de metri de la virajul ăsta —
+  // exact cifra pe care o are și în roadbook, în fața ochilor.
+  function coadaManevra(i) {
+    const b = plan.boxes[i];
+    if (!b) return null;
+    for (let j = i + 1; j < plan.boxes.length; j++) {
+      const nb = plan.boxes[j];
+      const gapM = Math.round((nb.sumKm - b.sumKm) * 1000);
+      if (gapM > COADA_MAX_M) return null;              // prea departe: vine anunțul ei
+      if (!TURN_DIRS.has(nb.dir || '')) continue;       // nu e manevră — sar peste ea
+      if (gapM <= COADA_IMEDIAT_M) return { box: nb, gapM, text: `imediat ${maneuver(nb.dir, false)}` };
+      // rotunjire la 50 m: coada e o pregătire, nu un reper de măsurat cu odometrul —
+      // „în 100 de metri" se ține minte la volan, „în 90 de metri" doar sună precis.
+      // Podeaua de 50 m e o plasă pentru ziua în care pragul de sus se mai mișcă:
+      // „în 0 metri" n-are voie să se rostească niciodată.
+      const rotund = Math.max(50, Math.round(gapM / 50) * 50);
+      return { box: nb, gapM, text: `în ${distRo(rotund)} ${maneuver(nb.dir, false)}` };
+    }
+    return null;
   }
 
   function announceBoxes() {
@@ -325,13 +358,21 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
     if (!silent) {
       // „acum" = prio 4: întrerupe orice și nu expiră repede (audit, #9)
       let txt = turnText(b, dM, isNow);
-      // Boxuri ÎNLĂNȚUITE: manevra următoare se spune ÎNAINTE de a o face pe asta.
-      // La 20-30 m între boxuri (bucla József), al doilea anunț ar veni oricum după
-      // ce virajul e ratat — deci intră în aceeași frază: „dreapta acum, apoi stânga
-      // la 30 de metri". (Plângerea lui Andreas, 03.08.2026.)
-      if (isNow) {
-        const inl = boxInlantuit(M.nextBoxIdx);
-        if (inl) txt += `, apoi ${inl.text}`;
+      // La ULTIMUL anunț al unei manevre (cel de „acum"), fraza spune și ce urmează:
+      // „dreapta acum, și imediat stânga" / „stânga acum, la T, și în 300 de metri
+      // dreapta". Momentul e ales: pilotul e cu mâinile pe volan și tocmai a aflat ce
+      // face ACUM — restul secundelor până la manevra următoare sunt singurele în care
+      // mai poate planifica banda și viteza. (Cererea lui Andreas, 04.08.2026.)
+      // Virgula dinaintea lui „și" nu e ortografie, e o pauză de TTS: fără ea, cele
+      // două manevre se lipesc într-un singur șir de cuvinte.
+      //
+      // Doar boxurile de MANEVRĂ primesc coadă (un TC sau o linie de start n-au „ce
+      // urmează" de planificat), și doar în afara probei: în probă, urechea e pe cifrele
+      // de ritm, deci acolo rămâne exact cât era înainte — cazul „imediat", singurul în
+      // care un anunț separat ar ajunge după ce virajul a trecut.
+      if (isNow && TURN_DIRS.has(b.dir || '')) {
+        const coada = coadaManevra(M.nextBoxIdx);
+        if (coada && (!M.rt || coada.gapM <= COADA_IMEDIAT_M)) txt += `, și ${coada.text}`;
       }
       // Clasa 'manevra' lipsea tocmai de la anunțurile de viraj — adică fix de la ce
       // descrie regula. Comitul „paznic de directie" (03.08) a pus clasele pe alarme și

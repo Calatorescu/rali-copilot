@@ -512,10 +512,12 @@ console.log('\n═══ 03.08: boxurile înlănțuite se văd și se aud la tim
   w.drept(23, 12, 0);                       // 276 m — chiar înainte de boxul 2
   const acum = w.said.filter(s => /dreapta acum/.test(s.t));
   ok('anunțul „acum" al boxului 2 spune ȘI manevra următoare',
-     acum.length >= 1 && /apoi .*stânga/i.test(acum[acum.length - 1].t),
+     acum.length >= 1 && /și imediat stânga/i.test(acum[acum.length - 1].t),
      JSON.stringify(acum.map(s => s.t)));
-  ok('…cu distanța dintre ele, în metri', acum.some(s => /la 30 de metri|la 29 de metri/.test(s.t)),
-     JSON.stringify(acum.map(s => s.t)));
+  // 04.08: coada nu mai dă cifra sub 80 m. La 29 m și 40 km/h, „la 30 de metri" se
+  // termină de rostit după ce virajul a trecut — „imediat" e adevărat mai mult timp.
+  ok('…fără cifră, fiindcă la 29 m cifra e stătută înainte de a fi rostită',
+     acum.every(s => !/de metri/.test(s.t)), JSON.stringify(acum.map(s => s.t)));
 
   // ecranul: boxul 3 (0,32) nu mai are voie să țină cardul până la 0,40 — boxul 4 (0,35)
   // e mai aproape decât el încă de la 0,335. Măsurat în teren: 23 s de întârziere.
