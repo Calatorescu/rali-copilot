@@ -8,7 +8,7 @@
 // localStorage rămâne doar pentru preferințe mărunte (temă, cheie) — urmele GPS nu
 // încap acolo.
 
-import { reconStatus, reconRecupereaza } from './route.js';
+import { reconStatus, reconRecupereaza, sanitizeBuletin } from './route.js';
 
 const DB = 'rali2', VER = 1;
 
@@ -88,14 +88,16 @@ export async function exportDay(store) {
   // `recon_draft` intră și el în export: o recunoaștere întreruptă (telefon închis în
   // plin drum) e o măsurătoare făcută, iar exportul e singurul loc din care se poate
   // afla de pe birou că a existat. Vezi main.js, recupereazaDraftRecon.
-  const [journal, plan, speeds, recon, tcs, draft, harta] = await Promise.all([
+  const [journal, plan, speeds, recon, tcs, draft, harta, buletin] = await Promise.all([
     store.journalAll(), store.get('plan_raw'), store.get('rt_speeds'),
     store.get('recon'), store.get('tc_schedule'), store.get('recon_draft'),
-    store.get('harta')
+    store.get('harta'), store.get('buletin')
   ]);
+  // `buletin` intră și el: el DEFINEȘTE probele (start, medie, schimbări, finiș). Fără
+  // el în export, al doilea telefon ar prelua cursa cu alte probe decât primul.
   return { _app: 'RALI2', _ver: 1, at: Date.now(), journal, plan_raw: plan || null,
            rt_speeds: speeds || null, recon: recon || null, tc_schedule: tcs || null,
-           recon_draft: draft || null, harta: harta || null };
+           recon_draft: draft || null, harta: harta || null, buletin: buletin || null };
 }
 
 // Importul ȘTERGE jurnalul local. Până acum ștergea ÎNAINTE de orice verificare — aceeași
@@ -122,6 +124,11 @@ export async function importDay(store, dump, { confirmat = false } = {}) {
   if (dump.plan_raw) await store.put('plan_raw', dump.plan_raw);   // sanitizat la încărcare
   if (dump.rt_speeds) await store.put('rt_speeds', dump.rt_speeds);
   if (dump.tc_schedule) await store.put('tc_schedule', dump.tc_schedule);
+  // Buletinul vine dintr-un FIȘIER, deci trece prin aceeași sită ca la scanare.
+  if (dump.buletin) {
+    const b = sanitizeBuletin(dump.buletin);
+    if (b.length) await store.put('buletin', b);
+  }
   // Geometria vine dintr-un FIȘIER, adică din conținut extern: se scrie doar ce are forma
   // pe care o citește aplicația — aceeași verificare pe care o face și panoul de pregătire.
   if (dump.recon && typeof dump.recon === 'object') {

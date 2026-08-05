@@ -8,11 +8,12 @@ import { makeLiveGps, makeSyntheticGps, makeReplayGps } from './gps.js';
 import { buildPlan, detectRts, sanitizeBoxes, groupByLeg, verifyRoadbook,
          reconNormalize, reconPentruLeg, reconPune, reconStatus,
          reconRecupereaza, verificaHarta, hartaPentruLeg, coerentaHarta,
-         normFlags, areFlag, esteStart, esteFinish, legKey } from './route.js';
+         normFlags, areFlag, esteStart, esteFinish, legKey,
+         rezumatVerificare, normVitezaSalvata, imbinaBuletin } from './route.js';
 import { makeMachine } from './machine.js';
 import { makeDriverModel } from './learn.js';
 import { makeUi, startHeaderClock } from './ui.js';
-import { scanRoadbookPage, scanTimeCard, faColectorPoze, MAX_POZE } from './scan.js';
+import { scanRoadbookPage, scanTimeCard, scanBulletin, faColectorPoze, MAX_POZE } from './scan.js';
 import { makeBleSpeed } from './ble.js';
 import { repereBoxuri, faGeocoder, geocodeazaRepere, verificaAncore } from './repere.js';
 import { linkuriTraseu, linkNavigare } from './maps.js';
@@ -33,7 +34,7 @@ let hartaIncoerenta = null;
 // Versiunea build-ului — se ține SINCRON cu CACHE din sw.js la fiecare deploy.
 // Vizibilă în antet și scrisă în jurnal la fiecare pornire: „ce versiune rulează
 // telefonul?" se citește, nu se ghicește (02.08, seara — nu se putea ști).
-const BUILD = 'v37';
+const BUILD = 'v38';
 
 async function init() {
   store = await makeStore();
@@ -168,7 +169,12 @@ async function rebuildPlan(fortat) {
       hartaIncoerenta = c.probleme[0] || 'nu se potrivește cu kilometrajul';
     } else hartaIncoerenta = null;
   } else hartaIncoerenta = null;
-  plan = buildPlan(g ? g.boxes : [], speeds, reconStare.ok ? rec : null, hartaLeg);
+  // Buletinul Directorului de cursă, dacă a fost fotografiat: el DEFINEȘTE probele
+  // (start, medie, schimbări de medie, finiș), iar roadbook-ul nu le conține deloc —
+  // boxurile 66, 97 și 104 de la Reșița n-au nici icoană, nici comentariu. Când
+  // buletinul produce probe pe legul activ, ele bat semnele citite din icoane.
+  const buletin = (await store.get('buletin')) || null;
+  plan = buildPlan(g ? g.boxes : [], speeds, reconStare.ok ? rec : null, hartaLeg, buletin);
   plan.hartaTot = hartaTot;
   plan.legKey = cheia;
   plan.legGroups = grupuri;
@@ -259,8 +265,7 @@ function renderPrep() {
     inp.addEventListener('change', async () => {
       const v = parseFloat(String(inp.value).replace(',', '.'));
       if (isFinite(v) && v >= 5 && v <= 120) {
-        const speeds = (await store.get('rt_speeds')) || {};
-        speeds[rt.key] = v; await store.put('rt_speeds', speeds);
+        await salveazaViteza(rt.key, v);   // păstrează schimbările de medie deja puse
         await rebuildPlan();
       }
     });
@@ -296,8 +301,93 @@ function renderPrep() {
       }
     }
   }
+  renderBuletin();
   renderProbe();
   renderRecon();
+}
+
+// ── BULETINUL PE ECRAN ──────────────────────────────────────────────────────
+// Cifrele, apoi ce NU s-a putut rezolva. Regula, aceeași ca peste tot în aplicație:
+// ce nu se poate deduce se SPUNE, nu se ghicește. Un finiș „înainte de boxul 66" e
+// cronometrat la kilometrajul boxului 66 fiindcă alt reper nu există — dar dacă asta
+// nu scrie pe ecran, Andreas crede că are o precizie pe care n-o are.
+const CULOARE_NOTA = { nelegat: 'var(--bad)', aproximare: 'var(--warn)',
+                       de_mana: 'var(--warn)', info: '' };
+
+function renderBuletin() {
+  const el = $('prep-buletin');
+  if (!el) return;
+  el.textContent = '';
+  const cifre = $('prep-buletin-cifre');
+  const b = plan && plan.buletin;
+  if (!b) {
+    if (cifre) {
+      cifre.textContent = 'Buletin: — · probele vin din semnele de start/finiș citite în roadbook';
+      cifre.style.color = '';
+    }
+    return;
+  }
+  if (cifre) {
+    cifre.textContent =
+      `Buletin: ${b.total} ${b.total === 1 ? 'probă citită' : 'probe citite'} · ` +
+      `${b.inLeg} pe ${plan.legLabel || 'legul activ'} · ${b.legate} legate de boxuri · ` +
+      `${b.boxuriPotrivite} din ${b.boxuriCerute} boxuri găsite în roadbook`;
+    cifre.style.color = b.legate ? 'var(--ok)' : 'var(--warn)';
+  }
+  const cine = document.createElement('p');
+  cine.className = 'line';
+  const dinBuletin = plan.sursaProbe === 'buletin';
+  cine.style.color = dinBuletin ? 'var(--ok)' : 'var(--warn)';
+  cine.textContent = dinBuletin
+    ? `Probele vin din BULETIN (${b.legate}) — el bate semnele de start/finiș citite în roadbook.`
+    : 'Buletinul n-a produs nicio probă pe legul ăsta — probele rămân cele din semnele roadbook-ului.';
+  el.appendChild(cine);
+
+  if (dinBuletin) for (const rt of plan.rts) el.appendChild(randBuletinProba(rt));
+
+  for (const n of b.note) {
+    const p = document.createElement('p');
+    p.className = 'line' + (n.tip === 'info' ? ' dim' : '');
+    p.style.color = CULOARE_NOTA[n.tip] || '';
+    // textContent: nota citează text venit din poza unui document extern
+    p.textContent = (n.tip === 'info' ? 'ℹ ' : '⚠ ') + n.text;
+    el.appendChild(p);
+  }
+}
+
+const km2 = v => v.toFixed(2).replace('.', ',');
+
+function randBuletinProba(rt) {
+  const rand = document.createElement('div');
+  rand.className = 'probe-rand';
+  const sb = plan.boxes[rt.startIdx], fb = plan.boxes[rt.finishIdx];
+  const cap = document.createElement('p');
+  cap.className = 'line';
+  const tare = document.createElement('b');
+  tare.textContent = `${rt.name} · ${km2(rt.distKm)} km · ` +
+    (rt.type === 'standing' ? 'de pe loc' : 'din mers');
+  cap.appendChild(tare);
+  rand.appendChild(cap);
+
+  const det = document.createElement('p');
+  det.className = 'line dim';
+  const REL = { at: 'LA', before: 'ÎNAINTE de', after: 'DUPĂ' };
+  det.textContent =
+    `start boxul ${sb ? sb.num : '?'} (${km2(rt.startKm)} km) → ` +
+    `finiș ${REL[rt.finishRel || 'at']} boxul ${fb ? fb.num : '?'} (${km2(rt.finishKm)} km) · ` +
+    (rt.kmh != null ? `medie ${String(rt.kmh).replace('.', ',')} km/h` : 'FĂRĂ MEDIE');
+  rand.appendChild(det);
+
+  if (rt.segments && rt.segments.length > 1) {
+    const seg = document.createElement('p');
+    seg.className = 'line';
+    seg.style.color = 'var(--ok)';
+    seg.textContent = 'schimbări de medie: ' + rt.schimbari
+      .map(s => `${String(s.kmh).replace('.', ',')} km/h de la boxul ${s.box} ` +
+                `(${km2(s.fromKm)} km de la start)`).join(' · ');
+    rand.appendChild(seg);
+  }
+  return rand;
 }
 
 // ── EDITAREA MANUALĂ A PROBELOR ─────────────────────────────────────────────
@@ -305,8 +395,9 @@ function renderPrep() {
 // scanarea a citit corect toate cele 120 de boxuri și toate kilometrele, dar din patru
 // semne de probă a ratat TREI linii de finish (boxurile 64, 66, 97) și a inventat una
 // (boxul 108). Aplicația a dedus o singură probă, 62,12 → 71,51 = 9,39 km, în locul celor
-// trei reale (8,89 · 6,26 · 5,74). Proba cea mai grea a cursei ar fi fost cronometrată pe
-// o distanță cu 63% mai mare — adică exact partea care merge ar fi dat cifre false.
+// trei din buletin (8,89 · 6,26 · 8,87): TR2 și TR3 dispăreau cu totul, iar TR4 s-ar fi
+// cronometrat pe 9,39 km în loc de 8,87 — adică exact partea care dă punctele ar fi
+// lucrat cu cifre false.
 //
 // Promptul s-a întărit (vezi scan.js), modelul de date s-a reparat (un box poate purta
 // mai multe semne), dar niciuna din cele două nu garantează nimic pe un roadbook nou.
@@ -316,6 +407,48 @@ const _probeExtra = new Set();          // boxuri deschise manual, fără semn d
 
 function cheieViteza(b) { return `${b.num}_${Math.round(b.sumKm * 100)}`; }
 
+// ── VITEZELE PUSE DE MÂNĂ, cu schimbări de medie ────────────────────────────
+// `rt_speeds` ținea, sub cheia probei, UN NUMĂR. Rămâne valabil: telefoanele de până azi
+// au forma aia scrisă în depozit și tot aia se scrie mai departe pentru probele cu medie
+// constantă. Când proba are o schimbare de medie („de la boxul 97, 20,5 km/h" — cazul
+// TR4 din buletinul de la Reșița), sub aceeași cheie se scrie { kmh, schimbari }.
+// Citirea trece prin normVitezaSalvata, care înțelege ambele forme.
+//
+// Scrierile trec toate pe aici dintr-un motiv: până acum fiecare loc scria direct
+// `speeds[key] = v`, ceea ce ar fi ȘTERS tăcut schimbarea de medie la prima corectare a
+// vitezei de bază.
+async function salveazaViteza(key, kmh, schimbari) {
+  const speeds = (await store.get('rt_speeds')) || {};
+  const cur = normVitezaSalvata(speeds[key]);
+  const k = kmh === undefined ? cur.kmh : kmh;
+  const s = schimbari === undefined ? cur.schimbari : schimbari;
+  if (k == null && !s.length) delete speeds[key];
+  else speeds[key] = s.length ? { kmh: k, schimbari: s } : k;
+  await store.put('rt_speeds', speeds);
+  return speeds[key];
+}
+
+async function vitezaSalvata(key) {
+  return normVitezaSalvata(((await store.get('rt_speeds')) || {})[key]);
+}
+
+async function puneSchimbare(key, box, kmh) {
+  const cur = await vitezaSalvata(key);
+  const s = cur.schimbari.filter(x => x.box !== box)
+                         .concat([{ box, kmh }])
+                         .sort((a, b) => a.box - b.box);
+  await salveazaViteza(key, undefined, s);
+  try { store.log('flag_manual', { ce: 'schimbare_viteza', cheie: key, box, kmh }, Date.now()); } catch (e) {}
+  await rebuildPlan();
+}
+
+async function scoateSchimbare(key, box) {
+  const cur = await vitezaSalvata(key);
+  await salveazaViteza(key, undefined, cur.schimbari.filter(x => x.box !== box));
+  try { store.log('flag_manual', { ce: 'schimbare_stearsa', cheie: key, box }, Date.now()); } catch (e) {}
+  await rebuildPlan();
+}
+
 function renderProbe() {
   const wrap = $('prep-probe');
   if (!wrap) return;
@@ -324,14 +457,23 @@ function renderProbe() {
   if (rez) {
     const n = plan.rts.length;
     rez.textContent = n
-      ? `${n} ${n === 1 ? 'probă' : 'probe'}: ` +
+      ? `${n} ${n === 1 ? 'probă' : 'probe'} ` +
+        `(din ${plan.sursaProbe === 'buletin' ? 'BULETIN' : 'semnele roadbook-ului'}): ` +
         plan.rts.map(r => `${r.name} ${r.distKm.toFixed(2)} km` +
-                          (r.kmh != null ? ` la ${r.kmh}` : ' FĂRĂ VITEZĂ')).join(' · ')
+                          (r.kmh != null ? ` la ${r.kmh}` : ' FĂRĂ VITEZĂ') +
+                          (r.segments && r.segments.length > 1
+                            ? ` → ${r.segments.slice(1).map(s => s.kmh).join(' → ')}` : '')).join(' · ')
       : 'Nicio probă detectată — dacă roadbook-ul are, adaug-o mai jos.';
     rez.style.color = n && plan.rts.every(r => r.kmh != null) ? 'var(--ok)' : 'var(--warn)';
   }
+  renderPropuneri();
   if (!plan.boxes.length) return;
-  const relevante = plan.boxes.filter(b => esteStart(b) || esteFinish(b) ||
+  // boxurile care CHIAR poartă o probă din planul activ intră în listă chiar dacă n-au
+  // nicio icoană: cu probele venite din buletin, startul și finișul sunt boxuri normale
+  // în roadbook (66, 97, 104 la Reșița n-au nici icoană, nici comentariu)
+  const dinPlan = new Set();
+  for (const r of plan.rts) { dinPlan.add(plan.boxes[r.startIdx]); dinPlan.add(plan.boxes[r.finishIdx]); }
+  const relevante = plan.boxes.filter(b => esteStart(b) || esteFinish(b) || dinPlan.has(b) ||
                                            (b.num != null && _probeExtra.has(b.num)));
   if (!relevante.length) {
     const p = document.createElement('p');
@@ -341,6 +483,105 @@ function renderProbe() {
     return;
   }
   for (const b of relevante) wrap.appendChild(randProba(b));
+}
+
+// ── PROPUNERILE DE CORECTURĂ ────────────────────────────────────────────────
+// Ce vede omul în parcare: cifrele verificării, avertismentul că propunerile sunt
+// DEDUSE (nu citite de pe hârtie), apoi un rând pe corectură, cu motivul scris pe
+// românește și un buton. Aplicarea trece prin comutaFlag — aceeași cale ca apăsarea
+// manuală a unui semn: scrie în plan_raw, lasă urmă în jurnal, reconstruiește planul.
+// Niciun ocol, deci nimic nu se poate aplica fără să se vadă seara în jurnal.
+const NUME_SEMN = { RT_START_AUTO: 'START din mers', RT_START_STANDING: 'START oprit',
+                    RT_FINISH: 'FINISH' };
+
+function renderPropuneri() {
+  const wrap = $('probe-propuneri');
+  if (!wrap) return;
+  wrap.textContent = '';
+  if (!plan || !plan.boxes.length) return;
+  const rez = rezumatVerificare(plan.boxes);
+
+  const cifre = document.createElement('p');
+  cifre.className = 'line';
+  cifre.textContent =
+    `Verificare: ${rez.declarate} ${rez.declarate === 1 ? 'start scris' : 'starturi scrise'} ` +
+    `în text („Start RT n"), ${rez.marcate} marcate pe boxuri · ${rez.orfane} ` +
+    `${rez.orfane === 1 ? 'finiș' : 'finișuri'} fără probă deschisă · ` +
+    `${rez.probeAcum} ${rez.probeAcum === 1 ? 'probă' : 'probe'} acum` +
+    (rez.propuneri.length ? `, ${rez.probeDupa} după corecturi.` : '.');
+  cifre.style.color = rez.propuneri.length ? 'var(--warn)' : 'var(--ok)';
+  wrap.appendChild(cifre);
+
+  // Când probele vin din buletin, semnele din roadbook nu mai cronometrează nimic.
+  // Fără rândul ăsta, omul ar corecta icoane în parcare crezând că schimbă probele.
+  if (plan.sursaProbe === 'buletin') {
+    const p = document.createElement('p');
+    p.className = 'line';
+    p.style.color = 'var(--ok)';
+    p.textContent = 'Probele vin din BULETIN. Cifrele de mai sus și corecturile de mai jos ' +
+      'privesc doar semnele din roadbook — ele nu mai decid cronometrarea.';
+    wrap.appendChild(p);
+  }
+
+  if (!rez.propuneri.length) return;
+
+  const avert = document.createElement('p');
+  avert.className = 'line dim';
+  avert.textContent = 'Corecturile de mai jos sunt DEDUSE din comentariile scanate, nu ' +
+    'citite de pe hârtie. Hotărăște buletinul de la organizator — citește fiecare rând ' +
+    'și aplică doar ce se potrivește cu el. Unde se TERMINĂ o probă nu scrie în ' +
+    'roadbook, deci aplicația nu propune niciodată un finiș nou: acela se pune de mână.';
+  wrap.appendChild(avert);
+
+  for (const p of rez.propuneri) wrap.appendChild(randPropunere(p));
+
+  const jos = document.createElement('div');
+  jos.className = 'row';
+  const toate = document.createElement('button');
+  toate.className = 'btn sm danger';
+  toate.textContent = `Aplică toate (${rez.propuneri.length})`;
+  toate.addEventListener('click', async () => {
+    const n = rez.propuneri.length;
+    const scoase = rez.propuneri.filter(p => p.actiune === 'scoate').length;
+    if (!confirm(`Aplic toate cele ${n} corecturi?\n\n` +
+                 `${scoase} semne scoase, ${n - scoase} adăugate.\n` +
+                 `${rez.probeAcum} probe acum → ${rez.probeDupa} după.\n\n` +
+                 `Se poate reveni oricând, apăsând semnele box cu box.`)) return;
+    toate.disabled = true;
+    // secvențial și prin comutaFlag: fiecare corectură se salvează și se jurnalizează
+    // separat, ca la debrief să se vadă exact ce s-a schimbat și când
+    for (const p of rez.propuneri) await comutaFlag(p.box, p.flag);
+  });
+  jos.appendChild(toate);
+  wrap.appendChild(jos);
+}
+
+function randPropunere(p) {
+  const rand = document.createElement('div');
+  rand.className = 'probe-rand';
+  const cap = document.createElement('p');
+  cap.className = 'line';
+  const tare = document.createElement('b');
+  tare.textContent = `box ${p.box.num != null ? p.box.num : '?'} · ` +
+    `${p.box.sumKm.toFixed(2)} km · ${p.actiune === 'adauga' ? '+' : '−'} ` +
+    `${NUME_SEMN[p.flag] || p.flag}`;
+  tare.style.color = p.actiune === 'adauga' ? 'var(--ok)' : 'var(--warn)';
+  cap.appendChild(tare);
+  rand.appendChild(cap);
+  const motiv = document.createElement('p');
+  motiv.className = 'line dim';
+  // textContent, nu innerHTML: motivul citează comentariul scanat, adică text extern
+  motiv.textContent = p.motiv;
+  rand.appendChild(motiv);
+  const r = document.createElement('div');
+  r.className = 'row';
+  const btn = document.createElement('button');
+  btn.className = 'btn sm ' + (p.actiune === 'adauga' ? 'ok' : 'sec');
+  btn.textContent = 'Aplică';
+  btn.addEventListener('click', () => comutaFlag(p.box, p.flag));
+  r.appendChild(btn);
+  rand.appendChild(r);
+  return rand;
 }
 
 function randProba(b) {
@@ -375,8 +616,10 @@ function randProba(b) {
   }
   rand.appendChild(butoane);
 
-  // viteza se cere DOAR pe boxurile de start — acolo o scrie și roadbook-ul
-  if (esteStart(b)) {
+  // Viteza se cere pe boxurile de START: cele marcate cu icoană ȘI cele pe care
+  // buletinul le declară start, chiar dacă în roadbook n-au niciun semn.
+  const rt = plan.rts.find(r => plan.boxes[r.startIdx] === b);
+  if (esteStart(b) || rt) {
     const r2 = document.createElement('div');
     r2.className = 'row';
     const et = document.createElement('span');
@@ -384,19 +627,66 @@ function randProba(b) {
     const inp = document.createElement('input');
     inp.type = 'number'; inp.placeholder = 'km/h'; inp.min = 5; inp.max = 120; inp.step = 0.1;
     inp.style.maxWidth = '110px';
-    const rt = plan.rts.find(r => plan.boxes[r.startIdx] === b);
     if (rt && rt.kmh != null) inp.value = rt.kmh;
     inp.addEventListener('change', async () => {
       const v = parseFloat(String(inp.value).replace(',', '.'));
       if (!(isFinite(v) && v >= 5 && v <= 120)) return;
-      const speeds = (await store.get('rt_speeds')) || {};
-      speeds[cheieViteza(b)] = v;
-      await store.put('rt_speeds', speeds);
+      await salveazaViteza(cheieViteza(b), v);
       try { store.log('flag_manual', { ce: 'viteza', boxNum: b.num, km: b.sumKm, kmh: v }, Date.now()); } catch (e) {}
       await rebuildPlan();
     });
     r2.append(et, inp);
     rand.appendChild(r2);
+
+    // ── SCHIMBAREA DE MEDIE ÎN INTERIORUL PROBEI ──────────────────────────
+    // Buletinul de la Reșița o dă în două feluri: legată de un BOX (TR4: 20,5 km/h la
+    // boxul 97) sau legată de un LOC (TR6: 45 km/h „la ieșirea din localitatea Văliug").
+    // A doua nu se poate transforma singură în kilometraj — omul se uită pe roadbook,
+    // vede la ce box e ieșirea din Văliug și o scrie aici. De-asta câmpul cere un BOX.
+    const cheie = cheieViteza(b);
+    const puse = (rt && rt.schimbari) ? rt.schimbari : [];
+    for (const s of puse) {
+      const r = document.createElement('div');
+      r.className = 'row';
+      const t = document.createElement('span');
+      t.className = 'line';
+      t.style.color = 'var(--ok)';
+      t.textContent = `de la boxul ${s.box} (${km2(s.fromKm)} km de la start) → ` +
+                      `${String(s.kmh).replace('.', ',')} km/h`;
+      const x = document.createElement('button');
+      x.className = 'btn danger sm';
+      x.textContent = '✕';
+      x.addEventListener('click', () => scoateSchimbare(cheie, s.box));
+      r.append(t, x);
+      rand.appendChild(r);
+    }
+    const r3 = document.createElement('div');
+    r3.className = 'row';
+    const et3 = document.createElement('span');
+    et3.className = 'line dim'; et3.textContent = 'schimbare de medie: de la boxul';
+    const inBox = document.createElement('input');
+    inBox.type = 'number'; inBox.placeholder = 'box'; inBox.min = 1; inBox.max = 999;
+    inBox.inputMode = 'numeric'; inBox.style.maxWidth = '90px';
+    const et4 = document.createElement('span');
+    et4.className = 'line dim'; et4.textContent = 'viteza';
+    const inKmh = document.createElement('input');
+    inKmh.type = 'number'; inKmh.placeholder = 'km/h'; inKmh.min = 5; inKmh.max = 120; inKmh.step = 0.1;
+    inKmh.style.maxWidth = '90px';
+    const pune = document.createElement('button');
+    pune.className = 'btn sm sec';
+    pune.textContent = 'PUNE';
+    pune.addEventListener('click', async () => {
+      const nb = parseInt(String(inBox.value), 10);
+      const nv = parseFloat(String(inKmh.value).replace(',', '.'));
+      if (!(isFinite(nb) && nb >= 1 && nb <= 999) || !(isFinite(nv) && nv >= 5 && nv <= 120)) {
+        alert('Scrie numărul boxului de la care se schimbă media și viteza nouă (km/h).');
+        return;
+      }
+      inBox.value = ''; inKmh.value = '';
+      await puneSchimbare(cheie, nb, nv);
+    });
+    r3.append(et3, inBox, et4, inKmh, pune);
+    rand.appendChild(r3);
   }
   return rand;
 }
@@ -867,27 +1157,121 @@ async function scaneazaPozele(fisiere) {
     await store.del('harta');
     try { store.log('harta_stearsa', { legi: Object.keys(hartaVeche), cum: 'scanare nouă' }, Date.now()); } catch (e) {}
   }
+  // ȘI BULETINUL, DIN ACELAȘI MOTIV (audit, 05.08.2026, înainte de publicarea v38).
+  // Butonul „Ștergi roadbook-ul" ȘTIA deja regula asta și o scria în comentariu — dar
+  // calea de scanare o sărea. Buletinul definește probele prin numărul boxului și al
+  // paginii, iar amândouă repornesc la fiecare leg. Rămas peste un roadbook nou, ar fi
+  // pus proba „TR 2" la 44,8 km/h pe alt drum, și ar fi BĂTUT semnele citite corect din
+  // roadbook (`sursaProbe === 'buletin'`) — deci probele adevărate ar fi dispărut. Tăcut,
+  // până se uita cineva pe ecran. Se refotografiază, sunt două poze.
+  const buletinVechi = await store.get('buletin');
+  if (buletinVechi && buletinVechi.length) {
+    await store.del('buletin');
+    try { store.log('buletin_sters', { probe: buletinVechi.length, cum: 'scanare nouă' }, Date.now()); } catch (e) {}
+  }
   await rebuildPlan();
   const cazute = rezultate.filter(r => !r.ok);
+  // O ștergere tăcută e tot o pierdere de date. Dacă buletinul a plecat, se SPUNE, în
+  // aceeași propoziție cu bilanțul — altfel Andreas pleacă la drum crezând că are probele.
+  const notaBuletin = (buletinVechi && buletinVechi.length)
+    ? ` · ⚠ buletinul vechi (${buletinVechi.length} probe) a fost șters — refotografiază-l`
+    : '';
   const detaliu = rezultate.map(r => r.ok ? `p${r.pag} ✓${r.boxuri}` : `p${r.pag} ✗`).join(' · ');
   if (cazute.length) {
     st.textContent = `⚠ AU CĂZUT ${cazute.length} PAGINI DIN ${imgs.length} — refotografiază-le! ` +
-      `${detaliu} · ${cazute.map(c => `p${c.pag}: ${c.err}`).join(' · ')}`;
+      `${detaliu} · ${cazute.map(c => `p${c.pag}: ${c.err}`).join(' · ')}` + notaBuletin;
     st.style.color = 'var(--bad)';
     alert(`Scanarea NU e completă: ${cazute.length} pagini din ${imgs.length} au căzut.\n\n` +
           cazute.map(c => `pagina ${c.pag}: ${c.err}`).join('\n') +
-          `\n\nRefotografiază paginile căzute și scanează-le din nou — restul rămân.`);
+          `\n\nRefotografiază paginile căzute și scanează-le din nou — restul rămân.` +
+          (notaBuletin ? `\n\nBuletinul probelor a fost șters odată cu roadbook-ul vechi — refotografiază-l și pe el.` : ''));
   } else {
     // BILANȚUL, negru pe alb: „14 din 14 pagini scanate". Cifra selectată și cifra
     // scanată trebuie să se poată compara dintr-o privire — asta e verificarea care
     // ar fi prins pe loc plafonul tăcut de 12.
     st.textContent = `✓ ${rezultate.length} din ${imgs.length} pagini scanate · ${detaliu} → ` +
-      `${boxesRaw.length} boxuri, ${detectRts(boxesRaw).length} probe`;
-    st.style.color = 'var(--ok)';
+      `${boxesRaw.length} boxuri, ${detectRts(boxesRaw).length} probe` + notaBuletin;
+    st.style.color = notaBuletin ? 'var(--warn)' : 'var(--ok)';
   }
   try { store.log('scan_bilant', { selectate: imgs.length, scanate: rezultate.length,
     reusite: rezultate.filter(r => r.ok).length, cazute: cazute.length,
     boxuri: boxesRaw.length }, Date.now()); } catch (e) {}
+}
+
+// ── BULETINUL DIRECTORULUI DE CURSĂ, fotografiat ────────────────────────────
+// Cale NOUĂ, paralelă cu roadbook-ul. Același colector de poze (același plafon, același
+// contor, aceleași mesaje), dar propria lui instanță: o pagină de buletin nu are voie
+// să ajungă niciodată în teancul roadbook-ului, nici invers.
+// Buletinul e bilingv și are câteva pagini, deci se adună și se citesc la rând, iar
+// rezultatele se ÎMBINĂ peste ce e deja citit (vezi imbinaBuletin) — se poate fotografia
+// o pagină acum și restul peste zece minute.
+const colectorBuletin = faColectorPoze({ max: 8 });
+
+function buletinBucla(mesaj) {
+  const box = $('buletin-bucla'), nr = $('buletin-nr');
+  if (!box) return;
+  box.classList.toggle('hidden', colectorBuletin.total === 0);
+  if (nr) nr.textContent = (mesaj ? mesaj + ' ' : '') +
+    (colectorBuletin.total ? `${colectorBuletin.total} ${colectorBuletin.total === 1 ? 'pagină' : 'pagini'} de citit.` : '');
+}
+
+function fotografiazaBuletin() {
+  pickImages(false, fisiere => {
+    const r = colectorBuletin.adauga(fisiere);
+    buletinBucla(r.mesaj);
+  }, true);
+}
+
+async function scaneazaBuletin(fisiere) {
+  const key = localStorage.getItem('r2_key');
+  if (!key) { alert('Pune cheia API în Setări.'); return; }
+  const imgs = (fisiere || []).filter(Boolean);
+  if (!imgs.length) return;
+  const st = $('prep-buletin-st');
+  st.style.color = '';
+  st.textContent = `${imgs.length} ${imgs.length === 1 ? 'pagină selectată' : 'pagini selectate'}. Citesc buletinul…`;
+  let probe = (await store.get('buletin')) || [];
+  const rezultate = [], conflicte = [];
+  for (let i = 0; i < imgs.length; i++) {
+    st.textContent = `Citesc pagina ${i + 1} din ${imgs.length}…`;
+    let poza = null;
+    try {
+      poza = await citestePoza(imgs[i]);
+      const noi = await scanBulletin(key, poza.b64, poza.mime);
+      const im = imbinaBuletin(probe, noi);
+      probe = im.probe;
+      conflicte.push(...im.conflicte);
+      rezultate.push({ pag: i + 1, ok: true, probe: noi.length, total: probe.length });
+    } catch (e) {
+      rezultate.push({ pag: i + 1, ok: false, err: e.message,
+                       raw: e.raw || null, rawLen: e.rawLen || null, stop: e.stop || null });
+    }
+    poza = null;
+    try { store.log('scan_buletin', rezultate[rezultate.length - 1], Date.now()); } catch (e) {}
+  }
+  await store.put('buletin', probe);
+  await rebuildPlan();
+  const cazute = rezultate.filter(r => !r.ok);
+  const detaliu = rezultate.map(r => r.ok ? `p${r.pag} ✓${r.probe}` : `p${r.pag} ✗`).join(' · ');
+  const nume = probe.map(p => p.name || `box ${p.startBox}`).join(', ');
+  if (cazute.length) {
+    st.textContent = `⚠ AU CĂZUT ${cazute.length} PAGINI DIN ${imgs.length} — refotografiază-le! ` +
+      `${detaliu} · ${cazute.map(c => `p${c.pag}: ${c.err}`).join(' · ')}`;
+    st.style.color = 'var(--bad)';
+  } else {
+    st.textContent = `✓ ${rezultate.length} din ${imgs.length} pagini citite · ${detaliu} → ` +
+      `${probe.length} ${probe.length === 1 ? 'probă' : 'probe'} în buletin: ${nume}`;
+    st.style.color = 'var(--ok)';
+  }
+  // contradicțiile dintre română și engleză NU se ascund: câmpul a fost golit, iar
+  // omul trebuie să-l pună de mână
+  if (conflicte.length) {
+    st.textContent += ' · ' + conflicte.join(' · ');
+    st.style.color = 'var(--warn)';
+  }
+  try { store.log('scan_buletin_bilant', { selectate: imgs.length,
+    reusite: rezultate.filter(r => r.ok).length, cazute: cazute.length,
+    probe: probe.length, conflicte: conflicte.length }, Date.now()); } catch (e) {}
 }
 
 async function doScanTimecard(cuCamera) {
@@ -1392,11 +1776,34 @@ function bind() {
   // de fișiere e adesea cel de POZE al sistemului, care n-are cameră deloc — deci calea
   // spre cameră trebuie să fie un buton al ei, nu o speranță.
   const camOk = suportaCamera();
-  for (const id of ['btn-scan-foto', 'btn-scan-tc-foto']) {
+  for (const id of ['btn-scan-foto', 'btn-scan-tc-foto', 'btn-buletin-foto']) {
     const b = $(id);
     // un buton care nu poate face nimic (desktop) nu rămâne pe ecran
     if (b && !camOk) b.classList.add('hidden');
   }
+  // ── buletinul probelor ───────────────────────────────────────────────────
+  $('btn-buletin-foto')?.addEventListener('click', fotografiazaBuletin);
+  $('btn-buletin-inca')?.addEventListener('click', fotografiazaBuletin);
+  $('btn-buletin-gal')?.addEventListener('click', () => pickImages(true, f => scaneazaBuletin(f)));
+  $('btn-buletin-gata')?.addEventListener('click', () => {
+    const poze = colectorBuletin.poze;
+    colectorBuletin.goleste();
+    buletinBucla();
+    scaneazaBuletin(poze);         // același drum ca pozele alese din galerie
+  });
+  $('btn-buletin-renunt')?.addEventListener('click', () => {
+    if (!confirm(`Arunci cele ${colectorBuletin.total} poze nescanate?`)) return;
+    colectorBuletin.goleste();
+    buletinBucla();
+  });
+  $('btn-buletin-clear')?.addEventListener('click', async () => {
+    if (!confirm('Ștergi buletinul citit? Probele revin la semnele din roadbook.')) return;
+    await store.del('buletin');
+    try { store.log('buletin_sters', {}, Date.now()); } catch (e) {}
+    const st = $('prep-buletin-st');
+    if (st) { st.textContent = 'Buletin șters.'; st.style.color = ''; }
+    await rebuildPlan();
+  });
   $('btn-scan-foto')?.addEventListener('click', fotografiazaPagina);
   $('btn-scan-tc-foto')?.addEventListener('click', () => doScanTimecard(true));
   $('btn-foto-inca')?.addEventListener('click', fotografiazaPagina);
@@ -1417,8 +1824,12 @@ function bind() {
   // ștergea în aceeași apăsare și `recon`, și `rt_speeds`. O rescanare a roadbook-ului
   // (lucru normal dimineața) arunca deci recunoașterea făcută cu o zi înainte, tăcut.
   $('btn-clear-rb').addEventListener('click', async () => {
-    if (!confirm('Ștergi roadbook-ul scanat și vitezele probelor?')) return;
+    // Buletinul pleacă odată cu roadbook-ul: el definește probele PE BOXURILE acestui
+    // roadbook. Rămas peste unul nou, ar defini probe pe boxuri cu același număr și cu
+    // alt drum sub ele — aceeași clasă de defect ca harta rămasă de la alt eveniment.
+    if (!confirm('Ștergi roadbook-ul scanat, buletinul probelor și vitezele?')) return;
     boxesRaw = []; await store.del('plan_raw'); await store.del('rt_speeds');
+    await store.del('buletin');
     const harta = reconNormalize(await store.get('recon'), plan.legKey);
     const legi = Object.keys(harta.legs || {});
     if (legi.length) {

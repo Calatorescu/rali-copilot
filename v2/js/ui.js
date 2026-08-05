@@ -6,6 +6,7 @@
 import { fmtHMS } from './time.js';
 import { linkNavigare as linkMaps } from './maps.js';
 import { normFlags } from './route.js';
+import { speedAt } from './pace.js';
 
 const $ = id => document.getElementById(id);
 
@@ -41,7 +42,14 @@ export function makeUi() {
         $('cp-dev-lbl').textContent = M.rt.frozen != null
           ? 'FINISH — NU OPRI LÂNGĂ TABELĂ'
           : (dev >= 0 ? 'SECUNDE ÎN URMĂ' : 'SECUNDE ÎN AVANS');
-        $('cp-target').textContent = `${Math.round(M.speedKmh)} / ${M.rt.def.kmh}`;
+        // Ținta e viteza SEGMENTULUI curent, nu media de bază: pe o probă cu schimbare
+        // de medie (TR4 la Reșița: 24,3 până la boxul 97, apoi 20,5), cifra din cockpit
+        // trebuie să arate ce se cronometrează ACUM, altfel pilotul conduce după ea și
+        // adună deviere convins că e corect.
+        const segsUi = M.rt.def.segments && M.rt.def.segments.length
+          ? M.rt.def.segments : [{ fromKm: 0, kmh: M.rt.def.kmh }];
+        $('cp-target').textContent =
+          `${Math.round(M.speedKmh)} / ${speedAt(Math.min(M.rt.distKm, M.rt.def.distKm), segsUi)}`;
         // Cât mai e din probă — a doua cifră după deviere, cerută de Andreas: fără ea
         // nu știi dacă mai ai loc să recuperezi sau trebuie să te resemnezi.
         const remKm = Math.max(0, M.rt.def.distKm - M.rt.distKm);

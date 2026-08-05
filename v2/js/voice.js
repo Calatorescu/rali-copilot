@@ -212,6 +212,20 @@ export function secRo(x) {
   return z === 0 ? `${i}` : `${i} virgulă ${z}`;
 }
 
+// VITEZA rostită. Până acum viteza intra în frază ca număr brut (`Ține ${rt.kmh}`), ceea
+// ce e corect cât timp e întreagă — „Ține 40". La medii cu zecimală, însă, în frază ajungea
+// șirul JavaScript: „Ține 24.3", pe care vocea ro-RO îl rostește cu „punct", ca pe o adresă
+// de internet. Buletinul de la Reșița dă exact așa: 44,8 · 34,6 · 24,3 · 20,5 km/h.
+// Registrul e cel al copilotului uman: „24 și 3". (`secRo` folosește „virgulă" fiindcă
+// acolo se rostesc SECUNDE de deviere, unde zecimala e cifra care contează; la viteză
+// zecimala e un detaliu care se aude din mers.)
+export function vitezaRo(x) {
+  const v = Math.round(Math.abs(Number(x)) * 10) / 10;
+  if (!isFinite(v)) return '';
+  const i = Math.floor(v), z = Math.round((v - i) * 10);
+  return z === 0 ? `${i}` : `${i} și ${z}`;
+}
+
 export function distRo(m) {
   // (audit, #22): „1 kilometri" era agramat, iar sub 950 m se rostea doar cifra goală
   // („Time Control în 20") — de-acum toate distanțele au unitate.

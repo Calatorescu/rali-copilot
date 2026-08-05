@@ -71,16 +71,53 @@
       <div id="prep-verif"></div>
     </div>
 
+    <!-- ══ BULETINUL DIRECTORULUI DE CURSĂ ══ -->
+    <!-- Roadbook-ul NU conține probele de regularitate. Verificat pe paginile
+         fotografiate de la Reșița (05.08.2026): boxurile 66, 97 și 104 — finișul lui
+         TR3, schimbarea de viteză din TR4 și finișul lui TR4 — n-au nici icoană, nici
+         comentariu. Nicio scanare de roadbook nu le poate găsi vreodată. Probele sunt
+         scrise ÎN TEXT, în alt document: buletinul directorului de cursă. -->
+    <div class="card">
+      <p class="lbl">📋 BULETINUL PROBELOR (DIRECTORUL DE CURSĂ)</p>
+      <p id="prep-buletin-cifre" class="line">Buletin: —</p>
+      <div class="row">
+        <button class="btn sec grow" id="btn-buletin-foto">📷 Fotografiază</button>
+        <button class="btn sec grow" id="btn-buletin-gal">📋 Buletinul probelor</button>
+        <button class="btn danger sm" id="btn-buletin-clear">✕</button>
+      </div>
+      <!-- buletinul e BILINGV și are câteva pagini: se adună la fel ca roadbook-ul -->
+      <div id="buletin-bucla" class="card hidden" style="margin:6px 0 0">
+        <p id="buletin-nr" class="line center" style="font-weight:700"></p>
+        <div class="row">
+          <button class="btn sec grow" id="btn-buletin-inca">📷 Încă una</button>
+          <button class="btn ok grow" id="btn-buletin-gata">✅ Gata, citește</button>
+        </div>
+        <button class="btn danger sm" id="btn-buletin-renunt">Renunț la poze</button>
+      </div>
+      <p class="line dim">Documentul care scrie unde începe și unde se termină fiecare
+        probă, cu ce medie și unde se schimbă media. Când e citit, EL decide probele —
+        semnele de start/finiș din roadbook nu mai cronometrează nimic.</p>
+      <p id="prep-buletin-st" class="line dim"></p>
+      <div id="prep-buletin"></div>
+    </div>
+
     <!-- ══ PROBELE: verificare și corectură manuală ══ -->
     <!-- 05.08.2026, roadbook-ul REAL de la Reșița: scanarea a citit corect toate cele
          120 de boxuri, dar a ratat TREI linii de finish și a inventat una. Rezultatul:
-         o singură probă, de 9,39 km în loc de 5,74 — proba cea mai grea a cursei,
-         cronometrată pe o distanță cu 63% mai mare. Oricât de bun ar fi promptul, la
+         o singură probă în loc de trei — TR2 și TR3 dispăreau, iar TR4 se cronometra
+         pe 9,39 km în loc de 8,87. Oricât de bun ar fi promptul, la
          Sibiu va greși ceva, iar în parcare nu se depanează cod. Aici se repară în
          douăzeci de secunde. -->
     <div class="card">
       <p class="lbl">PROBELE — VERIFICĂ ȘI CORECTEAZĂ</p>
       <p id="probe-rezumat" class="line"></p>
+      <!-- Propunerile de corectură. Deduse DIN TEXTUL boxurilor scanate — care e el
+           însuși o citire automată a unei poze — nu din buletinul de pe hârtie. Unde
+           se TERMINĂ o probă nu scrie nicăieri în roadbook (verificat pe pagini,
+           05.08.2026: boxurile 66, 97 și 104 n-au nici icoană, nici comentariu), deci
+           aplicația nu propune niciodată un finiș nou; propune doar scoaterea a ce nu
+           se leagă. Nimic nu se aplică singur: fiecare rând are butonul lui. -->
+      <div id="probe-propuneri"></div>
       <p class="line dim">Compară cu roadbook-ul de pe hârtie: fiecare probă trebuie să
         aibă startul și finishul la boxurile corecte. Un box poate fi ȘI finishul unei
         probe, ȘI startul următoarei — apasă ambele semne pe el.</p>

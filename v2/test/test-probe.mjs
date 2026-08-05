@@ -5,12 +5,19 @@
 // comentariile. Din semnele de probă a citit patru — și trei erau greșite.
 //
 // Ce a citit:      box 57 START · box 64 START · box 79 START · box 108 FINISH
-// Ce era în roadbook: TR2 57→64 · TR3 64→66 · TR4 79→97
-//                     (boxul 64 e SIMULTAN finishul lui TR2 și startul lui TR3)
+// Ce spune BULETINUL Directorului de cursă (singura autoritate pe probe):
+//                  TR2 57→64 · TR3 64→(înainte de) 66 · TR4 79→(după) 104
+//                  (boxul 64 e SIMULTAN finishul lui TR2 și startul lui TR3)
 //
-// Rezultatul în aplicație: o singură probă, 62,12 → 71,51 = 9,39 km, în loc de 5,74 —
-// proba cea mai grea a cursei, cronometrată pe o distanță cu 63% mai mare. Cronometrarea
-// e chiar partea pe care se dau punctele.
+// CORECTAT 05.08.2026, seara: până acum fișierul ăsta scria „TR4 79→97 = 5,74 km".
+// E greșit — 5,74 km e doar PRIMUL SEGMENT al lui TR4, până la schimbarea de medie de
+// la boxul 97 (24,3 → 20,5 km/h). Buletinul spune că TR4 se termină DUPĂ boxul 104,
+// adică la 8,87 km. Referința falsă a stat aici o zi și făcea toate cifrele de mai jos
+// să pară verificate.
+//
+// Rezultatul în aplicație, cu semnele citite greșit: o SINGURĂ probă în loc de trei —
+// 62,12 → 71,51 = 9,39 km. TR2 și TR3 dispăreau cu totul, iar TR4 s-ar fi cronometrat
+// pe 9,39 km în loc de 8,87. Cronometrarea e chiar partea pe care se dau punctele.
 //
 // CAUZA nu era promptul, era MODELUL: `flag` era un singur șir, iar boxul 64 are două
 // icoane. Una dintre ele se pierdea obligatoriu, oricât de bine ar fi citit modelul.
@@ -44,14 +51,18 @@ const RESITA = sanitizeBoxes([
   { day: 2, leg: 2, num: 78, sumKm: 61.96, dir: 'STÂNGA', comment: '' },
   { day: 2, leg: 2, num: 79, sumKm: 62.12, dir: 'ÎNAINTE', flags: ['RT_START_STANDING'], comment: 'Start RT 4, Brown Gate with bell · 40 km/h' },
   { day: 2, leg: 2, num: 96, sumKm: 67.44, dir: 'ÎNAINTE', comment: '' },
-  { day: 2, leg: 2, num: 97, sumKm: 67.86, dir: 'DREAPTA-T', flags: ['RT_FINISH'], comment: '' },
+  // boxul 97 e SCHIMBAREA DE MEDIE din TR4 (24,3 → 20,5), nu finișul lui
+  { day: 2, leg: 2, num: 97, sumKm: 67.86, dir: 'DREAPTA-T', comment: '' },
+  // …iar TR4 se termină DUPĂ boxul 104. Semnul de aici e cel pus de om din buletin:
+  // în roadbook, boxul 104 n-are nici icoană, nici comentariu.
+  { day: 2, leg: 2, num: 104, sumKm: 70.99, dir: 'ÎNAINTE', flags: ['RT_FINISH'], comment: '' },
   { day: 2, leg: 2, num: 108, sumKm: 71.51, dir: 'ÎNAINTE', comment: 'Exit Brebu Nou' },
   { day: 2, leg: 2, num: 111, sumKm: 76.59, dir: 'ÎNAINTE', flags: ['TC'], comment: 'Finish Leg 2 Time Control - TC 4' }
 ]);
 
 // …și ACELEAȘI boxuri, cu semnele exact cum le-a citit scanarea pe 05.08
 const CUM_A_CITIT = sanitizeBoxes(RESITA.map(b => {
-  const f = { 64: ['RT_START_AUTO'], 66: [], 97: [], 108: ['RT_FINISH'] };
+  const f = { 64: ['RT_START_AUTO'], 66: [], 104: [], 108: ['RT_FINISH'] };
   return { ...b, flags: f[b.num] !== undefined ? f[b.num] : b.flags };
 }));
 
@@ -86,9 +97,10 @@ console.log('\n═══ Cele trei probe de la Reșița, împerecheate corect �
   const d = rts.map(r => `${r.startKm}→${r.finishKm}`);
   ok('TR2: 38,80 → 47,69', d[0] === '38.8→47.69', d[0]);
   ok('TR3: 47,69 → 53,95 (pornește de unde s-a terminat TR2)', d[1] === '47.69→53.95', d[1]);
-  ok('TR4: 62,12 → 67,86', d[2] === '62.12→67.86', d[2]);
-  ok('distanțele se potrivesc cu fișa de referință: 8,89 · 6,26 · 5,74',
-     rts.map(r => r.distKm).join(' ') === '8.89 6.26 5.74', rts.map(r => r.distKm).join(' '));
+  // TR4 se termină DUPĂ boxul 104, nu la 97: 97 e doar schimbarea de medie
+  ok('TR4: 62,12 → 70,99', d[2] === '62.12→70.99', d[2]);
+  ok('distanțele din buletin: 8,89 · 6,26 · 8,87',
+     rts.map(r => r.distKm).join(' ') === '8.89 6.26 8.87', rts.map(r => r.distKm).join(' '));
   ok('proba a treia e cu plecare de pe loc, cum scrie în roadbook',
      rts[2].type === 'standing', rts[2].type);
   ok('vitezele se citesc din comentarii: 50, 45, 40',
@@ -108,8 +120,9 @@ console.log('\n═══ Ce s-ar fi întâmplat cu semnele așa cum le-a citit s
   // Verificarea asta descrie DEFECTUL, ca să se vadă cât de tăcut era: aplicația nu se
   // bloca, nu se plângea — pornea și cronometra o probă greșită.
   const rts = detectRts(CUM_A_CITIT);
-  ok('din trei probe reale ar fi ieșit una singură', rts.length === 1, JSON.stringify(rts.length));
-  ok('și aia de 9,39 km în loc de 5,74 — cu 63% mai lungă',
+  ok('din trei probe reale ar fi ieșit una singură — TR2 și TR3 dispăreau cu totul',
+     rts.length === 1, JSON.stringify(rts.length));
+  ok('iar aia se întindea de la boxul 79 la boxul 108: 9,39 km în loc de 8,87',
      rts[0].distKm === 9.39, `${rts[0].distKm} km`);
   // …dar verificatorul, care se citește ÎNAINTE de start, o spune acum pe față
   const v = verifyRoadbook(CUM_A_CITIT);
@@ -128,11 +141,11 @@ console.log('\n═══ Corectura manuală: aceleași date, reparate din trei a
   let b = CUM_A_CITIT;
   b = comuta(b, 64, 'RT_FINISH');     // finish ratat
   b = comuta(b, 66, 'RT_FINISH');     // finish ratat
-  b = comuta(b, 97, 'RT_FINISH');     // finish ratat
+  b = comuta(b, 104, 'RT_FINISH');    // finishul lui TR4, pus din buletin
   b = comuta(b, 108, 'RT_FINISH');    // finish inventat — se scoate
   const rts = detectRts(b);
   ok('după corectură ies exact cele trei probe reale',
-     rts.length === 3 && rts.map(r => r.distKm).join(' ') === '8.89 6.26 5.74',
+     rts.length === 3 && rts.map(r => r.distKm).join(' ') === '8.89 6.26 8.87',
      JSON.stringify(rts.map(r => r.name + ' ' + r.distKm)));
   ok('boxul 108 nu mai are niciun semn', normFlags(b.find(x => x.num === 108)).length === 0);
   ok('iar boxul 64 le are pe amândouă', normFlags(b.find(x => x.num === 64)).length === 2);

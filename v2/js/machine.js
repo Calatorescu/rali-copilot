@@ -15,7 +15,7 @@ import { makeOdometer, makeCalibrator, projectOnTrace, angDiff, haversineM,
          bearingDeg, traceAheadPoint, directieRo } from './geo.js';
 import { idealTimeS, deviationS, speedAt, bankingAdvice } from './pace.js';
 import { TURN_DIRS, normFlags, areFlag, esteStart, esteFinish } from './route.js';
-import { secRo, distRo } from './voice.js';
+import { secRo, distRo, vitezaRo } from './voice.js';
 // numele strazii pentru „unde sunt se scoate cu acelasi extractor folosit la geocodare:
 // un singur loc care stie ce e nume de artera si ce e cuvant de roadbook (vezi repere.js)
 import { extrageReper } from './repere.js';
@@ -499,8 +499,14 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
 
     if (dTo <= 0.5 && dTo > 0 && !M._warnedRt[rt.name]) {
       M._warnedRt[rt.name] = true;
-      say(rt.kmh != null ? `Proba în 500. Viteza ${rt.kmh}.`
-                         : `Proba în 500 — fără viteză setată, o sar.`, 3, 'race');
+      // schimbarea de medie se anunță ÎNAINTE de start, nu doar la punctul ei: pe TR4
+      // de la Reșița media scade de la 24,3 la 20,5 în plină probă, iar un pilot care
+      // află abia acolo pierde secundele de reacție exact unde se dau punctele
+      const alta = rt.segments && rt.segments.length > 1 ? rt.segments[1].kmh : null;
+      say(rt.kmh != null
+            ? `Proba în 500. Viteza ${vitezaRo(rt.kmh)}.` +
+              (alta != null ? ` Apoi schimbare la ${vitezaRo(alta)}.` : '')
+            : `Proba în 500 — fără viteză setată, o sar.`, 3, 'race');
       // pacing predictiv: dacă proba începe cu o zonă lentă, spune planul de-acum
       if (rt.kmh != null && rt.zones && rt.zones.length) {
         const adv = bankingAdvice(0, rt.kmh, rt.zones, { lookaheadM: 800 });
@@ -928,7 +934,7 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
     // +2,2 s de deviere fabricată la 40 km/h, la fiecare start din mers (audit, #7).
     // Ancora de calibrare NU se atinge: linia e poziție dedusă, nu box confirmat.
     ancoreazaGeo(M.routeKm);
-    say(`Start. Ține ${rt.kmh}.`, 4, 'race');
+    say(`Start. Ține ${vitezaRo(rt.kmh)}.`, 4, 'race');
     tone('ok');
     log('rt_start', { rtIdx: M.rtIdx, name: rt.name, kmh: rt.kmh });
     ui.render(M, plan);
@@ -936,11 +942,32 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
 
   function rtTick() {
     const rt = M.rt, def = rt.def;
-    const segs = [{ fromKm: 0, kmh: def.kmh }];
+    // O PROBĂ POATE AVEA MAI MULTE MEDII (buletinul de cursă, TR4: 24,3 până la boxul 97,
+    // apoi 20,5). `segments` vine gata compus din route.js, cu fromKm măsurat de la linia
+    // de start; când lipsește — probă cu medie constantă, roadbook vechi, plan salvat de
+    // o versiune anterioară — se compune din `kmh`, exact ca înainte.
+    const segs = def.segments && def.segments.length
+      ? def.segments : [{ fromKm: 0, kmh: def.kmh }];
+    const parcursKm = Math.min(rt.distKm, def.distKm);
     const elapsed = (clock.mono() - rt.t0Mono) / 1000;
-    const dev = rt.frozen != null ? rt.frozen : deviationS(elapsed, Math.min(rt.distKm, def.distKm), segs);
+    const dev = rt.frozen != null ? rt.frozen : deviationS(elapsed, parcursKm, segs);
     rt.lastDev = dev;
-    rt.log.push({ distKm: Math.min(rt.distKm, def.distKm), devS: dev });
+    rt.log.push({ distKm: parcursKm, devS: dev });
+
+    // TRECEREA PESTE PUNCTUL DE SCHIMBARE, rostită scurt și fără echivoc. Pilotul are
+    // ochii pe drum: n-are cum să vadă pe ecran că media s-a schimbat, iar de aici încolo
+    // fiecare secundă condusă cu media veche e deviere care se adună.
+    if (rt.frozen == null && segs.length > 1) {
+      let i = 0;
+      for (let k = 0; k < segs.length; k++) if (parcursKm >= segs[k].fromKm) i = k; else break;
+      if (rt._segIdx == null) rt._segIdx = i;
+      else if (i > rt._segIdx) {
+        rt._segIdx = i;
+        say(`Acum ${vitezaRo(segs[i].kmh)}.`, 4, 'race');
+        tone('ok');
+        log('rt_segment', { name: def.name, kmh: segs[i].kmh, laKm: r2(parcursKm) });
+      }
+    }
 
     // linia calculată: îngheață devierea (nu opri lângă tabele — doar cifra îngheață)
     if (rt.frozen == null && rt.distKm >= def.distKm) {
@@ -994,10 +1021,14 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
         // și la 40 de secunde întârziere. Acum cifra e cea adevărată — 58, 65, cât
         // iese din aritmetică — iar decizia dacă e prudentă îi aparține pilotului.
         // Indicatoarele rutiere rămân oricum ale lui, nu ale aplicației.
-        const remKm = Math.max(0, def.distKm - Math.min(rt.distKm, def.distKm));
+        const remKm = Math.max(0, def.distKm - parcursKm);
         let fraza = `${secRo(a)} ${dev >= 0 ? 'în urmă' : 'în avans'}`;
         if (remKm > 0.03) {
-          const tDisponibilS = (remKm / def.kmh) * 3600 - dev;   // în urmă = timp mai puțin
+          // timpul ideal RĂMAS se citește din segmente, nu din media de bază: pe o probă
+          // cu schimbare de medie, „ține 58" calculat pe 24,3 după ce media a devenit
+          // 20,5 e o cifră falsă. Cu un singur segment rezultatul e identic cu formula
+          // veche (remKm / kmh × 3600), deci nimic nu se schimbă pe probele normale.
+          const tDisponibilS = idealTimeS(def.distKm, segs) - idealTimeS(parcursKm, segs) - dev;
           if (tDisponibilS > 1) fraza += `, ține ${Math.round(remKm * 3600 / tDisponibilS)}`;
           else fraza += ' — nu se mai prinde până la finish';
         }
@@ -1987,7 +2018,11 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
           const dtS = (now - (M._lastEstMono || M._lastFixMono)) / 1000;
           M._lastEstMono = now;
           if (dtS > 0 && dtS < 10 && M.rt.def.kmh) {
-            M.routeKm += (M.rt.def.kmh / 3600) * dtS;
+            // viteza de estimare e cea a SEGMENTULUI curent, nu media de bază — altfel,
+            // pe o probă cu schimbare de medie, poziția estimată o ia înainte
+            const sg = M.rt.def.segments && M.rt.def.segments.length
+              ? M.rt.def.segments : [{ fromKm: 0, kmh: M.rt.def.kmh }];
+            M.routeKm += (speedAt(Math.max(0, M.routeKm - M.rt.def.startKm), sg) / 3600) * dtS;
             M.rt.distKm = Math.max(0, M.routeKm - M.rt.def.startKm);
             log('pos_estimat', { routeKm: r2(M.routeKm) });
           }

@@ -8,7 +8,7 @@
 // Cheia API vine din setări; apelurile au timeout — pe munte „fără semnal" e o stare
 // normală de lucru, nu o excepție.
 
-import { sanitizeBoxes } from './route.js';
+import { sanitizeBoxes, sanitizeBuletin } from './route.js';
 
 const API = 'https://api.anthropic.com/v1/messages';
 const MODEL_VISION = 'claude-sonnet-4-6';
@@ -27,6 +27,37 @@ FIECARE rând numerotat din tabel = un box care APARE în răspuns — nu omite 
 REPER (câmpul "reper"): dacă în comentariu apare un loc care poate fi căutat pe hartă — nume de stradă, drum numerotat, giratoriu cu nume, obiectiv („Str. Avram Imbroane", „Calea Ghirodei", „DJ691", „giratoriu Kaufland") — scrie-l normalizat, cu tipul arterei în față („Str. Turda"). Adaugă localitatea DOAR dacă e scrisă pe pagină. Dacă boxul n-are niciun loc căutabil („tabela roșie", „drum drept"), scrie null. NU inventa și NU deduce localitatea.
 DOAR JSON array valid:
 [{"day":1,"leg":1,"page":2,"num":6,"sumKm":3.10,"sectionKm":0.45,"dir":"ÎNAINTE","comment":"...","reper":"Str. Turda","flags":["RT_START_AUTO"]},{"day":1,"leg":1,"page":25,"num":64,"sumKm":47.69,"sectionKm":0.74,"dir":"ÎNAINTE","comment":"...","reper":null,"flags":["RT_FINISH","RT_START_AUTO"]},...]`;
+
+// ── BULETINUL DIRECTORULUI DE CURSĂ ─────────────────────────────────────────
+// Roadbook-ul NU conține probele de regularitate. Verificat pe paginile fotografiate de
+// la Reșița (05.08.2026): boxurile 66, 97 și 104 — finișul lui TR3, schimbarea de viteză
+// din TR4 și finișul lui TR4 — n-au nici icoană, nici comentariu. Probele sunt definite
+// într-un document separat, în TEXT: „Buletinul Directorului de cursă".
+//
+// Documentul e BILINGV: fiecare probă apare o dată în română și încă o dată, identic, în
+// engleză. De aici cele două instrucțiuni care contează cel mai mult mai jos: fiecare
+// probă O SINGURĂ DATĂ, iar la contradicție între cele două limbi — `null`, nu alegere.
+// Un model care „alege" acolo unde documentul se contrazice ne dă o cifră inventată exact
+// în locul în care documentul e nesigur.
+//
+// Promptul e separat de ROADBOOK_PROMPT și nu-l atinge: sunt două documente diferite,
+// două căi paralele.
+const BULLETIN_PROMPT = `Ești copilot de raliu. Pe fotografie e BULETINUL DIRECTORULUI DE CURSĂ (Bulletin / Clerk of the Course) — documentul care definește PROBELE DE REGULARITATE (TR / RT). Extrage toate probele vizibile, ca JSON array.
+Pagina poate fi fotografiată rotit — rotește-o mental înainte de a citi.
+DOCUMENTUL E BILINGV: fiecare probă apare O DATĂ în română și încă o dată, identic, în engleză („Start"/"Start", „Viteza medie"/"Average speed", „Finis"/"Finish", „Schimbare de viteza"/"Speed change", „Pornire de pe loc"/"Standing start", „Start lansat"/"Flying start"). Scoate FIECARE PROBĂ O SINGURĂ DATĂ, nu de două ori.
+DACĂ ROMÂNA ȘI ENGLEZA SE CONTRAZIC LA O CIFRĂ, pune "null" acolo. NU alege una dintre ele și NU face media. Restul câmpurilor probei rămân completate.
+Pentru fiecare probă:
+- "name": eticheta ei exact cum apare ("TR 2", "TR 3", "RT 4"...).
+- "startBox" + "startPage": numărul boxului și pagina de roadbook de la care PORNEȘTE proba.
+- "startType": "standing" dacă e pornire de pe loc / standing start / cu oprire; "auto" dacă e start lansat / flying / din mers. Necunoscut → null.
+- "startAfterTc": dacă startul e definit ca decalaj față de un control orar („la 77 minute dupa inceperea TC 3"), pune {"tc":"TC 3","minutes":77}. Altfel null.
+- "kmh": viteza medie impusă, în km/h, ca număr (44,8 → 44.8).
+- "speedChanges": LISTĂ cu schimbările de medie din interiorul probei. Fiecare: {"kmh":<viteza nouă>,"box":<numărul boxului>,"page":<pagina>,"place":null}. DACĂ schimbarea e legată de un LOC, nu de un box („la iesirea din localitatea Valiug"), atunci "box":null, "page":null și "place":"<textul exact din buletin>". Fără schimbări → [].
+- "finishBox" + "finishPage": boxul și pagina la care se TERMINĂ proba.
+- "finishRel": "at" dacă scrie „La Box N" / „At Box N"; "before" dacă scrie „Inainte de Box N" / „Before Box N"; "after" dacă scrie „Dupa Box N" / „After Box N". Calificativul CONTEAZĂ — nu-l ignora și nu-l colapsa la "at".
+Ce nu se citește clar → null. NU ghici, NU completa din alte probe.
+DOAR JSON array valid, fără alt text:
+[{"name":"TR 2","startBox":57,"startPage":24,"startType":"standing","startAfterTc":{"tc":"TC 3","minutes":77},"kmh":44.8,"speedChanges":[],"finishBox":64,"finishPage":25,"finishRel":"at"},{"name":"TR 4","startBox":79,"startPage":26,"startType":"standing","startAfterTc":{"tc":"TC 3","minutes":149},"kmh":24.3,"speedChanges":[{"kmh":20.5,"box":97,"page":28,"place":null}],"finishBox":104,"finishPage":29,"finishRel":"after"}]`;
 
 const TIMECARD_PROMPT = `Ești copilot de raliu. Pe fotografie e un TIME CARD / carnet de bord cu ore oficiale.
 Extrage toate controalele orare vizibile, în ordine, ca JSON array:
@@ -139,6 +170,36 @@ export async function scanRoadbookPage(apiKey, b64, mime) {
   if (r.stopReason === 'max_tokens')
     throw new Error(`Pagina e prea densă — au intrat doar ${boxes.length} boxuri, refotografiaz-o pe bucăți`);
   return boxes;
+}
+
+// Scanarea buletinului — același tipar ca scanarea roadbook-ului: aceeași `callVision`,
+// aceeași reparare de JSON trunchiat (`parseBoxesJson`), aceeași reîncercare mai strictă
+// când modelul răspunde cu proză. Diferă doar promptul, sita și mesajele.
+export async function scanBulletin(apiKey, b64, mime) {
+  let r = await callVision(apiKey, b64, mime, BULLETIN_PROMPT, 3000);
+  let parsed = null, primaEroare = null;
+  try { parsed = parseBoxesJson(r.text); }
+  catch (e) {
+    primaEroare = { err: e.message, raw: String(r.text).slice(0, 200) };
+    r = await callVision(apiKey, b64, mime,
+      BULLETIN_PROMPT + '\nRăspunde EXCLUSIV cu array-ul JSON. Fără nicio propoziție. ' +
+      'Dacă pagina e greu de citit, scoate probele pe care LE VEZI, nu explica.', 3000);
+    try { parsed = parseBoxesJson(r.text); }
+    catch (e2) {
+      const err = new Error(e2.message);
+      err.raw = String(r.text).slice(0, 600);
+      err.rawLen = String(r.text).length;
+      err.stop = r.stopReason;
+      err.rawPrima = primaEroare;
+      throw err;
+    }
+  }
+  // GRANIȚA DE ÎNCREDERE: nimic din răspunsul modelului nu trece mai departe nefiltrat.
+  const probe = sanitizeBuletin(parsed);
+  if (!probe.length) throw new Error('Nicio probă citită din buletin — refotografiază pagina');
+  if (r.stopReason === 'max_tokens')
+    throw new Error(`Pagina e prea densă — au intrat doar ${probe.length} probe, refotografiaz-o pe bucăți`);
+  return probe;
 }
 
 export async function scanTimeCard(apiKey, b64, mime) {
