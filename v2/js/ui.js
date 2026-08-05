@@ -20,6 +20,15 @@ export function makeUi() {
       $('cp-km').textContent = M.routeKm.toFixed(2);
       $('cp-spd').textContent = Math.round(M.speedKmh);
 
+      // Răspunsul la „UNDE SUNT" se desenează ÎNAINTE de orice ramură cu `return` —
+      // ecranul de ieșire de pe traseu iese devreme din funcția asta, iar acolo
+      // întrebarea „unde sunt?" e mai apăsată decât oriunde.
+      const un = $('cp-unde');
+      if (un) {
+        if (M.unde) { un.textContent = M.unde.text; un.className = 'undeline'; }
+        else un.className = 'undeline hidden';
+      }
+
       const rtEl = $('cp-rt'), navEl = $('cp-nav');
       if (M.state === 'RT_RUN' && M.rt) {
         rtEl.classList.remove('hidden'); navEl.classList.add('compact');

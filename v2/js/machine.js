@@ -16,6 +16,9 @@ import { makeOdometer, makeCalibrator, projectOnTrace, angDiff, haversineM,
 import { idealTimeS, deviationS, speedAt, bankingAdvice } from './pace.js';
 import { TURN_DIRS } from './route.js';
 import { secRo, distRo } from './voice.js';
+// numele strazii pentru „unde sunt se scoate cu acelasi extractor folosit la geocodare:
+// un singur loc care stie ce e nume de artera si ce e cuvant de roadbook (vezi repere.js)
+import { extrageReper } from './repere.js';
 import { makeDebrief } from './debrief.js';
 import { parseRallyTime } from './time.js';
 
@@ -136,6 +139,7 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
     _dirEtapa: 0, _dirStart: null, dirAlerta: null,
     _lastToneT: 0, _extSpeedKmh: null, _extSpeedT: 0,
     corectie: null,        // ultima corecție de poziție, pentru ECRAN (vezi anuntaCorectia)
+    unde: null,            // ultimul raspuns la „unde sunt", tinut 20 s pe ecran
     // ieșirea de pe traseu: starea, semnele strânse și firimiturile de drum
     offRoute: null, offRouteOn: opts.offRoute !== false, _offSemne: [], _urme: [],
     _offVorbaMono: 0, _offSector: null, _hdg: null, _hartaIst: {},
@@ -227,6 +231,7 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
     }
     // corecția stă pe ecran 20 s, apoi dispare singură — și când e rostită, și când nu
     if (M.corectie && clock.mono() > M.corectie.panaMono) M.corectie = null;
+    if (M.unde && clock.mono() > M.unde.panaMono) M.unde = null;
     const extFresh = M._extSpeedKmh != null && clock.mono() - M._extSpeedT < 3000;
     M.speedKmh = extFresh ? M._extSpeedKmh
       : (fix.speedMs != null ? fix.speedMs * 3.6 : M.speedKmh);
@@ -1534,6 +1539,83 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
     ui.render(M, plan);
   }
 
+  // ── „UNDE SUNT?" ──────────────────────────────────────────────────────────
+  // Butonul care răspunde la întrebarea pe care un pilot cu orientare slabă și-o pune
+  // de zece ori pe zi, și pe care aplicația o lăsa până acum fără răspuns: nu „ce
+  // urmează", ci „unde sunt ACUM, între ce și ce, pe ce stradă".
+  //
+  // Trei reguli:
+  //  1. răspunde INSTANT și din starea care există deja — nu calculează nimic nou, nu
+  //     cere nimic de pe rețea, nu atinge cronometrul. De-aia merge și în probă.
+  //  2. spune și CÂT DE BUNĂ e cifra. Cu geometrie de recunoaștere, poziția e măsurată
+  //     pe drumul condus; fără ea, e un odometru corectat — și atunci o spune pe față,
+  //     „poziție aproximativă", în loc să sune la fel de sigur în ambele cazuri.
+  //  3. clasa 'ritm': oricât ar fi de cerut, un răspuns nu are voie să taie un viraj.
+  function pozitieMasurata() {
+    return !!(plan.trace && plan.anchorMap && M.traceM != null && !(M._projMiss > 0));
+  }
+
+  // ce e boxul următor, în cuvinte de pilot
+  function tintaRo(b) {
+    switch (b.flag) {
+      case 'TC': return 'Time Control';
+      case 'RT_START_AUTO': case 'RT_START_STANDING': return 'startul probei';
+      case 'RT_FINISH': return 'finishul probei';
+      case 'PARKING': return 'parcare';
+      case 'EV': return 'stația de încărcare';
+      case 'STOP-CFR': return 'calea ferată';
+    }
+    if (TURN_DIRS.has(b.dir || '')) return maneuver(b.dir, false);
+    return 'reper';
+  }
+
+  function textUndeSunt() {
+    const masurat = pozitieMasurata();
+    const coada = masurat ? '' : ' Poziție aproximativă.';
+    // PE DINAFARĂ întrebarea are alt răspuns: nu „între ce boxuri", ci „încotro înapoi".
+    if (M.offRoute) {
+      const o = M.offRoute;
+      if (o.orb)
+        return { text: 'Nu ești pe traseu, și nu știu unde e boxul. Oprește și apasă SUNT LA BOX.',
+                 masurat: false };
+      return { text: `Nu ești pe traseu. Boxul ${o.boxNum} e la ${distRo(o.distM)}` +
+                     (o.relDeg != null ? `, ${ceasRo(o.relDeg)}.` : '.') + coada, masurat };
+    }
+    const i = M.nextBoxIdx;
+    const prev = i > 0 ? plan.boxes[i - 1] : null;
+    const next = plan.boxes[i];
+    const bucati = [];
+    // în probă, prima informație e proba: acolo se dau punctele
+    if (M.rt) {
+      const ram = Math.max(0, M.rt.def.distKm - M.rt.distKm);
+      bucati.push(`În ${M.rt.def.name}, mai ai ${distRo(ram * 1000)} din probă.`);
+    }
+    // Leg terminat: „mai ai 0 metri până la boxul 6" e adevărat și inutil. Ziua s-a
+    // închis, iar răspunsul trebuie să spună asta, nu să descrie ultimul metru.
+    const km = M.routeKm.toFixed(1).replace('.', ' virgulă ');
+    if (!next || M.state === 'DAY_END') {
+      bucati.push(M.state === 'DAY_END'
+        ? `Leg-ul s-a terminat, la kilometrul ${km}.`
+        : `Ai trecut de ultimul box, la kilometrul ${km}.`);
+      return { text: bucati.join(' ') + coada, masurat };
+    }
+    // Strada pe care ești vine din comentariul boxului pe care l-ai trecut ULTIMUL:
+    // „Dreapta pe Str. Pluto" la boxul 4 înseamnă că după boxul 4 ești pe Str. Pluto.
+    const strada = prev ? extrageReper(prev.comment) : null;
+    if (prev) {
+      bucati.push(`Ești între boxul ${prev.num} și boxul ${next.num}` +
+                  (strada ? `, pe ${strada}.` : '.'));
+    } else {
+      bucati.push(`Ești la începutul leg-ului, înainte de boxul ${next.num}.`);
+    }
+    const dM = Math.max(0, (next.sumKm - M.routeKm) * 1000);
+    // sub 20 m, o cifră nu mai e informație — ești acolo
+    bucati.push(dM < 20
+      ? `Ești chiar la boxul ${next.num}: ${tintaRo(next)}.`
+      : `Mai ai ${distRo(dM)} până la ${tintaRo(next)} de la boxul ${next.num}.`);
+    return { text: bucati.join(' ') + coada, masurat };
+  }
+
   // ── NAVIGAREA PREDATĂ LUI GOOGLE MAPS ────────────────────────────────────
   // RALI n-are hărți rutiere și nu va avea: ghidajul pe străzi îl face Maps, care are
   // sensurile unice, restricțiile și vocea. Până la v34 butonul apărea DOAR când te
@@ -1577,6 +1659,18 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
   // ── API public ────────────────────────────────────────────────────────────
   return {
     M, onFix, atBox, setTcSchedule, previzualizeazaBox, boxuriApropiate, tintaMaps,
+    // Butonul „UNDE SUNT": răspunde din starea care există deja, deci nu poate întârzia
+    // nimic. Rămâne pe ecran 20 de secunde, fiindcă în mașină un răspuns rostit o dată
+    // se pierde exact ca oricare altul.
+    undeSunt() {
+      const r = textUndeSunt();
+      M.unde = { text: r.text, masurat: r.masurat, panaMono: clock.mono() + 20000 };
+      say(r.text, 3, 'unde', 'ritm');
+      log('unde_sunt', { text: r.text, masurat: r.masurat, routeKm: r2(M.routeKm),
+                         inRt: !!M.rt, offRoute: !!M.offRoute });
+      ui.render(M, plan);
+      return r;
+    },
     // Butonul „am greșit drumul": pilotul știe primul, întotdeauna. Detectarea automată
     // are nevoie de două semne și, în tura Tresor, al doilea a venit după 3 minute —
     // o apăsare le sare pe amândouă.
@@ -1602,7 +1696,7 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
       // leg nou = drum nou: firimiturile și semnele de ieșire de pe traseu nu se moștenesc
       M.offRoute = null; M._offSemne = []; M._urme = []; M._offSector = null; M._offVorbaMono = 0;
       // paznicul de direcție se re-armează la fiecare zi/leg nou
-      M._dirEtapa = 0; M.dirAlerta = null; M.corectie = null;
+      M._dirEtapa = 0; M.dirAlerta = null; M.corectie = null; M.unde = null;
       // ghidajul continuu repornește la fiecare zi/leg: prima confirmare vine după
       // primul tronson lung, nu ca ecou al leg-ului dinainte
       M._ghidT = null; M._ghidKm = null;
@@ -1648,6 +1742,7 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
       // și fără fixuri corecția expiră la timp: altfel, cu GPS-ul mort, ar rămâne pe
       // ecran ore întregi ca o informație proaspătă
       if (M.corectie && now > M.corectie.panaMono) M.corectie = null;
+      if (M.unde && now > M.unde.panaMono) M.unde = null;
       const stale = M._lastFixMono != null && now - M._lastFixMono > 15000;
       if (stale && !M._gpsLostSaid) {
         M._gpsLostSaid = true;

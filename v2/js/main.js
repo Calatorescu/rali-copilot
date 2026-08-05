@@ -897,6 +897,12 @@ function renderHartaInfo() {
   if (za) za.className = 'mbtn' + (harta.zoomFixat ? '' : ' on');
   const mb = $('btn-map-maps');
   if (mb && machine) legaButonMaps(mb);
+  const un = $('map-unde');
+  if (un) {
+    const u = machine && machine.M.unde;
+    if (u) { un.textContent = u.text; un.className = 'undeline'; }
+    else un.className = 'undeline hidden';
+  }
 }
 
 // ── ecrane + legături ───────────────────────────────────────────────────────
@@ -1087,6 +1093,10 @@ function bind() {
     showScreen('map');
   });
   $('btn-map-inapoi')?.addEventListener('click', () => showScreen('run'));
+  // „UNDE SUNT" — același răspuns de pe ambele ecrane, dintr-un singur loc de cod
+  const undeSunt = () => { if (machine) machine.undeSunt(); renderHartaInfo(); };
+  $('btn-undesunt')?.addEventListener('click', undeSunt);
+  $('btn-map-undesunt')?.addEventListener('click', undeSunt);
   $('btn-map-rot')?.addEventListener('click', () => { hartaVie()?.roteste(); renderHartaInfo(); });
   $('btn-map-zin')?.addEventListener('click', () => { hartaVie()?.zoom(+1); renderHartaInfo(); });
   $('btn-map-zout')?.addEventListener('click', () => { hartaVie()?.zoom(-1); renderHartaInfo(); });
