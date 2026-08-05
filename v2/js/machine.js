@@ -19,7 +19,29 @@ import { secRo, distRo } from './voice.js';
 import { makeDebrief } from './debrief.js';
 import { parseRallyTime } from './time.js';
 
-const TIERS_M = [300, 150];   // + „acum", calculat din modelul șoferului
+// TREPTELE DE AVERTIZARE, de la v35: 500 / 300 / 150 / „acum" (era doar 300 / 150 / acum).
+// Cererea lui Andreas (05.08.2026), din aceeași rădăcină ca harta: pe un tronson lung,
+// între două manevre, aplicația tăcea minute întregi, iar tăcerea la un pilot care se
+// orientează greu nu înseamnă „merge bine", ci „oare am ratat ceva?". Treapta de 500 m
+// e prima veste că urmează o decizie de volan: la 60 km/h sunt 30 de secunde, adică
+// exact cât trebuie ca s-o auzi, s-o ții minte și să alegi banda.
+//
+// SPAȚIUL MINIM: o treaptă are voie să existe doar dacă între boxul dinainte și ăsta
+// încape ea plus încă 60 m de mers. Fără regula asta, la boxuri la 290 m unul de altul,
+// treapta de 500 ar fi plecat în aceeași secundă cu „acum"-ul boxului dinainte — două
+// fraze una peste alta exact în viraj. Boxurile înlănțuite (30-90 m, bucla József) rămân
+// cum erau: doar „acum", plus coada cu manevra imediat următoare.
+const TIERS_M = [500, 300, 150];   // + „acum", calculat din modelul șoferului
+const TREAPTA_SPATIU_M = 60;
+
+// ── GHIDAJUL CONTINUU pe tronsoanele lungi ──────────────────────────────────
+// „Ești pe traseu. Drept încă 1,2 km până la boxul 5." — o confirmare, nu o instrucțiune.
+// Pragurile: la 45 s SAU la un kilometru, ce vine primul, dar niciodată sub 250 m de mers
+// de la ultima (ca la 100 km/h să nu se dubleze) și niciodată sub 550 m de boxul următor
+// (de acolo încolo vorbește treapta de 500, iar peste manevră nu se calcă niciodată).
+// Clasa e 'ritm': prin regulile de coadă din v31-v32, ritmul nu poate tăia o manevră.
+const GHID_MS = 45000, GHID_KM = 1.0, GHID_MIN_MERS_KM = 0.25, GHID_MIN_MS = 20000;
+const GHID_DIST_M = 550, GHID_MIN_KMH = 15;
 
 // COADA anunțului „acum" — ce urmează DUPĂ manevra tocmai anunțată (cererea lui Andreas,
 // 04.08.2026: „fă acum la dreapta și următoarea la stânga", „fă acum stânga și în 300 de
@@ -268,7 +290,7 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
     if (M.state !== 'PREP' && M.state !== 'DAY_END') {
       directieCheck(fix);
       hartaOffCheck(); offRouteCheck(); offRouteGhidaj(fix);
-      announceBoxes(); desyncCheck();
+      announceBoxes(); desyncCheck(); ghidajContinuu();
     }
     // STAGED e tot „legătură" din punctul de vedere al tick-ului: fără el aici,
     // plecarea de pe linia standing n-ar mai porni proba niciodată (prins de teste).
@@ -537,6 +559,16 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
     return null;
   }
 
+  // CARE TREPTE au unde încăpea înaintea boxului `i`. O treaptă care ar pleca odată cu
+  // boxul dinainte nu e o avertizare timpurie, e o frază peste altă frază. Vezi TIERS_M.
+  function trepteUtile(i) {
+    const b = plan.boxes[i];
+    if (!b) return [];
+    const pb = i > 0 ? plan.boxes[i - 1] : null;
+    const gapM = pb ? (b.sumKm - pb.sumKm) * 1000 : Infinity;
+    return TIERS_M.filter(t => t <= gapM - TREAPTA_SPATIU_M);
+  }
+
   function announceBoxes() {
     // Pe dinafară, planul ÎNGHEAȚĂ. În teren, aplicația a continuat să dea cue-uri
     // pentru boxurile 15, 16, 17 și 18 în timp ce mașina era pe alte străzi — instrucțiuni
@@ -552,7 +584,7 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
     // anticipare personalizată, dar plafonată: vezi ACUM_MAX_M
     const nowM = Math.min(ACUM_MAX_M, Math.max(25, driver.leadM(M.speedKmh || 30)));
 
-    const tiers = [...TIERS_M, nowM].sort((a, b2) => b2 - a);
+    const tiers = [...trepteUtile(M.nextBoxIdx), nowM].sort((a, b2) => b2 - a);
     // Se alege treapta cea mai APROPIATĂ care se aplică și nu s-a rostit — dacă apari
     // direct lângă box (repornire, salt) primești „acum", nu „în 300" (#23).
     let ti = -1;
@@ -608,6 +640,9 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
       // — stânga la T" (11:28:25) și „Start probă în 140 de metri" (11:28:55) apar toate
       // în `voce_aruncata` cu motivul „intrerupt".
       say(txt, isNow ? 4 : (M.rt ? 3 : 2), 'turn', 'manevra');
+      // Orice anunț de box repornește ceasul ghidajului continuu: o confirmare de tipul
+      // „ești pe traseu" la două secunde după „stânga acum" e zgomot, nu liniște.
+      M._ghidT = clock.mono(); M._ghidKm = M.routeKm;
       // Distanța la care s-a rostit „acum" intră în jurnal. Fără ea, întrebarea „de la
       // câți metri a vorbit?" se reconstruia din poziția logată la 5-6 s distanță, adică
       // se estima (04.08, analiza turei Tresor — o eroare de până la 75 m la 54 km/h).
@@ -616,6 +651,42 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
         log('cue', { boxNum: b.num, dM: Math.round(dM), kmh: Math.round(M.speedKmh) });
       }
     }
+  }
+
+  // ── GHIDAJUL CONTINUU ─────────────────────────────────────────────────────
+  // Ce rezolvă: tăcerea de pe tronsoanele lungi. Între două manevre aflate la kilometri
+  // distanță, aplicația nu spunea nimic — iar pentru cineva care se orientează greu,
+  // tăcerea nu se citește ca „merge bine", ci ca „am ratat ceva și nu știu ce".
+  //
+  // Ce NU face, și de ce:
+  //  • nu vorbește în probă — acolo urechea e pe cifrele de ritm, iar vocea e a probei;
+  //  • nu vorbește pe dinafară — acolo planul e înghețat, iar „ești pe traseu" ar fi o
+  //    minciună curată;
+  //  • nu vorbește sub 550 m de boxul următor — de acolo încolo vorbesc treptele;
+  //  • nu spune „ești pe traseu" decât dacă CHIAR se poate măsura: fraza cere proiecție
+  //    validă pe geometria de recunoaștere. Fără ea, aplicația știe doar cât a rulat
+  //    odometrul, deci spune doar atât — distanța rămasă, fără nicio afirmație despre
+  //    drumul pe care se află.
+  function ghidajContinuu() {
+    if (M.offRoute || M.rt || M.state !== 'LIAISON') return;
+    if (M.speedKmh < GHID_MIN_KMH) return;
+    const b = plan.boxes[M.nextBoxIdx];
+    if (!b) return;
+    const dM = (b.sumKm - M.routeKm) * 1000;
+    if (dM < GHID_DIST_M) return;
+    const acum = clock.mono();
+    if (M._ghidT == null) { M._ghidT = acum; M._ghidKm = M.routeKm; return; }
+    const dtMs = acum - M._ghidT;
+    const dKm = M.routeKm - (M._ghidKm != null ? M._ghidKm : M.routeKm);
+    const peTimp = dtMs >= GHID_MS && dKm >= GHID_MIN_MERS_KM;
+    const peKm = dKm >= GHID_KM && dtMs >= GHID_MIN_MS;
+    if (!peTimp && !peKm) return;
+    M._ghidT = acum; M._ghidKm = M.routeKm;
+    const masurat = !!(plan.trace && plan.anchorMap && M.traceM != null && !(M._projMiss > 0));
+    const cine = b.num != null ? `boxul ${b.num}` : 'boxul următor';
+    say((masurat ? 'Ești pe traseu. ' : '') + `Drept încă ${distRo(dM)} până la ${cine}.`,
+        2, 'ghidaj', 'ritm');
+    log('ghidaj', { boxNum: b.num, dM: Math.round(dM), masurat, de: peKm ? 'km' : 'timp' });
   }
 
   function turnText(b, dM, isNow) {
@@ -1532,6 +1603,9 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
       M.offRoute = null; M._offSemne = []; M._urme = []; M._offSector = null; M._offVorbaMono = 0;
       // paznicul de direcție se re-armează la fiecare zi/leg nou
       M._dirEtapa = 0; M.dirAlerta = null; M.corectie = null;
+      // ghidajul continuu repornește la fiecare zi/leg: prima confirmare vine după
+      // primul tronson lung, nu ca ecou al leg-ului dinainte
+      M._ghidT = null; M._ghidKm = null;
       M._dirStart = M._lastPos ? { ...M._lastPos } : null;
       M._lastFixMono = null; M._gpsLostSaid = false;
       // zi/leg nou = riglă nouă: măsurătorile de calibrare NU se moștenesc între leg-uri
