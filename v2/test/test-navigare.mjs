@@ -16,12 +16,14 @@ import { makeMachine } from '../js/machine.js';
 import { makeMemStore } from '../js/store.js';
 import { makeClock } from '../js/time.js';
 import { makeDriverModel } from '../js/learn.js';
+import { traseuDinPlan, pozitiiBoxuri } from '../js/harta-vie.js';
 
 const aici = dirname(fileURLToPath(import.meta.url));
 const html = readFileSync(join(aici, '..', 'index.html'), 'utf8');
 const sw = readFileSync(join(aici, '..', 'sw.js'), 'utf8');
 const css = readFileSync(join(aici, '..', 'app.css'), 'utf8');
 const ecran = readFileSync(join(aici, '..', 'js', 'harta-ecran.js'), 'utf8');
+const main = readFileSync(join(aici, '..', 'js', 'main.js'), 'utf8');
 
 let pass = 0, fail = 0;
 const ok = (n, c, d) => c ? (pass++, console.log(`  ✓ ${n}`))
@@ -69,18 +71,87 @@ console.log('\n═══ Cache-ul de dale nu se aruncă la actualizarea aplicaț
      /mode: 'cors'[\s\S]{0,80}referrerPolicy: 'origin'/.test(sw));
 }
 
+console.log('\n═══ Descărcarea în masă NU există nicăieri în aplicație ═══');
+{
+  // Politica OSM (operations.osmfoundation.org/policies/tiles/) interzice pe nume
+  // „bulk downloading (scraping)" și folosirea offline, iar funcțiile de tip „download
+  // area for offline use" sunt date direct ca exemplu de folosire interzisă. Sancțiunea
+  // e blocare pe IP fără avertisment — adică exact să rămânem fără hartă ÎN cursă.
+  // A existat un buton care aducea coridorul rutei; a fost SCOS, nu limitat. Verificarea
+  // asta e aici ca să nu se întoarcă din reflex, la o „îmbunătățire" de peste trei luni.
+  const surse = ['js/harta-vie.js', 'js/harta-ecran.js', 'js/main.js', 'js/machine.js', 'sw.js']
+    .map(f => readFileSync(join(aici, '..', f), 'utf8')).join('\n');
+  for (const urma of ['daleCoridor', 'descarcaDale', 'descarcaCoridorul', 'esantioneazaLinie'])
+    ok(`nicio urmă de „${urma}" în cod`, !new RegExp('\\b' + urma + '\\s*\\(').test(surse));
+  // pe pagina fără comentarii: comentariul care explică DE CE nu există butonul e
+  // exact ce vrem să rămână, deci nu se caută în el
+  const paginaVie = html.replace(/<!--[\s\S]*?-->/g, '');
+  ok('nici buton de descărcare în pagină',
+     !/btn-dale-desc|Descarcă harta/i.test(paginaVie), 'a rămas un buton de descărcare');
+  ok('rămâne butonul de diagnostic, care cere O SINGURĂ dală',
+     /id="btn-dale-test"/.test(html) && /export async function testeazaDale/.test(ecran));
+  ok('iar interfața nu mai promite offline, ci explică varianta schematică',
+     /varianta schematică/.test(html) && !/offline la munte/i.test(html),
+     'textul din pregătire încă promite offline');
+  ok('și codul spune de ce nu există, ca să nu pară o scăpare',
+     /Bulk downloading/.test(readFileSync(join(aici, '..', 'js', 'harta-vie.js'), 'utf8')));
+}
+
+console.log('\n═══ Ce intră în cache-ul de dale: numai dale ═══');
+{
+  // Auditul, punctul 4a — singurul defect care putea strica harta PERMANENT: pe o rețea
+  // cu portal captiv (hotel, benzinărie), cererea de dală e interceptată și primești
+  // pagina de login. Ca răspuns opac arăta exact ca o dală bună, iar politica de aici e
+  // cache-first: ar fi fost servită apoi la infinit, inclusiv pe munte, unde n-ai cum
+  // s-o mai înlocuiești.
+  ok('un răspuns cu status ne-ok se întoarce, dar NU se stochează',
+     /if \(res && !res\.ok\) return res;/.test(sw),
+     'un 429 sau 403 s-ar putea lipi de dală pentru totdeauna');
+  ok('se scrie doar ce a venit prin CORS, cu status bun și tip de imagine',
+     /res\.ok && res\.type === 'cors'/.test(sw) && /image\\\//.test(sw),
+     'condiția de scriere e prea largă');
+  ok('răspunsurile opace nu mai ajung în cache',
+     !/res\.type === 'opaque'/.test(sw), 'încă se acceptă răspunsuri opace');
+}
+
+console.log('\n═══ Spațiul: jurnalul cursei nu se evacuează odată cu dalele ═══');
+{
+  // Chrome evacuează PE ORIGINE, nu selectiv: fără cererea asta, presiunea de spațiu ar
+  // fi luat și IndexedDB, adică jurnalul zilei — nu doar niște dale care se pot recere.
+  ok('se cere stocare persistentă la pornire',
+     /navigator\.storage\.persist\(\)/.test(main), 'lipsește persist()');
+  ok('și e înfășurată, ca un refuz să nu oprească pornirea',
+     /try \{[^}]*persist\(\)[^}]*\}[\s\S]{0,40}catch/.test(main), 'persist() nu e în try/catch');
+}
+
+console.log('\n═══ Harta nu recalculează traseul la fiecare cadru ═══');
+{
+  // Auditul, punctul 6a: la 5 cadre pe secundă, O(boxuri × puncte de urmă) de fiecare
+  // dată înseamnă presiune de colectare a gunoiului pe FIRUL PE CARE RULEAZĂ ȘI
+  // CRONOMETRUL. Cheia e obiectul `plan`: rebuildPlan construiește unul nou ori de câte
+  // ori se schimbă ceva, deci identitatea lui e exact semnalul de „recalculează".
+  const hv = readFileSync(join(aici, '..', 'js', 'harta-vie.js'), 'utf8');
+  ok('linia traseului și pozițiile boxurilor se memoizează pe identitatea planului',
+     /memoTraseu = new WeakMap\(\), memoPozitii = new WeakMap\(\)/.test(hv));
+  const p1 = { boxes: [], harta: null, trace: null };
+  ok('al doilea apel întoarce ACELAȘI obiect, nu unul nou',
+     traseuDinPlan(p1) === traseuDinPlan(p1) && pozitiiBoxuri(p1) === pozitiiBoxuri(p1));
+  const p2 = { boxes: [], harta: null, trace: null };
+  ok('dar un plan NOU se recalculează — altfel harta ar îngheța la o rescanare',
+     traseuDinPlan(p2) !== traseuDinPlan(p1) && pozitiiBoxuri(p2) !== pozitiiBoxuri(p1));
+}
+
 console.log('\n═══ Ecranul de hartă există și e cablat ═══');
 {
   ok('secțiunea ecranului', /id="scr-map"/.test(html));
   ok('canvas-ul', /id="map-canvas"/.test(html));
   for (const id of ['btn-harta-vie', 'btn-map-inapoi', 'btn-map-rot', 'btn-map-zin',
-                    'btn-map-zout', 'btn-map-zauto', 'btn-dale-desc', 'btn-dale-stop',
-                    'btn-dale-test'])
+                    'btn-map-zout', 'btn-map-zauto', 'btn-dale-test'])
     ok(`butonul ${id}`, new RegExp(`id="${id}"`).test(html));
   ok('harta ocupă cel puțin jumătate din înălțimea disponibilă',
      /#map-wrap\s*\{[^}]*height:\s*min\(6\d?vh/.test(css), 'înălțimea hărții nu e definită în vh');
   ok('limita hărții aproximative e scrisă pe ecran, nu doar în cod',
-     /traseu APROXIMATIV, din adrese/.test(readFileSync(join(aici, '..', 'js', 'main.js'), 'utf8')));
+     /traseu APROXIMATIV, din adrese/.test(main));
   ok('și nota de baterie la fel', /consumă baterie/i.test(html));
   ok('harta se închide singură în probă (revenire la cockpit)',
      /state === 'RT_RUN' && onProba/.test(ecran), 'lipsește întoarcerea automată');

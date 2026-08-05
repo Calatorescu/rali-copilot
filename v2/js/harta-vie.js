@@ -11,15 +11,14 @@
 // Ce NU face modulul ăsta: nu rutează, nu caută adrese, nu vorbește. Desenează unde
 // ești, pe ce drum ești și unde sunt boxurile.
 
-import { haversineM } from './geo.js';
 import { TURN_DIRS } from './route.js';
 
 export const DALA_PX = 256;
 
 // Sursa de dale. OpenStreetMap, fără cheie și fără cont — singurul furnizor care poate
 // intra într-o aplicație care NU are voie să ceară credențiale (vezi CSP din index.html).
-// Politica lor de folosire interzice descărcarea în masă: de-aia coridorul are limită de
-// dale, ritm de 4 cereri/secundă și buton de oprire (vezi daleCoridor + harta-ecran.js).
+// Se cer NUMAI dalele de sub ochi, în mers, una câte una; descărcarea în masă e interzisă
+// de politica lor și a fost scoasă din aplicație (vezi comentariul lung de mai jos).
 export const OSM_SABLON = 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
 export const OSM_ORIGINE = 'https://tile.openstreetmap.org';
 
@@ -151,7 +150,26 @@ export function ecranDinLume(wx, wy, { cx, cy, latimePx, inaltimePx,
 //  • ANCORELE GEOCODATE — centrele de stradă găsite după comentariile din roadbook.
 //    Între două ancore nu știm drumul: linia dreaptă dintre ele NU e traseul, e doar
 //    ordinea boxurilor. De-aia se desenează PUNCTAT și scrie pe ecran de unde vine.
+// ── MEMOIZAREA, pe identitatea planului ─────────────────────────────────────
+// Amândouă funcțiile de mai jos (linia traseului și pozițiile boxurilor) sunt PURE și
+// depind numai de `plan`. Harta le chema la fiecare cadru — de cinci ori pe secundă,
+// cu O(boxuri × puncte de urmă) de fiecare dată, plus un vector nou de zeci de mii de
+// obiecte aruncat imediat. Pe o zi de 265 km asta e presiune de colectare a gunoiului
+// pe FIRUL PE CARE RULEAZĂ ȘI CRONOMETRUL, plus baterie arsă degeaba. (Audit, punctul 6a.)
+//
+// Cheia e obiectul `plan` însuși: `rebuildPlan` construiește unul NOU ori de câte ori se
+// schimbă ceva (roadbook, leg, recunoaștere, hartă), deci identitatea lui e exact
+// semnalul de „recalculează". WeakMap, ca planurile vechi să nu fie ținute în viață.
+const memoTraseu = new WeakMap(), memoPozitii = new WeakMap();
+
 export function traseuDinPlan(plan) {
+  if (plan && memoTraseu.has(plan)) return memoTraseu.get(plan);
+  const r = calcTraseu(plan);
+  if (plan) memoTraseu.set(plan, r);
+  return r;
+}
+
+function calcTraseu(plan) {
   const t = plan && plan.trace;
   if (t && Array.isArray(t.pts) && t.pts.length >= 2)
     return { pts: t.pts.map(p => ({ lat: p.lat, lng: p.lng })),
@@ -203,6 +221,13 @@ function pePunctulUrmei(trace, cumM) {
 // (recon > hartă), fără firimituri: firimiturile spun unde am fost NOI, nu unde e boxul,
 // iar pe hartă un punct greșit e mai rău decât un punct lipsă.
 export function pozitiiBoxuri(plan) {
+  if (plan && memoPozitii.has(plan)) return memoPozitii.get(plan);
+  const r = calcPozitiiBoxuri(plan);
+  if (plan) memoPozitii.set(plan, r);
+  return r;
+}
+
+function calcPozitiiBoxuri(plan) {
   const out = [];
   for (const b of (plan && plan.boxes) || []) {
     let p = null, sursa = null;
@@ -220,67 +245,23 @@ export function pozitiiBoxuri(plan) {
   return out;
 }
 
-// ── DESCĂRCAREA CORIDORULUI (offline la munte) ──────────────────────────────
-// Etapa 2 are 265 km pe Transfăgărășan: acolo semnalul lipsește pe bucăți întregi, iar o
-// hartă care se încarcă din rețea e o hartă care nu există exact unde ai nevoie de ea.
+// ── DESCĂRCAREA ÎN MASĂ: NU EXISTĂ, ȘI NU E O SCĂPARE ──────────────────────
+// Aici a existat, până la auditul de dinaintea publicării, un „descarcă harta traseului"
+// care aducea coridorul rutei pentru offline. A fost SCOS, nu limitat, fiindcă politica
+// de folosire a dalelor OSM (operations.osmfoundation.org/policies/tiles/) o interzice
+// pe nume: „Bulk downloading ('scraping') … is prohibited", „Offline use is not permitted
+// on tile.openstreetmap.org", iar funcțiile de tip „download area for offline use" sunt
+// date direct ca exemplu de folosire interzisă. Sancțiunea e blocare pe IP, fără
+// avertisment — adică exact să rămânem fără hartă ÎN cursă, ziua în care contează.
+// Nicio limită (rază, plafon, ritm) nu transformă o descărcare de coridor în altceva
+// decât ce spune politica că e.
 //
-// LIMITELE nu sunt decor. Politica OSM interzice descărcarea în masă, iar aplicația nu
-// are voie să pară un scraper: rază strânsă (±400 m, cât un coridor de drum, nu o
-// regiune), două niveluri de zoom, plafon de dale pe rulare, ritm de 4 cereri/secundă
-// (în harta-ecran.js) și buton de oprire. Ordinea e z14 întâi, apoi z15, și de-a lungul
-// traseului de la început spre sfârșit: dacă rularea se taie la plafon, ce s-a adus e o
-// bucată CONTINUĂ de la plecare, plus nivelul depărtat complet — din care z16-17 se pot
-// desena prin dala-părinte.
-export function esantioneazaLinie(pts, pasM) {
-  const out = [];
-  if (!pts || !pts.length || !(pasM > 0)) return out;
-  out.push({ lat: pts[0].lat, lng: pts[0].lng });
-  let deLaUltim = 0;                       // metri de drum de la ultimul eșantion emis
-  for (let i = 1; i < pts.length; i++) {
-    const a = pts[i - 1], b = pts[i];
-    const d = haversineM(a.lat, a.lng, b.lat, b.lng);
-    if (!(d > 0)) continue;
-    let pozitie = 0;                       // cât s-a consumat din segmentul curent
-    while (deLaUltim + (d - pozitie) >= pasM) {
-      pozitie += pasM - deLaUltim;
-      const f = pozitie / d;
-      out.push({ lat: a.lat + f * (b.lat - a.lat), lng: a.lng + f * (b.lng - a.lng) });
-      deLaUltim = 0;
-    }
-    deLaUltim += d - pozitie;
-  }
-  const ultim = pts[pts.length - 1], u = out[out.length - 1];
-  if (haversineM(u.lat, u.lng, ultim.lat, ultim.lng) > 1)
-    out.push({ lat: ultim.lat, lng: ultim.lng });
-  return out;
-}
-
-export function daleCoridor(pts, { razaM = 400, zoomuri = [14, 15], maxDale = 800 } = {}) {
-  const vazut = new Set();
-  const toate = [];
-  for (const z of zoomuri) {
-    if (!pts || pts.length < 1) break;
-    // pas de eșantionare = jumătate de dală: nicio bucată de drum nu poate sări o dală
-    const mppMed = metriPePixel(pts[0].lat, z);
-    const pasM = Math.max(50, (DALA_PX * mppMed) / 2);
-    for (const p of esantioneazaLinie(pts, pasM)) {
-      const c = lumePx(p.lat, p.lng, z);
-      const razaPx = razaM / metriPePixel(p.lat, z);
-      const n = Math.pow(2, z);
-      for (let y = Math.floor((c.y - razaPx) / DALA_PX); y <= Math.floor((c.y + razaPx) / DALA_PX); y++) {
-        if (y < 0 || y >= n) continue;
-        for (let x = Math.floor((c.x - razaPx) / DALA_PX); x <= Math.floor((c.x + razaPx) / DALA_PX); x++) {
-          const xw = ((x % n) + n) % n;
-          const k = `${z}/${xw}/${y}`;
-          if (vazut.has(k)) continue;
-          vazut.add(k);
-          toate.push({ x: xw, y, z });
-        }
-      }
-    }
-  }
-  return { dale: toate.slice(0, maxDale), total: toate.length, taiat: toate.length > maxDale };
-}
+// CE E PERMIS și rămâne: dalele se cer în mers, una câte una, ca orice hartă din browser,
+// iar cele deja văzute se păstrează în cache și se refolosesc (politica cere minim 7 zile
+// de reutilizare, deci asta e chiar comportamentul dorit). Pe drum fără semnal, harta
+// trece singură pe varianta schematică: traseul, boxurile și poziția, pe fundal gol.
+// Nu se pune alt furnizor de dale în loc — decizia lui Andreas, 05.08.2026: ghidajul pe
+// străzi rămâne la Google Maps.
 
 // ── CACHE-UL DE DALE: cine iese când se umple ───────────────────────────────
 // Cache API nu ține metadate, dar păstrează ORDINEA de inserare. Service worker-ul
@@ -292,18 +273,4 @@ export const DALE_LIMITA = 2000;
 
 export function deEvacuat(nrIntrari, limita = DALE_LIMITA) {
   return Math.max(0, (nrIntrari | 0) - limita);
-}
-
-// ── Cadrul care cuprinde niște puncte (pentru „încadrează traseul") ─────────
-export function bboxPuncte(pts) {
-  if (!pts || !pts.length) return null;
-  let laMin = Infinity, laMax = -Infinity, loMin = Infinity, loMax = -Infinity;
-  for (const p of pts) {
-    if (p.lat < laMin) laMin = p.lat;
-    if (p.lat > laMax) laMax = p.lat;
-    if (p.lng < loMin) loMin = p.lng;
-    if (p.lng > loMax) loMax = p.lng;
-  }
-  return { laMin, laMax, loMin, loMax,
-           centru: { lat: (laMin + laMax) / 2, lng: (loMin + loMax) / 2 } };
 }

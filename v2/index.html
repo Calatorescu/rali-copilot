@@ -42,10 +42,26 @@
     <div class="card">
       <p class="lbl">ROADBOOK</p>
       <p id="prep-boxes" class="line">niciun box scanat</p>
+      <!-- DOUĂ CĂI, nu una. `capture` deschide camera direct, dar IGNORĂ `multiple`:
+           o poză per deschidere. Pentru un roadbook de 25-40 de pagini, alegerea
+           multiplă din galerie e mult mai rapidă — deci nu se înlocuiesc, coexistă. -->
       <div class="row">
-        <button class="btn sec" id="btn-scan-rb">📷 Scanează pagini</button>
+        <button class="btn sec grow" id="btn-scan-foto">📷 Fotografiază</button>
+        <button class="btn sec grow" id="btn-scan-rb">🖼 Din galerie</button>
         <button class="btn danger sm" id="btn-clear-rb">✕</button>
       </div>
+      <!-- bucla de fotografiere: apare după prima poză, ca paginile să se poată face
+           la rând, fără a reintra în meniu de fiecare dată -->
+      <div id="foto-bucla" class="card hidden" style="margin:6px 0 0">
+        <p id="foto-nr" class="line center" style="font-weight:700"></p>
+        <div class="row">
+          <button class="btn sec grow" id="btn-foto-inca">📷 Încă una</button>
+          <button class="btn ok grow" id="btn-foto-gata">✅ Gata, scanează</button>
+        </div>
+        <button class="btn danger sm" id="btn-foto-renunt">Renunț la poze</button>
+      </div>
+      <p class="line dim">Pentru un roadbook întreg e mai rapid să faci pozele cu
+        aplicația de cameră și apoi să le alegi pe toate deodată din galerie.</p>
       <p id="prep-scan-st" class="line dim"></p>
       <!-- leg-urile detectate (numerotarea și km-ii repornesc la fiecare) — planul
            rulează pe UNUL singur, ales aici -->
@@ -57,7 +73,11 @@
 
     <div class="card">
       <p class="lbl">PROGRAMUL ZILEI (time card)</p>
-      <button class="btn sec" id="btn-scan-tc">📷 Scanează time card-ul</button>
+      <!-- o singură poză, deci fără buclă: după fotografie se scanează direct -->
+      <div class="row">
+        <button class="btn sec grow" id="btn-scan-tc-foto">📷 Fotografiază</button>
+        <button class="btn sec grow" id="btn-scan-tc">🖼 Din galerie</button>
+      </div>
       <p id="prep-tc-st" class="line dim"></p>
     </div>
 
@@ -100,23 +120,21 @@
       <div id="prep-maps"></div>
     </div>
 
-    <!-- ══ HARTA VIE: dalele pentru offline ══ -->
+    <!-- ══ HARTA VIE: fundalul de hartă ══ -->
     <div class="card">
-      <p class="lbl">HARTA DE PE ECRAN (DALE OFFLINE)</p>
-      <!-- Etapa 2 are 265 km pe Transfăgărășan: acolo semnalul lipsește pe bucăți
-           întregi, iar o hartă care se încarcă din rețea e o hartă care nu există
-           exact unde ai nevoie de ea. Descărcarea se face ACASĂ, o dată. -->
-      <p class="line dim">Aduce fundalul de hartă pentru un coridor de ±400 m în jurul
-        traseului, ca să existe și fără semnal, la munte. Se apasă acasă sau la hotel,
-        pe WiFi. Serverul de hărți e gratuit și comun (OpenStreetMap), deci descărcarea
-        merge încet, cu limită și cu buton de oprire — asta e regula lor, nu un capriciu.</p>
+      <p class="lbl">HARTA DE PE ECRAN (FUNDALUL DE STRĂZI)</p>
+      <!-- Aici a fost un buton „descarcă harta traseului", scos la auditul dinaintea
+           publicării: politica OpenStreetMap interzice pe nume descărcarea în masă și
+           folosirea offline, iar sancțiunea e blocare pe IP fără avertisment — adică
+           exact să rămânem fără hartă ÎN cursă. Nu se pune alt furnizor în loc. -->
+      <p class="line dim">Fundalul de străzi se încarcă din mers, cât ai semnal, iar ce s-a
+        văzut o dată rămâne în telefon și se refolosește. Așa că merită să deschizi harta
+        o dată prin zona de start, pe WiFi sau pe semnal bun.</p>
+      <p class="line dim">Pe drum FĂRĂ semnal (Transfăgărășan), harta trece singură pe
+        varianta schematică: linia traseului, boxurile și punctul tău, pe fundal gol.
+        Tot răspunde la „unde sunt față de traseu" — doar că fără străzile din jur.</p>
       <div class="row">
         <button class="btn sec" id="btn-dale-test">📡 Merg dalele?</button>
-        <button class="btn pri grow" id="btn-dale-desc">⬇ Descarcă harta traseului</button>
-      </div>
-      <div class="row hidden" id="dale-progres-row">
-        <div class="bara"><div id="dale-bara"></div></div>
-        <button class="btn danger sm" id="btn-dale-stop">■</button>
       </div>
       <p id="prep-dale-st" class="line dim"></p>
     </div>

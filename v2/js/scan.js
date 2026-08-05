@@ -169,3 +169,55 @@ export async function askCopilot(apiKey, model, system, question) {
   const j = await res.json();
   return j.content[0].text.trim();
 }
+
+// ── COLECTORUL DE POZE ──────────────────────────────────────────────────────
+// Cererea lui Andreas, 05.08.2026: mâine fotografiază roadbook-ul OFICIAL, pe hârtie,
+// la Sibiu. Butonul de până acum deschidea un selector de fișiere cu `accept="image/*"`
+// — teoretic Android oferă și camera acolo, dar pe Android 13+ Chrome deschide de multe
+// ori selectorul de POZE al sistemului, care n-are cameră deloc. Adică: ieși din
+// aplicație, pozezi, revii, alegi. De 25 de ori.
+//
+// Bucata de aici e partea care se poate greși în tăcere și deci se testează: adunarea
+// pozelor în listă, contorul și plafonul. Camera, galeria și cererea la Vision rămân
+// afară — ele se văd.
+//
+// Plafonul: un roadbook de zi are 25-40 de pagini. 40 e generos și pune o limită
+// superioară pe memorie (o poză de telefon în base64 are câțiva MB, iar aplicația le
+// ține pe toate până la scanare).
+export const MAX_POZE = 40;
+
+export function faColectorPoze({ max = MAX_POZE } = {}) {
+  let poze = [];
+  return {
+    // `noi` = ce a întors selectorul (poate fi gol: omul a apăsat „înapoi").
+    // Elementele sunt FIȘIERE nedeschise — conținutul se citește abia în bucla de
+    // scanare, pagină cu pagină. De-aia validitatea se judecă după mărime, nu după
+    // conținut: 30 de poze citite deodată în base64 omoară fila pe telefon, iar
+    // exact aia era cauza plafonului tăcut de 12 pagini (05.08.2026).
+    adauga(noi) {
+      const lista = (Array.isArray(noi) ? noi : [])
+        .filter(p => p && (typeof p.size === 'number' ? p.size > 0 : typeof p.b64 === 'string' && !!p.b64));
+      const loc = Math.max(0, max - poze.length);
+      const intrate = lista.slice(0, loc);
+      poze = poze.concat(intrate);
+      return {
+        adaugate: intrate.length,
+        respinse: lista.length - intrate.length,   // peste plafon
+        total: poze.length,
+        plin: poze.length >= max,
+        anulat: lista.length === 0,
+        // ce scrie pe ecran între două poze — la volanul unui teanc de hârtii,
+        // singura întrebare e „câte am și mai pun una?"
+        mesaj: lista.length === 0
+          ? (poze.length ? `${poze.length} ${poze.length === 1 ? 'pagină adunată' : 'pagini adunate'} — nicio poză nouă.`
+                         : 'Nicio poză.')
+          : intrate.length === 1 && lista.length === 1
+            ? `Pagina ${poze.length} adăugată.`
+            : `${intrate.length} pagini adăugate — ${poze.length} în total.`
+      };
+    },
+    get poze() { return poze.slice(); },
+    get total() { return poze.length; },
+    goleste() { poze = []; }
+  };
+}

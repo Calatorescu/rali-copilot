@@ -57,8 +57,11 @@ export function makeHartaEcran({ canvas, stare, onProba = null, log = null,
       dinCache(url).then(u => {
         if (!u) { e.st = 'err'; daleEsuate++; return; }
         const i2 = new Image();
-        i2.onload = () => { e.img = i2; e.st = 'ok'; daleReusite++; };
-        i2.onerror = () => { e.st = 'err'; daleEsuate++; };
+        // adresa de blob se ELIBEREAZĂ după ce imaginea s-a decodat: altfel fiecare dală
+        // citită din cache ar ține blobul ei viu până la închiderea aplicației, iar pe o
+        // zi de 265 km asta e memorie care crește și nu scade niciodată
+        i2.onload = () => { e.img = i2; e.st = 'ok'; daleReusite++; URL.revokeObjectURL(u); };
+        i2.onerror = () => { e.st = 'err'; daleEsuate++; URL.revokeObjectURL(u); };
         i2.src = u;
       });
     };
@@ -87,13 +90,11 @@ export function makeHartaEcran({ canvas, stare, onProba = null, log = null,
       const p = parinteDala(d.x, d.y, d.z, n);
       if (!p) break;
       const u = urlDala(p.x, p.y, p.z, sablon);
-      // Când dala cerută a EȘUAT (offline la munte, sau un zoom pe care nu l-am
-      // descărcat), părintele se CERE, nu se caută doar în memorie: descărcarea aduce
-      // z14-15, deci la z16-17 părintele n-a fost niciodată încărcat ca imagine, iar o
-      // simplă căutare în memorie n-ar găsi nimic — exact cazul pentru care există
-      // mecanismul. Cât timp copilul e încă pe drum, ne uităm doar în ce avem deja,
-      // ca să nu dublăm traficul degeaba. (`dala` memoizează, deci e o cerere, nu una
-      // pe cadru.)
+      // Când dala cerută a EȘUAT (fără semnal la munte), părintele se CERE, nu se caută
+      // doar în memorie — poate fi în cache de la o trecere anterioară prin zonă, la alt
+      // zoom, fără să fi fost vreodată încărcat ca imagine în sesiunea asta. Cât timp
+      // copilul e încă pe drum, ne uităm doar în ce avem deja, ca să nu dublăm traficul
+      // degeaba. (`dala` memoizează, deci e o cerere, nu una pe cadru.)
       const pe = e.st === 'err' ? dala(u) : memo.get(u);
       if (pe && pe.st === 'ok') return { img: pe.img, sx: p.sx, sy: p.sy, sm: p.marime };
     }
@@ -337,50 +338,11 @@ export function makeHartaEcran({ canvas, stare, onProba = null, log = null,
   };
 }
 
-// ── DESCĂRCAREA CORIDORULUI, cu limitele ei ─────────────────────────────────
-// Politica OSM interzice descărcarea în masă. Limitele de mai jos NU sunt decor:
-//  • rază strânsă (±400 m — un coridor de drum, nu o regiune);
-//  • plafon de dale pe rulare, dat de apelant (implicit 800);
-//  • 4 cereri pe secundă, una câte una, niciodată în paralel;
-//  • buton de oprire, respectat între cereri;
-//  • la 429 (prea multe cereri) sau 403 (refuz) se oprește TOT, imediat, cu explicație.
-// Ce e deja în cache nu se recere: a doua rulare continuă de unde s-a tăiat prima.
-export async function descarcaDale(dale, { onPas = null, opritDe = () => false,
-                                           pauzaMs = 250, cache = 'rali2-dale' } = {}) {
-  const rez = { cerute: dale.length, aduse: 0, dinCache: 0, esuate: 0,
-                oprit: false, motiv: null };
-  if (typeof caches === 'undefined')
-    return { ...rez, oprit: true, motiv: 'Browserul nu are cache offline.' };
-  const c = await caches.open(cache);
-  for (let i = 0; i < dale.length; i++) {
-    if (opritDe()) { rez.oprit = true; rez.motiv = 'oprit de tine'; break; }
-    const url = urlDala(dale[i].x, dale[i].y, dale[i].z);
-    try {
-      if (await c.match(url)) { rez.dinCache++; if (onPas) onPas(i + 1, rez); continue; }
-      const r = await fetch(url, { mode: 'cors', credentials: 'omit', referrerPolicy: 'origin' });
-      if (r.status === 429 || r.status === 403) {
-        rez.oprit = true;
-        rez.motiv = r.status === 429
-          ? 'Serverul de hărți cere pauză (prea multe cereri). M-am oprit — încearcă peste câteva minute.'
-          : 'Serverul de hărți a refuzat descărcarea (403). M-am oprit.';
-        break;
-      }
-      if (!r.ok) { rez.esuate++; }
-      else { await c.put(url, r.clone()); rez.aduse++; }
-    } catch (e) {
-      rez.esuate++;
-      // patru căderi la rând înseamnă „fără internet" sau „blocat", nu ghinion
-      if (rez.esuate >= 4 && rez.aduse === 0) {
-        rez.oprit = true;
-        rez.motiv = 'Nu ajung la serverul de hărți (fără internet sau blocat). M-am oprit.';
-        break;
-      }
-    }
-    if (onPas) onPas(i + 1, rez);
-    await new Promise(r => setTimeout(r, pauzaMs));
-  }
-  return rez;
-}
+// DESCĂRCAREA CORIDORULUI A FOST SCOASĂ (audit, 05.08.2026, înainte de publicare).
+// Motivul e în harta-vie.js, pe lung: politica OSM interzice pe nume descărcarea în masă
+// și folosirea offline, iar sancțiunea e blocare pe IP fără avertisment — adică fix să
+// rămânem fără hartă în cursă. Nu e înlocuită cu nimic: dalele se cer în mers, iar ce s-a
+// văzut o dată rămâne în cache și se refolosește. Fără semnal, harta e schematică.
 
 // O SINGURĂ dală, ca test: „merg dalele de pe telefonul ăsta, de pe rețeaua asta?".
 // Întrebarea nu se poate răspunde de pe alt calculator — contează browserul, adresa de

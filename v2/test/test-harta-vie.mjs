@@ -11,8 +11,8 @@
 // (distanțele și azimuturile depind de diferențe și de cos(latitudine), neschimbate),
 // dar niciun punct nu arată spre o adresă reală.
 import { lumePx, lumeLatLng, metriPePixel, daleVizibile, parinteDala, zoomAuto,
-         ecranDinLume, traseuDinPlan, pozitiiBoxuri, tipBox, esantioneazaLinie,
-         daleCoridor, deEvacuat, bboxPuncte, urlDala, DALA_PX, DALE_LIMITA,
+         ecranDinLume, traseuDinPlan, pozitiiBoxuri, tipBox,
+         deEvacuat, urlDala, DALA_PX, DALE_LIMITA,
          OSM_SABLON } from '../js/harta-vie.js';
 import { buildTrace, haversineM } from '../js/geo.js';
 import { makeAnchorMap, sanitizeBoxes, buildPlan } from '../js/route.js';
@@ -213,80 +213,12 @@ console.log('\n═══ Linia traseului: recunoașterea e linie plină, ancorel
      tipBox({ dir: 'ÎNAINTE' }) === 'reper' && tipBox({ dir: 'GIRATORIU-2' }) === 'viraj');
 }
 
-console.log('\n═══ Coridorul de descărcat: limitat, ordonat, fără dubluri ═══');
-{
-  // un traseu de ~10 km spre est, ca o etapă în miniatură
-  const pts = [];
-  let p = { lat: LAT, lng: LNG };
-  for (let i = 0; i < 50; i++) { pts.push({ ...p }); p = m2g(p.lat, p.lng, 200, 90); }
-
-  const es = esantioneazaLinie(pts, 500);
-  const dist = haversineM(pts[0].lat, pts[0].lng, pts[pts.length - 1].lat, pts[pts.length - 1].lng);
-  ok('eșantionarea la 500 m pe ~9,8 km dă ~20 de puncte',
-     es.length >= 19 && es.length <= 22, `${es.length} puncte pe ${(dist / 1000).toFixed(2)} km`);
-  ok('și punctele sunt chiar la 500 m unul de altul (±5%)',
-     es.slice(1, -1).every((q, i) => {
-       const d = haversineM(es[i].lat, es[i].lng, q.lat, q.lng);
-       return Math.abs(d - 500) < 25;
-     }), JSON.stringify(es.slice(0, 4).map((q, i) => i ? Math.round(haversineM(es[i - 1].lat, es[i - 1].lng, q.lat, q.lng)) : 0)));
-  ok('capătul traseului e întotdeauna inclus',
-     haversineM(es[es.length - 1].lat, es[es.length - 1].lng,
-                pts[pts.length - 1].lat, pts[pts.length - 1].lng) < 1);
-
-  const c = daleCoridor(pts, { razaM: 400, zoomuri: [14, 15], maxDale: 800 });
-  ok('nicio dală cerută de două ori',
-     new Set(c.dale.map(d => `${d.z}/${d.x}/${d.y}`)).size === c.dale.length);
-  ok('z14 vine înaintea lui z15 — dacă rularea se taie, nivelul depărtat e complet',
-     c.dale.findIndex(d => d.z === 15) > c.dale.findLastIndex(d => d.z === 14),
-     JSON.stringify({ ultimul14: c.dale.findLastIndex(d => d.z === 14),
-                      primul15: c.dale.findIndex(d => d.z === 15) }));
-  ok('10 km de coridor la două zoom-uri stau sub plafonul de 800',
-     c.total < 800 && !c.taiat, JSON.stringify({ total: c.total }));
-  ok('dalele chiar acoperă traseul: punctul de start are dala lui',
-     c.dale.some(d => d.z === 15 &&
-       d.x === Math.floor(lumePx(LAT, LNG, 15).x / DALA_PX) &&
-       d.y === Math.floor(lumePx(LAT, LNG, 15).y / DALA_PX)));
-
-  // PLAFONUL: politica OSM interzice descărcarea în masă, deci limita nu e negociabilă
-  const mic = daleCoridor(pts, { razaM: 400, zoomuri: [14, 15], maxDale: 30 });
-  ok('peste plafon se taie exact la plafon și se RAPORTEAZĂ',
-     mic.dale.length === 30 && mic.taiat === true && mic.total === c.total,
-     JSON.stringify({ n: mic.dale.length, taiat: mic.taiat }));
-  ok('și ce rămâne e începutul traseului, nu o felie aleatoare',
-     mic.dale.every((d, i) => d.x === c.dale[i].x && d.y === c.dale[i].y && d.z === c.dale[i].z));
-
-  // etapa 2 de la Sibiu: 265 km. Coridorul ei NU încape într-o rulare — se spune, nu se ascunde.
-  const lung = [];
-  let q = { lat: LAT, lng: LNG };
-  for (let i = 0; i < 265; i++) { lung.push({ ...q }); q = m2g(q.lat, q.lng, 1000, 90); }
-  const cl = daleCoridor(lung, { razaM: 400, zoomuri: [14, 15], maxDale: 800 });
-  ok('265 km cer peste 800 de dale, deci rularea se taie și o spune',
-     cl.taiat === true && cl.total > 800, JSON.stringify({ total: cl.total }));
-  // …dar nivelul depărtat (z14) intră ÎNTREG în prima rulare — iar din el se pot desena
-  // z15-17 prin dala-părinte, deci harta există pe tot traseul chiar și fără a doua rulare
-  const clTot = daleCoridor(lung, { razaM: 400, zoomuri: [14, 15], maxDale: 1e6 });
-  const n14 = clTot.dale.filter(d => d.z === 14).length;
-  ok(`nivelul z14 al etapei (${n14} dale) intră întreg în prima rulare`,
-     cl.dale.filter(d => d.z === 14).length === n14 && n14 < 800,
-     JSON.stringify({ n14, inPrimaRulare: cl.dale.filter(d => d.z === 14).length,
-                      total: clTot.dale.length }));
-}
-
 console.log('\n═══ Cache-ul de dale: cine iese când se umple ═══');
 {
   ok('sub limită nu iese nimeni', deEvacuat(1500) === 0);
   ok('peste limită iese exact surplusul', deEvacuat(2010) === 10);
   ok('limita implicită e 2000 de dale', DALE_LIMITA === 2000);
   ok('o cifră absurdă nu produce un număr negativ', deEvacuat(-5) === 0);
-}
-
-console.log('\n═══ Cadrul traseului ═══');
-{
-  ok('fără puncte nu există cadru', bboxPuncte([]) === null);
-  const b = bboxPuncte([{ lat: 45, lng: 14 }, { lat: 46, lng: 15 }, { lat: 45.5, lng: 14.2 }]);
-  ok('cadrul cuprinde toate punctele',
-     b.laMin === 45 && b.laMax === 46 && b.loMin === 14 && b.loMax === 15, JSON.stringify(b));
-  ok('și are centrul la mijloc', b.centru.lat === 45.5 && b.centru.lng === 14.5, JSON.stringify(b.centru));
 }
 
 console.log(`\n──────── ${pass} trecute, ${fail} căzute ────────`);

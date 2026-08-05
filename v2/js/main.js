@@ -11,14 +11,13 @@ import { buildPlan, detectRts, sanitizeBoxes, groupByLeg, verifyRoadbook,
 import { makeMachine } from './machine.js';
 import { makeDriverModel } from './learn.js';
 import { makeUi, startHeaderClock } from './ui.js';
-import { scanRoadbookPage, scanTimeCard } from './scan.js';
+import { scanRoadbookPage, scanTimeCard, faColectorPoze, MAX_POZE } from './scan.js';
 import { makeBleSpeed } from './ble.js';
 import { repereBoxuri, faGeocoder, geocodeazaRepere, verificaAncore } from './repere.js';
 import { linkuriTraseu, linkNavigare } from './maps.js';
 import { makeSync } from './sync.js';
 import { efficiencyPoints, efficiencyGap } from './pace.js';
-import { makeHartaEcran, descarcaDale, testeazaDale } from './harta-ecran.js';
-import { daleCoridor, traseuDinPlan } from './harta-vie.js';
+import { makeHartaEcran, testeazaDale } from './harta-ecran.js';
 
 const $ = id => document.getElementById(id);
 let store, clock, voice, ui, driver, machine = null, gps = null, plan = null, sync = null;
@@ -89,6 +88,13 @@ async function init() {
     }
   });
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js').catch(() => {});
+  // STOCARE PERSISTENTĂ (audit, 05.08.2026). Când telefonul rămâne fără spațiu, Chrome
+  // nu evacuează selectiv „ce e mai puțin important" — evacuează PE ORIGINE, adică
+  // tot ce ține aplicația: dalele de hartă, dar în aceeași mișcare și IndexedDB, adică
+  // JURNALUL CURSEI. Cererea asta îi spune browserului că datele nu sunt de unică
+  // folosință. Poate fi refuzată, și atunci nu se schimbă nimic — de-aia e tăcută.
+  try { navigator.storage && navigator.storage.persist && await navigator.storage.persist(); }
+  catch (e) {}
 }
 
 let _audioCtx = null;
@@ -98,7 +104,32 @@ function audioCtx() { return () => (_audioCtx = _audioCtx || new (window.AudioCo
 // din panoul de pregătire — o singură dată, nu la fiecare pornire.
 function offRoutePornit() { return localStorage.getItem('r2_offroute') !== '0'; }
 
-async function rebuildPlan() {
+// NIMIC NU SCHIMBĂ MAȘINA SUB O CURSĂ PORNITĂ (găsit la curățenia de după audit,
+// 05.08.2026). `rebuildPlan` construiește o mașină de stări NOUĂ — cu poziția 0, fără
+// rezultate, fără proba în curs. Iar ea e chemată la capătul unor operații care durează
+// ZECI DE SECUNDE și se pot termina oricând: scanarea unei pagini de roadbook (cerere la
+// Anthropic), căutarea reperelor pe hartă (o cerere pe secundă, ~20 de repere), citirea
+// unui fișier de hartă. Dacă vreuna se încheie după START — sau dacă se apasă din reflex
+// un buton din pregătire în timp ce ziua rulează — cursa se șterge în tăcere: kilometraj
+// la zero, probe nealergate, ceas pierdut.
+// Datele se salvează oricum (sunt deja în depozit); doar mașina nu se înlocuiește, iar
+// omul află de ce. `fortat` e pentru locurile care CHIAR trebuie s-o schimbe: trecerea
+// la leg-ul următor, întoarcerea de la repetiție și de la redarea jurnalului.
+let _amanatRebuild = false;
+function cursaRuleaza() { return !!machine && machine.M.state !== 'PREP'; }
+
+async function rebuildPlan(fortat) {
+  if (!fortat && cursaRuleaza()) {
+    _amanatRebuild = true;
+    try { store.log('rebuild_amanat', { state: machine.M.state, routeKm: machine.M.routeKm }, Date.now()); } catch (e) {}
+    const st = $('prep-scan-st');
+    if (st) {
+      st.textContent = '⚠ Cursa e pornită — datele s-au salvat, dar planul se schimbă abia la următorul START.';
+      st.style.color = 'var(--warn)';
+    }
+    return;
+  }
+  _amanatRebuild = false;
   const speeds = (await store.get('rt_speeds')) || {};
   // Planul se construiește pe UN SINGUR leg (audit, #1) — km-ii și numerele de box
   // repornesc la fiecare leg, deci amestecul lor global era un traseu inexistent.
@@ -302,7 +333,10 @@ function renderRecon() {
 
 // ── GPS live + cursă ────────────────────────────────────────────────────────
 let tickId = null;
-function startDay(dinPreluare) {
+async function startDay(dinPreluare) {
+  // dacă s-a terminat o scanare/geocodare cât timp rula cursa, planul nou a fost pus
+  // deoparte (vezi rebuildPlan) — START-ul e exact momentul în care are voie să intre
+  if (_amanatRebuild) await rebuildPlan(true);
   if (!plan.boxes.length) { alert('Scanează întâi roadbook-ul.'); return; }
   // „AZI PLECI DE LA…" (propunerea 2, după testul 3 din teren): contractul lui START
   // e „ești fizic la boxul 1 al leg-ului" — dar nimeni nu-i spunea pilotului DE UNDE
@@ -364,7 +398,7 @@ async function legUrmator() {
   if (!plan.nextLegKey) return;
   const numeNou = plan.nextLegLabel;
   await store.put('leg_activ', plan.nextLegKey);
-  await rebuildPlan();      // offset-ul TC pe leg se derivă în rebuildPlan
+  await rebuildPlan(true);  // offset-ul TC pe leg se derivă în rebuildPlan · fortat: schimbarea de leg E scopul
   voice.say(`${numeNou}. Apasă START când ești la boxul 1.`, 2);
   showScreen('prep');
 }
@@ -512,7 +546,7 @@ function rehearse() {
     // altfel primul STOP al cursei reale intra pe ramura de repetiție și jurnalul
     // zilei nu mai pleca la sfârșit.
     _rehearsing = false;
-    await rebuildPlan();     // înapoi la mașina de cursă, curată
+    await rebuildPlan(true); // înapoi la mașina de cursă, curată (fantoma trebuie înlocuită)
     showScreen('prep');
   };
   gps = makeSyntheticGps({
@@ -534,7 +568,7 @@ function rehearse() {
     stopGps();
     voice.say('Repetiția n-a putut porni.', 2);
     alert('Repetiția n-a putut porni: ' + (e && e.message ? e.message : e));
-    rebuildPlan();
+    rebuildPlan(true);       // mașina-fantomă pe jumătate pornită se înlocuiește oricum
   }
 }
 let _rehearsing = false;
@@ -564,103 +598,189 @@ async function replayDay() {
   } catch (e) {
     stopGps();
     alert('Replay eșuat: ' + (e && e.message ? e.message : e));
-    rebuildPlan();
+    rebuildPlan(true);       // idem: fantoma nu are voie să rămână mașina zilei
   }
 }
 
 // ── scanări ─────────────────────────────────────────────────────────────────
-function pickImages(multiple, cb) {
+// `capture` deschide DIRECT camera din spate. Atenție: atributul IGNORĂ `multiple` —
+// o deschidere, o poză. De-aia calea cu cameră are buclă (vezi fotoBucla), iar galeria
+// rămâne pentru cazul în care pozele există deja și se aleg toate deodată.
+function suportaCamera() {
+  return 'capture' in document.createElement('input');
+}
+
+// PLAFONUL TĂCUT DE 12, SCOS (05.08.2026). Andreas a fotografiat 14 pagini, a apăsat
+// scanare, au intrat 12. Aici era, într-un singur `slice(0, 12)`: două pagini aruncate
+// fără o vorbă. La Sibiu, cu un roadbook oficial de zeci de pagini, asta însemna condus
+// cu jumătate de traseu, cu convingerea că e tot. E aceeași clasă de defect cu „scanarea
+// parțială care trece drept succes", reparată pe 02.08 și comentată la 30 de rânduri mai
+// jos — rămăsese o a doua cale prin care conținutul dispare în tăcere.
+//
+// De ce era acolo, cel mai probabil: `Promise.all` citea TOATE fișierele în base64
+// DEODATĂ. 30 de poze de telefon înseamnă peste 100 MB de șiruri în memorie, adică o
+// filă omorâtă de Android. Asta era cauza — deci se repară cauza, nu se taie lista:
+// `pickImages` întoarce acum FIȘIERE (nimic citit, memorie zero), iar conversia în base64
+// se face în bucla de scanare, pentru pagina curentă, și se eliberează după trimitere.
+// Nicio limită de număr, nicăieri pe drumul ăsta.
+function pickImages(multiple, cb, capture) {
   const inp = document.createElement('input');
-  inp.type = 'file'; inp.accept = 'image/*'; if (multiple) inp.multiple = true;
+  inp.type = 'file'; inp.accept = 'image/*';
+  if (capture) inp.capture = 'environment';
+  else if (multiple) inp.multiple = true;
   window.addEventListener('focus', () => setTimeout(() => inp.remove(), 1000), { once: true });
   inp.onchange = () => {
     inp.remove();
-    const files = [...(inp.files || [])].slice(0, 12);
-    Promise.all(files.map(f => new Promise(res => {
-      const r = new FileReader();
-      r.onload = () => res({ b64: r.result.split(',')[1], mime: f.type });
-      r.readAsDataURL(f);
-    }))).then(cb);
+    cb([...(inp.files || [])]);
   };
   document.body.appendChild(inp); inp.click();
 }
 
-async function doScanRoadbook() {
-  const key = localStorage.getItem('r2_key');
-  if (!key) { alert('Pune cheia API în Setări.'); return; }
-  pickImages(true, async imgs => {
-    if (!imgs.length) return;
-    const st = $('prep-scan-st'); st.textContent = '';
-    const all = [...boxesRaw];
-    // Rezultatul FIECĂREI pagini se ține minte și se arată la final. Pe 02.08, două
-    // pagini din trei au căzut, dar eroarea era suprascrisă de „Scanez pagina 3/3…"
-    // și finalul arăta „✓ 4 boxuri" — a arătat a succes și s-a condus cu o treime
-    // de roadbook. O scanare parțială e un EȘEC, nu un succes mai mic.
-    const rezultate = [];
-    for (let i = 0; i < imgs.length; i++) {
-      st.textContent = `Scanez pagina ${i + 1}/${imgs.length}…`;
-      try {
-        const boxes = await scanRoadbookPage(key, imgs[i].b64, imgs[i].mime);
-        let noi = 0;
-        for (const b of boxes) {
-          // dedup DOAR în interiorul aceluiași leg: numerele și km-ii repornesc la
-          // fiecare leg, deci „box 1 la 0,00" există legitim în toate leg-urile
-          const dupe = all.find(x => x.day === b.day && x.leg === b.leg &&
-            x.num === b.num && Math.abs(x.sumKm - b.sumKm) < 0.005);
-          if (!dupe) { all.push(b); noi++; }
-        }
-        rezultate.push({ pag: i + 1, ok: true, boxuri: boxes.length, noi });
-      } catch (e) {
-        // răspunsul brut (începutul lui) merge în jurnal — diagnostic, nu ghicit
-        rezultate.push({ pag: i + 1, ok: false, err: e.message,
-                         raw: e.raw || null, rawLen: e.rawLen || null,
-                         stop: e.stop || null, rawPrima: e.rawPrima || null });
-      }
-      try { store.log('scan_page', rezultate[rezultate.length - 1], Date.now()); } catch (e) {}
-    }
-    all.sort((a, b) => a.sumKm - b.sumKm);
-    boxesRaw = all;
-    await store.put('plan_raw', boxesRaw);
-    // ROADBOOK NOU = HARTĂ VECHE, ARUNCATĂ. Coordonatele sunt legate de boxuri prin
-    // numărul lor și prin cheia de leg, iar cheia e aproape mereu „1|1": fără linia
-    // asta, boxul 4 al evenimentului de azi ar moșteni coordonata boxului 4 de acum
-    // două săptămâni și ar hrăni paznicul de direcție și ieșirea de pe traseu — în
-    // cursă, cu date de pe alt traseu. Se caută din nou pe hartă, e un buton.
-    const hartaVeche = await store.get('harta');
-    if (hartaVeche && Object.keys(hartaVeche).length) {
-      await store.del('harta');
-      try { store.log('harta_stearsa', { legi: Object.keys(hartaVeche), cum: 'scanare nouă' }, Date.now()); } catch (e) {}
-    }
-    await rebuildPlan();
-    const cazute = rezultate.filter(r => !r.ok);
-    const detaliu = rezultate.map(r => r.ok ? `p${r.pag} ✓${r.boxuri}` : `p${r.pag} ✗`).join(' · ');
-    if (cazute.length) {
-      st.textContent = `⚠ AU CĂZUT ${cazute.length} PAGINI DIN ${imgs.length} — refotografiază-le! ` +
-        `${detaliu} · ${cazute.map(c => `p${c.pag}: ${c.err}`).join(' · ')}`;
-      st.style.color = 'var(--bad)';
-      alert(`Scanarea NU e completă: ${cazute.length} pagini din ${imgs.length} au căzut.\n\n` +
-            cazute.map(c => `pagina ${c.pag}: ${c.err}`).join('\n') +
-            `\n\nRefotografiază paginile căzute și scanează-le din nou — restul rămân.`);
-    } else {
-      st.textContent = `✓ ${detaliu} → ${boxesRaw.length} boxuri, ${detectRts(boxesRaw).length} probe`;
-      st.style.color = '';
-    }
+// O SINGURĂ poză, citită când îi vine rândul. Șirul base64 trăiește cât ține cererea.
+function citestePoza(f) {
+  return new Promise((res, rej) => {
+    const r = new FileReader();
+    r.onload = () => res({ b64: String(r.result).split(',')[1], mime: f.type || 'image/jpeg' });
+    r.onerror = () => rej(new Error('poza nu s-a putut citi de pe telefon'));
+    r.readAsDataURL(f);
   });
 }
 
-async function doScanTimecard() {
+// ── FOTOGRAFIEREA ROADBOOK-ULUI, în buclă ───────────────────────────────────
+// La Sibiu roadbook-ul vine tipărit, cu o oră înainte de start: 25-40 de pagini de pozat
+// una câte una. Fără bucla asta, fiecare pagină înseamnă un drum dus-întors prin meniu.
+// Scanarea propriu-zisă NU se dublează — pozele adunate intră prin exact același drum
+// de cod ca cele alese din galerie (scaneazaPozele).
+const colector = faColectorPoze();
+
+function fotoBucla(mesaj) {
+  const box = $('foto-bucla'), nr = $('foto-nr');
+  if (!box) return;
+  box.classList.toggle('hidden', colector.total === 0);
+  if (nr) nr.textContent = (mesaj ? mesaj + ' ' : '') +
+    (colector.total ? `${colector.total} ${colector.total === 1 ? 'pagină' : 'pagini'} de scanat.` : '');
+  const inca = $('btn-foto-inca');
+  if (inca) inca.disabled = colector.total >= MAX_POZE;
+}
+
+function fotografiazaPagina() {
+  // fișiere, nu conținut: pozele stau nedeschise până le vine rândul la scanare
+  pickImages(false, fisiere => {
+    const r = colector.adauga(fisiere);
+    fotoBucla(r.mesaj);
+  }, true);
+}
+
+async function doScanRoadbook() {
+  pickImages(true, fisiere => scaneazaPozele(fisiere));
+}
+
+// CÂTE PAGINI SE SCANEAZĂ: se spune ÎNAINTE, cu cifra, și se confirmă. Nu există plafon
+// care taie — dar există o confirmare, fiindcă fiecare pagină e o cerere de zeci de
+// secunde: 40 de pagini înseamnă vreo 10 minute în care telefonul trebuie lăsat în pace.
+// O selecție greșită (tot albumul) se vede aici, în cifre, nu după ce a pornit.
+const PRAG_CONFIRMARE_PAGINI = 15;
+const SECUNDE_PE_PAGINA = 15;
+
+async function scaneazaPozele(fisiere) {
   const key = localStorage.getItem('r2_key');
   if (!key) { alert('Pune cheia API în Setări.'); return; }
-  pickImages(false, async imgs => {
-    if (!imgs.length) return;
+  const imgs = (fisiere || []).filter(Boolean);
+  if (!imgs.length) return;
+  if (imgs.length >= PRAG_CONFIRMARE_PAGINI) {
+    const min = Math.max(1, Math.round(imgs.length * SECUNDE_PE_PAGINA / 60));
+    if (!confirm(`${imgs.length} pagini selectate.\n\n` +
+                 `Se scanează TOATE, una câte una — durează aproximativ ` +
+                 `${min} ${min === 1 ? 'minut' : 'minute'}. ` +
+                 `Ține telefonul deschis până la bilanțul final.\n\nÎncepem?`)) return;
+  }
+  const st = $('prep-scan-st');
+  st.style.color = '';
+  // numărul selectat, pe ecran, ÎNAINTE de prima cerere: „14 din 14" la final nu
+  // înseamnă nimic dacă nu se știe de la ce s-a plecat
+  st.textContent = `${imgs.length} ${imgs.length === 1 ? 'pagină selectată' : 'pagini selectate'}. Încep scanarea…`;
+  const all = [...boxesRaw];
+  // Rezultatul FIECĂREI pagini se ține minte și se arată la final. Pe 02.08, două
+  // pagini din trei au căzut, dar eroarea era suprascrisă de „Scanez pagina 3/3…"
+  // și finalul arăta „✓ 4 boxuri" — a arătat a succes și s-a condus cu o treime
+  // de roadbook. O scanare parțială e un EȘEC, nu un succes mai mic.
+  const rezultate = [];
+  for (let i = 0; i < imgs.length; i++) {
+    st.textContent = `Scanez pagina ${i + 1} din ${imgs.length}…`;
+    // poza se citește ABIA ACUM și trăiește doar cât ține cererea: aici era cauza
+    // plafonului de 12 (toate în memorie deodată), deci aici se repară
+    let poza = null;
+    try {
+      poza = await citestePoza(imgs[i]);
+      const boxes = await scanRoadbookPage(key, poza.b64, poza.mime);
+      let noi = 0;
+      for (const b of boxes) {
+        // dedup DOAR în interiorul aceluiași leg: numerele și km-ii repornesc la
+        // fiecare leg, deci „box 1 la 0,00" există legitim în toate leg-urile
+        const dupe = all.find(x => x.day === b.day && x.leg === b.leg &&
+          x.num === b.num && Math.abs(x.sumKm - b.sumKm) < 0.005);
+        if (!dupe) { all.push(b); noi++; }
+      }
+      rezultate.push({ pag: i + 1, ok: true, boxuri: boxes.length, noi });
+    } catch (e) {
+      // răspunsul brut (începutul lui) merge în jurnal — diagnostic, nu ghicit
+      rezultate.push({ pag: i + 1, ok: false, err: e.message,
+                       raw: e.raw || null, rawLen: e.rawLen || null,
+                       stop: e.stop || null, rawPrima: e.rawPrima || null });
+    }
+    poza = null;       // șirul base64 al paginii se eliberează înainte de următoarea
+    try { store.log('scan_page', rezultate[rezultate.length - 1], Date.now()); } catch (e) {}
+  }
+  all.sort((a, b) => a.sumKm - b.sumKm);
+  boxesRaw = all;
+  await store.put('plan_raw', boxesRaw);
+  // ROADBOOK NOU = HARTĂ VECHE, ARUNCATĂ. Coordonatele sunt legate de boxuri prin
+  // numărul lor și prin cheia de leg, iar cheia e aproape mereu „1|1": fără linia
+  // asta, boxul 4 al evenimentului de azi ar moșteni coordonata boxului 4 de acum
+  // două săptămâni și ar hrăni paznicul de direcție și ieșirea de pe traseu — în
+  // cursă, cu date de pe alt traseu. Se caută din nou pe hartă, e un buton.
+  const hartaVeche = await store.get('harta');
+  if (hartaVeche && Object.keys(hartaVeche).length) {
+    await store.del('harta');
+    try { store.log('harta_stearsa', { legi: Object.keys(hartaVeche), cum: 'scanare nouă' }, Date.now()); } catch (e) {}
+  }
+  await rebuildPlan();
+  const cazute = rezultate.filter(r => !r.ok);
+  const detaliu = rezultate.map(r => r.ok ? `p${r.pag} ✓${r.boxuri}` : `p${r.pag} ✗`).join(' · ');
+  if (cazute.length) {
+    st.textContent = `⚠ AU CĂZUT ${cazute.length} PAGINI DIN ${imgs.length} — refotografiază-le! ` +
+      `${detaliu} · ${cazute.map(c => `p${c.pag}: ${c.err}`).join(' · ')}`;
+    st.style.color = 'var(--bad)';
+    alert(`Scanarea NU e completă: ${cazute.length} pagini din ${imgs.length} au căzut.\n\n` +
+          cazute.map(c => `pagina ${c.pag}: ${c.err}`).join('\n') +
+          `\n\nRefotografiază paginile căzute și scanează-le din nou — restul rămân.`);
+  } else {
+    // BILANȚUL, negru pe alb: „14 din 14 pagini scanate". Cifra selectată și cifra
+    // scanată trebuie să se poată compara dintr-o privire — asta e verificarea care
+    // ar fi prins pe loc plafonul tăcut de 12.
+    st.textContent = `✓ ${rezultate.length} din ${imgs.length} pagini scanate · ${detaliu} → ` +
+      `${boxesRaw.length} boxuri, ${detectRts(boxesRaw).length} probe`;
+    st.style.color = 'var(--ok)';
+  }
+  try { store.log('scan_bilant', { selectate: imgs.length, scanate: rezultate.length,
+    reusite: rezultate.filter(r => r.ok).length, cazute: cazute.length,
+    boxuri: boxesRaw.length }, Date.now()); } catch (e) {}
+}
+
+async function doScanTimecard(cuCamera) {
+  const key = localStorage.getItem('r2_key');
+  if (!key) { alert('Pune cheia API în Setări.'); return; }
+  pickImages(false, async fisiere => {
+    if (!fisiere.length) return;
     const st = $('prep-tc-st'); st.textContent = 'Citesc time card-ul…';
     try {
-      const tcs = await scanTimeCard(key, imgs[0].b64, imgs[0].mime);
+      const poza = await citestePoza(fisiere[0]);
+      const tcs = await scanTimeCard(key, poza.b64, poza.mime);
       await store.put('tc_schedule', tcs);
       await rebuildPlan();                  // maparea pe leg-ul activ, cu offset derivat
       st.textContent = '✓ ' + tcs.map(t => `${t.name} ${t.time}`).join(' · ');
     } catch (e) { st.textContent = '✗ ' + e.message; }
-  });
+  }, cuCamera);
 }
 
 // ── jurnal: export / preluare ───────────────────────────────────────────────
@@ -701,9 +821,11 @@ function doImport() {
   // (fișier de pe alt telefon = conținut extern) sau dintr-un IndexedDB scris de o
   // versiune veche. Singurul punct prin care trec toate căile. (Audit 02.08.2026, P3.)
   boxesRaw = sanitizeBoxes((await store.get('plan_raw')) || []);
-        await rebuildPlan();
+        // preluarea de pe alt telefon ÎNLOCUIEȘTE ziua — asta e chiar ce s-a cerut,
+        // iar starea reală se pune imediat după, din jurnal (machine.resume)
+        await rebuildPlan(true);
         const st = resumeStateFromJournal(await store.journalAll());
-        startDay(true);          // preluare: poziția vine din jurnal, nu de la boxul 1
+        await startDay(true);    // preluare: poziția vine din jurnal, nu de la boxul 1
         machine.resume(st);
       } catch (e) { alert('Import eșuat: ' + e.message); }
     };
@@ -819,46 +941,6 @@ function hartaVie() {
     log: (t, d) => { try { store.log(t, d, clock.rally()); } catch (e) {} }
   });
   return harta;
-}
-
-// ── DESCĂRCAREA CORIDORULUI, pentru munte ───────────────────────────────────
-// Se apasă ACASĂ, pe WiFi. Limitele (rază, plafon, ritm, oprire) sunt în harta-ecran.js
-// și nu sunt decor: serverul de dale e public, gratuit și comun, iar politica lui
-// interzice descărcarea în masă. Ce nu încape într-o rulare se ia la a doua — ce e deja
-// în cache nu se recere.
-let _daleStop = false;
-async function descarcaCoridorul() {
-  const st = $('prep-dale-st'), rand = $('dale-progres-row'), bara = $('dale-bara');
-  const tr = traseuDinPlan(plan);
-  if (tr.pts.length < 2) {
-    st.textContent = 'Întâi am nevoie de traseu: fie recunoaștere înregistrată, fie ' +
-                     'butonul „Găsește traseul pe hartă".';
-    return;
-  }
-  const c = daleCoridor(tr.pts, { razaM: 400, zoomuri: [14, 15], maxDale: 800 });
-  st.style.color = '';
-  st.textContent = `Descarc ${c.dale.length} dale` + (c.taiat
-    ? ` din ${c.total} (plafon pe rulare — apasă din nou după ce se termină, continuă de unde a rămas)` : '') +
-    (tr.aproximativ ? ' · coridor în jurul traseului APROXIMATIV din adrese' : '') + '…';
-  rand.classList.remove('hidden');
-  _daleStop = false;
-  const r = await descarcaDale(c.dale, {
-    opritDe: () => _daleStop,
-    onPas: (i, rez) => {
-      bara.style.width = Math.round(i / c.dale.length * 100) + '%';
-      st.textContent = `${i} din ${c.dale.length} · ${rez.aduse} aduse, ${rez.dinCache} aveam deja` +
-                       (rez.esuate ? `, ${rez.esuate} ratate` : '');
-    }
-  });
-  rand.classList.add('hidden');
-  bara.style.width = '0';
-  st.textContent = (r.oprit ? `Oprit: ${r.motiv} · ` : 'Gata. ') +
-    `${r.aduse} dale noi, ${r.dinCache} erau deja, ${r.esuate} ratate` +
-    (c.taiat && !r.oprit ? ` · mai sunt ${c.total - c.dale.length} — apasă din nou.` : '');
-  st.style.color = r.oprit ? 'var(--warn)' : 'var(--ok)';
-  try { store.log('dale_descarcate', { cerute: c.dale.length, total: c.total,
-    aduse: r.aduse, dinCache: r.dinCache, esuate: r.esuate, oprit: r.oprit,
-    motiv: r.motiv, sursaTraseu: tr.sursa }, Date.now()); } catch (e) {}
 }
 
 // Butonul care predă ghidajul lui Google Maps, pe ecranul de hartă. Ținta o alege
@@ -1110,8 +1192,7 @@ function bind() {
     st.style.color = r.ok ? 'var(--ok)' : 'var(--warn)';
     try { store.log('dale_test', { ok: r.ok, status: r.status, ms: r.ms, octeti: r.octeti || null }, Date.now()); } catch (e) {}
   });
-  $('btn-dale-desc')?.addEventListener('click', descarcaCoridorul);
-  $('btn-dale-stop')?.addEventListener('click', () => { _daleStop = true; });
+
   $('btn-harta-clear')?.addEventListener('click', async () => {
     if (!confirm('Ștergi harta traseului?')) return;
     await store.put('harta', null);
@@ -1163,7 +1244,31 @@ function bind() {
     if (!ears.listen()) voice.say('Microfonul nu e disponibil.', 1);
   });
   $('btn-scan-rb').addEventListener('click', doScanRoadbook);
-  $('btn-scan-tc').addEventListener('click', doScanTimecard);
+  $('btn-scan-tc').addEventListener('click', () => doScanTimecard(false));
+  // ── camera foto ──────────────────────────────────────────────────────────
+  // Andreas fotografiază mâine roadbook-ul OFICIAL, pe hârtie. Pe Android 13+ selectorul
+  // de fișiere e adesea cel de POZE al sistemului, care n-are cameră deloc — deci calea
+  // spre cameră trebuie să fie un buton al ei, nu o speranță.
+  const camOk = suportaCamera();
+  for (const id of ['btn-scan-foto', 'btn-scan-tc-foto']) {
+    const b = $(id);
+    // un buton care nu poate face nimic (desktop) nu rămâne pe ecran
+    if (b && !camOk) b.classList.add('hidden');
+  }
+  $('btn-scan-foto')?.addEventListener('click', fotografiazaPagina);
+  $('btn-scan-tc-foto')?.addEventListener('click', () => doScanTimecard(true));
+  $('btn-foto-inca')?.addEventListener('click', fotografiazaPagina);
+  $('btn-foto-gata')?.addEventListener('click', () => {
+    const poze = colector.poze;
+    colector.goleste();
+    fotoBucla();
+    scaneazaPozele(poze);          // exact același drum ca pozele alese din galerie
+  });
+  $('btn-foto-renunt')?.addEventListener('click', () => {
+    if (!confirm(`Arunci cele ${colector.total} poze nescanate?`)) return;
+    colector.goleste();
+    fotoBucla();
+  });
   // Ștergerea roadbook-ului NU mai ia geometria cu ea din reflex. Măsurat în jurnalul
   // din 04.08: la 10:54 s-au scanat 6 pagini și TOATE cele 24 de boxuri au intrat ca
   // „noi", adică depozitul era gol — singurul drum care-l golește e butonul ăsta, care

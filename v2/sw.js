@@ -12,11 +12,13 @@ const ASSETS = ['./', './index.html', './app.css', './manifest.json', './icon.sv
 // Separat de cache-ul aplicației, din două motive:
 //  • are altă politică (cache-first, cu plafon și evacuare), pe când codul aplicației
 //    se înlocuiește în bloc la fiecare versiune;
-//  • NU are voie să fie șters la actualizarea aplicației. Dalele descărcate pentru
-//    Transfăgărășan sunt zeci de minute de descărcat pe un server public; un bump de
-//    versiune care le arunca ar fi lăsat pilotul fără hartă exact acolo unde n-are semnal.
+//  • NU are voie să fie șters la actualizarea aplicației. Dalele se strâng ÎN MERS, una
+//    câte una, pe măsură ce drumul trece pe sub ele — nu se descarcă în masă (interzis
+//    de politica OSM, vezi harta-vie.js). Sunt deci greu de refăcut: un bump de versiune
+//    care le arunca ar fi lăsat pilotul cu hartă goală fix pe unde a mai trecut o dată.
+// Reutilizarea e chiar ce cere politica lor (minim 7 zile de cache).
 const DALE = 'rali2-dale';
-const DALE_MAX = 2000;                    // ține ambele etape (măsurat: 610 + 934 dale)
+const DALE_MAX = 2000;                    // ~2000 de dale văzute în mers, apoi cea mai veche iese
 const GAZDA_DALE = 'tile.openstreetmap.org';
 let deLaTaiere = 0;
 const atinse = new Set();                 // dale reînscrise o dată pe sesiune (vezi mai jos)
@@ -52,15 +54,26 @@ async function raspundeDala(req) {
   }
   let res = null;
   // CORS întâi: un răspuns opac se stochează cu „umplutură" de câțiva MB în Chrome, deci
-  // 2000 de dale opace ar mânca tot spațiul aplicației. Dacă serverul nu dă CORS, cădem
-  // pe cererea originală (opacă) — harta merge, doar ocupă mai mult.
+  // dale opace ar mânca tot spațiul aplicației.
   try {
     res = await fetch(url, { mode: 'cors', credentials: 'omit', referrerPolicy: 'origin' });
   } catch (e) { res = null; }
-  if (!res || !res.ok) {
-    try { res = await fetch(req); } catch (e) { return res || Response.error(); }
+  // Un răspuns cu status ne-ok (429 „prea multe cereri", 403, 404) se ÎNTOARCE, dar nu se
+  // stochează niciodată: altfel un refuz de o secundă s-ar lipi de dala aia pentru
+  // totdeauna, fiindcă politica de aici e cache-first.
+  if (res && !res.ok) return res;
+  if (!res) {
+    try { res = await fetch(req); } catch (e) { return Response.error(); }
   }
-  if (res && (res.ok || res.type === 'opaque')) {
+  // CE INTRĂ ÎN CACHE, și de ce atât de strict (audit, 05.08.2026, punctul 4a — singurul
+  // care putea strica harta PERMANENT): pe o rețea cu portal captiv (hotel, benzinărie),
+  // cererea de dală e interceptată și primești pagina de login. Ca răspuns no-cors ea e
+  // opacă, deci arată exact ca o dală bună — iar cache-first ar servi-o apoi la infinit,
+  // inclusiv pe munte, unde n-ai cum s-o mai înlocuiești. Trei condiții, toate obligatorii:
+  // răspuns bun, venit prin CORS (deci chiar de la serverul de dale, nu de la un
+  // interceptor), și cu tip de conținut de imagine.
+  const tip = res.headers ? (res.headers.get('content-type') || '') : '';
+  if (res.ok && res.type === 'cors' && /^image\//i.test(tip)) {
     c.put(url, res.clone()).catch(() => {});
     if (++deLaTaiere >= 25) { deLaTaiere = 0; taie(c); }
   }

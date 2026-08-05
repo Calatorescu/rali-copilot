@@ -125,9 +125,6 @@ input { background: var(--bg); border: 1px solid var(--border); border-radius: 1
 .mapband { background: #ffd60a22; color: var(--warn); text-align: center; font-size: 13px;
   font-weight: 700; padding: 7px; border-radius: 10px; margin-bottom: 6px; }
 .mapband.rau { background: var(--bad); color: #fff; }
-/* bara de progres a descărcării de dale */
-.bara { flex: 1; height: 14px; background: #2c2c33; border-radius: 7px; overflow: hidden; }
-.bara > div { height: 100%; width: 0; background: var(--pri); transition: width .2s; }
 
 /* răspunsul la „UNDE SUNT" — se citește, nu strigă: e o informație cerută, nu o alarmă.
    Rămâne 20 s pe ecran, fiindcă în mașină o frază rostită o dată se pierde. */
