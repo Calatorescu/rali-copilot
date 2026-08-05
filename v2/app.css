@@ -206,3 +206,10 @@ input { background: var(--bg); border: 1px solid var(--border); border-radius: 1
   .btn.big { padding: 9px; font-size: 14px; }
   #map-wrap { height: min(40vh, 300px); }
 }
+
+/* editorul de probe din pregătire — se folosește PARCAT, cu roadbook-ul de hârtie în
+   mână, deci contează claritatea, nu compactarea */
+.probe-rand { border-top: 1px solid var(--border); padding: 8px 0 4px; }
+.probe-rand:first-child { border-top: 0; }
+.probe-rand .row { margin: 4px 0; flex-wrap: wrap; }
+.probe-rand .btn.sm { flex: 1; min-width: 96px; font-size: 12px; padding: 10px 6px; }

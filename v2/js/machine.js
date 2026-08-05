@@ -14,7 +14,7 @@
 import { makeOdometer, makeCalibrator, projectOnTrace, angDiff, haversineM,
          bearingDeg, traceAheadPoint, directieRo } from './geo.js';
 import { idealTimeS, deviationS, speedAt, bankingAdvice } from './pace.js';
-import { TURN_DIRS } from './route.js';
+import { TURN_DIRS, normFlags, areFlag, esteStart, esteFinish } from './route.js';
 import { secRo, distRo } from './voice.js';
 // numele strazii pentru „unde sunt se scoate cu acelasi extractor folosit la geocodare:
 // un singur loc care stie ce e nume de artera si ce e cuvant de roadbook (vezi repere.js)
@@ -168,7 +168,7 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
       // legăm ora de boxul TC corespunzător după ordine, dacă există
       return { ...tc, rallyMs: parseRallyTime(tc.time, clock), km: null, warned: {} };
     });
-    const tcBoxes = plan.boxes.filter(b => b.flag === 'TC');
+    const tcBoxes = plan.boxes.filter(b => areFlag(b, 'TC'));
     M.tcs.forEach((tc, i) => { if (tcBoxes[i]) tc.km = tcBoxes[i].sumKm; });
     log('tc_schedule', { tcs: M.tcs.map(t => ({ name: t.name, time: t.time, km: t.km })) });
   }
@@ -584,7 +584,7 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
     const b = boxes[M.nextBoxIdx];
     if (!b) return;
     const dM = (b.sumKm - M.routeKm) * 1000;
-    const silent = b.dir === 'ÎNAINTE' && !b.flag;   // „drept înainte" nu se rostește
+    const silent = b.dir === 'ÎNAINTE' && !normFlags(b).length;   // „drept înainte" nu se rostește
     const key = `${b.num}_${Math.round(b.sumKm * 100)}`;
     // anticipare personalizată, dar plafonată: vezi ACUM_MAX_M
     const nowM = Math.min(ACUM_MAX_M, Math.max(25, driver.leadM(M.speedKmh || 30)));
@@ -627,7 +627,7 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
       // liniile de FINISH — vezi COADA_FINISH_M: acolo e singura ocazie de a spune la
       // timp virajul de după tabelă. În rest, în probă rămâne doar cazul „imediat":
       // urechea e pe cifrele de ritm, iar un anunț separat ar ajunge după viraj.
-      const capManevra = TURN_DIRS.has(b.dir || ''), capFinish = b.flag === 'RT_FINISH';
+      const capManevra = TURN_DIRS.has(b.dir || ''), capFinish = esteFinish(b);
       if ((isNow || ultimaCuCifra) && (capManevra || capFinish)) {
         const coada = coadaManevra(M.nextBoxIdx);
         const limita = capFinish ? COADA_FINISH_M : (M.rt ? COADA_IMEDIAT_M : COADA_MAX_M);
@@ -696,15 +696,24 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
 
   function turnText(b, dM, isNow) {
     const dp = distRo(Math.max(20, dM));
-    switch (b.flag) {
+    const flags = normFlags(b);
+    // BOXUL CARE E ȘI FINISH, ȘI START. La Reșița, boxul 64 închide proba 2 și o
+    // deschide pe 3 în ACELAȘI punct; la Sibiu tiparul se repetă. Dacă s-ar rosti doar
+    // unul din cele două semne, pilotul ar trece linia crezând că a terminat — sau că
+    // abia începe. Se spune întreg, într-o singură frază, fiindcă acolo nu mai e timp
+    // pentru două.
+    if (flags.includes('RT_FINISH') && flags.some(f => f === 'RT_START_AUTO' || f === 'RT_START_STANDING'))
+      return isNow ? 'FINISH — și imediat START probă nouă'
+                   : `Finish în ${dp}, și acolo începe proba următoare`;
+    switch (flags[0]) {
       case 'TC': return isNow ? 'Time Control — ștampila' : `Time Control în ${dp}`;
       case 'RT_START_STANDING': return isNow ? 'Linia de start' : `Start probă în ${dp}`;
       case 'RT_START_AUTO': return isNow ? 'START probă' : `Start probă în ${dp}`;
       case 'RT_FINISH': return isNow ? 'FINISH' : `Finish în ${dp}`;
-      case 'STOP-CFR': return isNow ? 'STOP — cale ferată' : `Cale ferată în ${dp} — vei opri`;
       case 'PARKING': return isNow ? 'Parcare' : `Parcare în ${dp}`;
       case 'EV': return isNow ? 'Stație de încărcare' : `Încărcare în ${dp}`;
     }
+    if (b.dir === 'STOP-CFR') return isNow ? 'STOP — cale ferată' : `Cale ferată în ${dp} — vei opri`;
     const man = maneuver(b.dir, isNow);
     return isNow ? man : `${dp} — ${man}`;
   }
@@ -817,7 +826,7 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
       // secunde, printre cifrele rezultatului — măsurat în tura Tresor: „Urmează:
       // stânga acum" imediat după „stânga acum".
       const dejaSpus = M._coadaFinish != null && M._coadaFinish === nb.num;
-      if (!dejaSpus && dTo > -30 && dTo < 350 && (nb.dir !== 'ÎNAINTE' || nb.flag))
+      if (!dejaSpus && dTo > -30 && dTo < 350 && (nb.dir !== 'ÎNAINTE' || normFlags(nb).length))
         say(`Urmează: ${turnText(nb, Math.max(20, dTo), dTo < 60)}`, 3, 'turn', 'manevra');
     }
     M._coadaFinish = null;
@@ -1557,14 +1566,16 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
 
   // ce e boxul următor, în cuvinte de pilot
   function tintaRo(b) {
-    switch (b.flag) {
+    const flags = normFlags(b);
+    if (flags.includes('RT_FINISH') && esteStart(b)) return 'finishul probei, unde începe următoarea';
+    switch (flags[0]) {
       case 'TC': return 'Time Control';
       case 'RT_START_AUTO': case 'RT_START_STANDING': return 'startul probei';
       case 'RT_FINISH': return 'finishul probei';
       case 'PARKING': return 'parcare';
       case 'EV': return 'stația de încărcare';
-      case 'STOP-CFR': return 'calea ferată';
     }
+    if (b.dir === 'STOP-CFR') return 'calea ferată';
     if (TURN_DIRS.has(b.dir || '')) return maneuver(b.dir, false);
     return 'reper';
   }

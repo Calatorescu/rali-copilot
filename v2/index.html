@@ -71,6 +71,26 @@
       <div id="prep-verif"></div>
     </div>
 
+    <!-- ══ PROBELE: verificare și corectură manuală ══ -->
+    <!-- 05.08.2026, roadbook-ul REAL de la Reșița: scanarea a citit corect toate cele
+         120 de boxuri, dar a ratat TREI linii de finish și a inventat una. Rezultatul:
+         o singură probă, de 9,39 km în loc de 5,74 — proba cea mai grea a cursei,
+         cronometrată pe o distanță cu 63% mai mare. Oricât de bun ar fi promptul, la
+         Sibiu va greși ceva, iar în parcare nu se depanează cod. Aici se repară în
+         douăzeci de secunde. -->
+    <div class="card">
+      <p class="lbl">PROBELE — VERIFICĂ ȘI CORECTEAZĂ</p>
+      <p id="probe-rezumat" class="line"></p>
+      <p class="line dim">Compară cu roadbook-ul de pe hârtie: fiecare probă trebuie să
+        aibă startul și finishul la boxurile corecte. Un box poate fi ȘI finishul unei
+        probe, ȘI startul următoarei — apasă ambele semne pe el.</p>
+      <div id="prep-probe"></div>
+      <div class="row">
+        <input type="number" id="probe-cauta" placeholder="alt box, după număr" inputmode="numeric" min="1" max="999">
+        <button class="btn sec sm" id="btn-probe-cauta">DESCHIDE</button>
+      </div>
+    </div>
+
     <div class="card">
       <p class="lbl">PROGRAMUL ZILEI (time card)</p>
       <!-- o singură poză, deci fără buclă: după fotografie se scanează direct -->

@@ -36,7 +36,9 @@ export function linkNavigare(pct) {
 export function alegeWaypoints(ancore, max = MAX_WAYPOINTS) {
   const mijloc = ancore.slice(1, -1);
   if (mijloc.length <= max) return mijloc;
-  const importante = mijloc.filter(a => a.flag);
+  // „important" = orice punct de care depinde cursa: TC, linii de probă, parcare.
+  // Un box poate purta mai multe semne (vezi route.normFlags), deci se întreabă lista.
+  const importante = mijloc.filter(a => (Array.isArray(a.flags) && a.flags.length) || a.flag);
   const alese = new Set(importante.slice(0, max).map(a => a.num));
   if (alese.size < max) {
     const restul = mijloc.filter(a => !alese.has(a.num));

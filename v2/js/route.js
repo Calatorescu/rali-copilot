@@ -71,23 +71,71 @@ export function groupByLeg(boxes) {
 const DIR_OK = new Set([...TURN_DIRS, 'ÎNAINTE', 'STOP-CFR']);
 const FLAG_OK = new Set(['TC', 'RT_START_AUTO', 'RT_START_STANDING', 'RT_FINISH', 'PARKING', 'EV']);
 
+// ── UN BOX POATE PURTA MAI MULTE SEMNE ──────────────────────────────────────
+// Roadbook-ul REAL de la Reșița (Leg 2, scanat 05.08.2026, 14 pagini, 120 de boxuri):
+// boxul 64, la km 47,69, e SIMULTAN finish-ul probei 2 și startul probei 3. În roadbook
+// are ambele icoane, una lângă alta. Modelul de date de până acum avea `flag` — UN
+// SINGUR șir — deci una dintre ele se pierdea OBLIGATORIU, oricât de bun ar fi promptul.
+// Nu era o problemă de citire, era o problemă de model.
+//
+// Ce a costat, măsurat pe datele reale: din trei probe, scanarea a produs una singură,
+// de la 62,12 la 71,51 km — 9,39 km în loc de 5,74. Adică proba cea mai grea a cursei
+// (TR4) ar fi fost cronometrată pe o distanță cu 63% mai mare, iar cronometrarea e chiar
+// partea pe care se dau punctele. La Sibiu tiparul „finish-ul unei probe = startul
+// următoarei" apare la fel.
+//
+// De-aici încolo adevărul e `flags`, o LISTĂ. `flag` rămâne pe box ca teren DERIVAT
+// (primul semn, în ordinea importanței de mai jos), doar pentru afișare — nicio decizie
+// de cursă nu se mai ia din el. Vezi flagPrincipal.
+export const START_FLAGS = ['RT_START_AUTO', 'RT_START_STANDING'];
+// ordinea în care un box cu mai multe semne se prezintă pe ecran: finish-ul închide o
+// probă cronometrată, deci se vede primul; TC-ul e o ștampilă, deci bate parcarea
+const ORDINE_FLAG = ['RT_FINISH', 'RT_START_STANDING', 'RT_START_AUTO', 'TC', 'PARKING', 'EV'];
+
+export function normFlags(b) {
+  const brut = Array.isArray(b && b.flags) ? b.flags
+             : (b && b.flag != null ? [b.flag] : []);
+  const bune = [];
+  for (const f of brut) if (FLAG_OK.has(f) && !bune.includes(f)) bune.push(f);
+  // START AUTO și START STANDING se exclud reciproc: aceeași linie nu poate fi și cu
+  // oprire, și din mers. Dacă scanarea le dă pe amândouă, „standing" e cel restrictiv,
+  // deci cel care se păstrează (o probă pornită din greșeală din mers pierde secunde).
+  if (bune.includes('RT_START_STANDING')) {
+    const i = bune.indexOf('RT_START_AUTO');
+    if (i >= 0) bune.splice(i, 1);
+  }
+  return bune.sort((x, y) => ORDINE_FLAG.indexOf(x) - ORDINE_FLAG.indexOf(y));
+}
+
+export function areFlag(b, f) { return normFlags(b).includes(f); }
+export function esteStart(b) { return normFlags(b).some(f => START_FLAGS.includes(f)); }
+export function esteFinish(b) { return areFlag(b, 'RT_FINISH'); }
+export function flagPrincipal(b) { const f = normFlags(b); return f.length ? f[0] : null; }
+
 export function sanitizeBoxes(raw) {
   const num = v => {
     const n = typeof v === 'string' ? parseFloat(v.replace(',', '.')) : v;
     return typeof n === 'number' && isFinite(n) ? n : null;
   };
-  const out = (Array.isArray(raw) ? raw : []).map(b => ({
+  const out = (Array.isArray(raw) ? raw : []).map(b => {
+    // AICI se face migrarea: orice roadbook stocat de o versiune veche (cu `flag` singur)
+    // intră pe același drum ca unul scanat azi. sanitizeBoxes e chemată la fiecare
+    // pornire și la fiecare import, deci e singurul punct prin care trec toate căile.
+    const flags = normFlags(b);
+    return {
     day: num(b.day), leg: num(b.leg), page: num(b.page), num: num(b.num),
     sumKm: num(b.sumKm), sectionKm: num(b.sectionKm),
     dir: DIR_OK.has(b.dir) ? b.dir : null,
-    flag: FLAG_OK.has(b.flag) ? b.flag : null,
+    flags,
+    flag: flags.length ? flags[0] : null,       // DERIVAT, doar pentru afișare
     comment: typeof b.comment === 'string' ? b.comment.slice(0, 120) : '',
     // Reperul geocodabil, cerut explicit la scanare (vezi ROADBOOK_PROMPT). E tot text
     // din același răspuns extern, deci trece prin aceeași sită: șir scurt, fără
     // caractere de control. Când lipsește, se deduce din comentariu (repere.js).
     reper: typeof b.reper === 'string' && b.reper.trim()
       ? b.reper.replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 80) : null
-  })).filter(b => b.sumKm !== null);
+    };
+  }).filter(b => b.sumKm !== null);
   out.sort((a, b) => a.sumKm - b.sumKm);
   return out;
 }
@@ -102,12 +150,31 @@ export function verifyRoadbook(allBoxes) {
   for (const g of grupuri) {
     const b = g.boxes, unde = g.label;
     // km-ul trebuie să crească strict — dubluri sau regresii = boxuri citite greșit
+    //
+    // SALTUL DE KILOMETRAJ NU ÎNSEAMNĂ PAGINĂ LIPSĂ dacă numerele de box sunt
+    // CONSECUTIVE. Măsurat pe roadbook-ul real de la Reșița (Leg 2, 05.08.2026): între
+    // boxurile 50 și 51 sunt 9,73 km, iar comentariile spun de ce — „Exit Municipiul
+    // Reșița" apoi „Văliug 5 km": drum de munte pe DJ 582, fără nicio manevră pe care
+    // roadbook-ul s-o descrie. Mai sunt două salturi, de 5,96 și 7,69 km, în același leg.
+    // Numărul total de boxuri (120) se potrivea exact cu referința, deci nu lipsea nimic.
+    // Trei alarme false pe ecran, cu o zi înainte de cursă, costă încrederea în toate
+    // celelalte avertismente — care sunt reale.
     for (let i = 1; i < b.length; i++) {
       const sec = b[i].sumKm - b[i - 1].sumKm;
-      if (sec <= 0)
+      if (sec <= 0) {
         probleme.push(`${unde}: boxurile ${b[i - 1].num} și ${b[i].num} au același km (${b[i].sumKm}) sau merg înapoi`);
-      else if (sec > 8)
+        continue;
+      }
+      if (sec <= 8) continue;
+      const consecutive = b[i].num != null && b[i - 1].num != null && b[i].num - b[i - 1].num === 1;
+      if (consecutive) {
+        // numerotarea e neîntreruptă: nu s-a pierdut niciun rând. Rămâne o notă, fiindcă
+        // un tronson lung E o informație pentru pilot — dar nu o acuzație de scanare.
+        if (sec > 15)
+          probleme.push(`${unde}: tronson lung de ${sec.toFixed(1)} km între boxurile ${b[i - 1].num} și ${b[i].num} — fără manevre, verifică pe hartă`);
+      } else {
         probleme.push(`${unde}: salt de ${sec.toFixed(1)} km între boxurile ${b[i - 1].num} și ${b[i].num} — pagină lipsă?`);
+      }
     }
     // numerele de box: o gaură în serie = o pagină sau un rând nescanat
     const nums = b.map(x => x.num).filter(n => n != null);
@@ -116,27 +183,30 @@ export function verifyRoadbook(allBoxes) {
       if (gol > 1) probleme.push(`${unde}: lipsesc boxurile ${nums[i - 1] + 1}–${nums[i] - 1} (între ${nums[i - 1]} și ${nums[i]})`);
       else if (gol < 0) probleme.push(`${unde}: boxul ${nums[i]} vine după ${nums[i - 1]} — numerotare încurcată`);
     }
-    // box mut: fără direcție și fără flag — scanarea n-a înțeles căsuța
+    // box mut: fără direcție și fără niciun semn — scanarea n-a înțeles căsuța
     for (const x of b) {
-      if (!x.dir && !x.flag) probleme.push(`${unde}: boxul ${x.num} n-are nici direcție, nici semn — verifică pagina`);
+      if (!x.dir && !normFlags(x).length) probleme.push(`${unde}: boxul ${x.num} n-are nici direcție, nici semn — verifică pagina`);
     }
-    // probele: fiecare START își are FINISH-ul?
+    // Probele: fiecare START își are FINISH-ul? Ordinea în interiorul unui box e aceeași
+    // ca la detectRts — întâi se închide, apoi se deschide — fiindcă boxul care e și
+    // finish, și start (Reșița, boxul 64) e cazul normal, nu excepția.
     let deschise = 0;
     for (const x of b) {
-      if (x.flag === 'RT_START_AUTO' || x.flag === 'RT_START_STANDING') deschise++;
-      else if (x.flag === 'RT_FINISH') {
+      const f = normFlags(x);
+      if (f.includes('RT_FINISH')) {
         if (deschise === 0) probleme.push(`${unde}: FINISH de probă (box ${x.num}) fără START înaintea lui`);
         else deschise--;
       }
+      if (f.some(y => START_FLAGS.includes(y))) deschise++;
     }
     if (deschise > 0) probleme.push(`${unde}: ${deschise} probă/e cu START fără FINISH`);
     // Un leg fără nicio probă sau fără TC de final e aproape sigur o scanare parțială —
     // exact cazul din 02.08: doar pagina 1 intrase (4 boxuri, 0 probe, 0,35 km) și
     // seria de numere 1-4 era „corectă", deci nimic nu urla. De-acum urlă asta.
     if (b.length >= 2) {
-      if (!b.some(x => x.flag === 'RT_START_AUTO' || x.flag === 'RT_START_STANDING'))
+      if (!b.some(x => esteStart(x)))
         probleme.push(`${unde}: NICIO probă în ${b.length} boxuri — sigur au intrat toate paginile?`);
-      if (b[b.length - 1].flag !== 'TC' && b[b.length - 1].flag !== 'PARKING')
+      if (!areFlag(b[b.length - 1], 'TC') && !areFlag(b[b.length - 1], 'PARKING'))
         probleme.push(`${unde}: ultimul box (${b[b.length - 1].num}) nu e TC/parcare — lipsește finalul?`);
     }
   }
@@ -275,26 +345,35 @@ export function hartaPentruLeg(harta, legKey) {
 // mai apropiat dinaintea lui. Un start rămas nepereche nu devine probă — și e exact ce
 // raportează verificatorul de roadbook („probă cu START fără FINISH"), adică semnul că
 // scanarea a citit greșit o icoană.
+// ORDINEA ÎN INTERIORUL ACELUIAȘI BOX (de la v36): boxul care poartă și FINISH, și START
+// se procesează întâi ca finish, apoi ca start. Altfel startul probei următoare ar fi
+// împerecheat cu propriul lui finish și ar ieși o probă de zero kilometri, iar proba
+// dinainte ar rămâne deschisă până la următoarea tabelă — exact ce s-a măsurat pe
+// roadbook-ul de la Reșița: o singură probă de 9,39 km în loc de trei probe corecte.
 export function detectRts(boxes, savedSpeeds = {}) {
   const rts = [];
   const deschise = [];
   for (let i = 0; i < boxes.length; i++) {
-    const f = boxes[i].flag;
-    if (f === 'RT_START_AUTO' || f === 'RT_START_STANDING') { deschise.push(i); continue; }
-    if (f !== 'RT_FINISH' || !deschise.length) continue;
-    const s = deschise.pop();                       // startul cel mai apropiat, încă deschis
-    const dist = boxes[i].sumKm - boxes[s].sumKm;
-    if (!(dist > 0.05 && dist < 60)) continue;
-    const key = `${boxes[s].num}_${Math.round(boxes[s].sumKm * 100)}`;
-    const m = String(boxes[s].comment || '').match(/(\d+(?:[.,]\d+)?)\s*km\s*\/?\s*h/i);
-    rts.push({
-      key, startIdx: s, finishIdx: i,
-      startKm: boxes[s].sumKm, finishKm: boxes[i].sumKm,
-      distKm: Math.round(dist * 100) / 100,
-      type: boxes[s].flag === 'RT_START_STANDING' ? 'standing' : 'auto',
-      kmh: savedSpeeds[key] != null ? savedSpeeds[key]
-         : (m ? parseFloat(m[1].replace(',', '.')) : null)
-    });
+    const f = normFlags(boxes[i]);
+    // 1. ÎNCHIDEREA
+    if (f.includes('RT_FINISH') && deschise.length) {
+      const s = deschise.pop();                     // startul cel mai apropiat, încă deschis
+      const dist = boxes[i].sumKm - boxes[s].sumKm;
+      if (dist > 0.05 && dist < 60) {
+        const key = `${boxes[s].num}_${Math.round(boxes[s].sumKm * 100)}`;
+        const m = String(boxes[s].comment || '').match(/(\d+(?:[.,]\d+)?)\s*km\s*\/?\s*h/i);
+        rts.push({
+          key, startIdx: s, finishIdx: i,
+          startKm: boxes[s].sumKm, finishKm: boxes[i].sumKm,
+          distKm: Math.round(dist * 100) / 100,
+          type: areFlag(boxes[s], 'RT_START_STANDING') ? 'standing' : 'auto',
+          kmh: savedSpeeds[key] != null ? savedSpeeds[key]
+             : (m ? parseFloat(m[1].replace(',', '.')) : null)
+        });
+      }
+    }
+    // 2. DESCHIDEREA — același box poate face și asta, imediat după
+    if (f.some(x => START_FLAGS.includes(x))) deschise.push(i);
   }
   // numerotarea rămâne în ordinea de pe traseu, nu în ordinea în care s-au închis
   rts.sort((a, b) => a.startKm - b.startKm);

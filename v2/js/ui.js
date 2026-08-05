@@ -5,6 +5,7 @@
 
 import { fmtHMS } from './time.js';
 import { linkNavigare as linkMaps } from './maps.js';
+import { normFlags } from './route.js';
 
 const $ = id => document.getElementById(id);
 
@@ -204,7 +205,10 @@ function dirGlyph(b) {
   const g = { 'ÎNAINTE': '↑', 'STÂNGA': '←', 'DREAPTA': '→', 'STÂNGA-T': '↰', 'DREAPTA-T': '↱',
     'GIRATORIU-1': '①', 'GIRATORIU-2': '②', 'GIRATORIU-3': '③', 'GIRATORIU-4': '④', 'STOP-CFR': '⛔' };
   const f = { 'TC': '🏁⏱', 'RT_START_AUTO': '🏁', 'RT_START_STANDING': '🏁❄', 'RT_FINISH': '🔲', 'PARKING': '🅿', 'EV': '🔌' };
-  return (g[b.dir] || '•') + (b.flag ? ' ' + (f[b.flag] || '') : '');
+  // TOATE semnele boxului, nu doar primul: boxul care e și finish, și start le poartă pe
+  // amândouă (Reșița, boxul 64), iar pe ecran trebuie să se vadă că sunt două lucruri.
+  const semne = normFlags(b).map(x => f[x] || '').filter(Boolean).join('');
+  return (g[b.dir] || '•') + (semne ? ' ' + semne : '');
 }
 
 // ceasul din header — ora RALIULUI, nu a telefonului

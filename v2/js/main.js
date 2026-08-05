@@ -7,7 +7,8 @@ import { makeVoice, makeEars, secRo } from './voice.js';
 import { makeLiveGps, makeSyntheticGps, makeReplayGps } from './gps.js';
 import { buildPlan, detectRts, sanitizeBoxes, groupByLeg, verifyRoadbook,
          reconNormalize, reconPentruLeg, reconPune, reconStatus,
-         reconRecupereaza, verificaHarta, hartaPentruLeg, coerentaHarta } from './route.js';
+         reconRecupereaza, verificaHarta, hartaPentruLeg, coerentaHarta,
+         normFlags, areFlag, esteStart, esteFinish, legKey } from './route.js';
 import { makeMachine } from './machine.js';
 import { makeDriverModel } from './learn.js';
 import { makeUi, startHeaderClock } from './ui.js';
@@ -32,7 +33,7 @@ let hartaIncoerenta = null;
 // Versiunea build-ului — se ține SINCRON cu CACHE din sw.js la fiecare deploy.
 // Vizibilă în antet și scrisă în jurnal la fiecare pornire: „ce versiune rulează
 // telefonul?" se citește, nu se ghicește (02.08, seara — nu se putea ști).
-const BUILD = 'v35';
+const BUILD = 'v36';
 
 async function init() {
   store = await makeStore();
@@ -191,7 +192,7 @@ async function rebuildPlan(fortat) {
   const tcs = await store.get('tc_schedule');
   if (tcs && tcs.length) {
     const tcOff = grupuri.slice(0, Math.max(0, idx))
-      .reduce((n, gr) => n + gr.boxes.filter(b => b.flag === 'TC').length, 0);
+      .reduce((n, gr) => n + gr.boxes.filter(b => areFlag(b, 'TC')).length, 0);
     machine.setTcSchedule(tcs.slice(tcOff));
   }
   renderPrep();
@@ -218,7 +219,7 @@ function renderPrep() {
     mw.textContent = '';
     const ancore = plan.harta
       ? plan.boxes.filter(b => plan.harta[b.num])
-          .map(b => ({ num: b.num, sumKm: b.sumKm, flag: b.flag, ...plan.harta[b.num] }))
+          .map(b => ({ num: b.num, sumKm: b.sumKm, flags: b.flags, ...plan.harta[b.num] }))
       : [];
     for (const l of linkuriTraseu(ancore)) {
       const a = document.createElement('a');
@@ -295,7 +296,129 @@ function renderPrep() {
       }
     }
   }
+  renderProbe();
   renderRecon();
+}
+
+// ── EDITAREA MANUALĂ A PROBELOR ─────────────────────────────────────────────
+// De ce există, măsurat pe roadbook-ul REAL de la Reșița (Leg 2, 05.08.2026, 14 pagini):
+// scanarea a citit corect toate cele 120 de boxuri și toate kilometrele, dar din patru
+// semne de probă a ratat TREI linii de finish (boxurile 64, 66, 97) și a inventat una
+// (boxul 108). Aplicația a dedus o singură probă, 62,12 → 71,51 = 9,39 km, în locul celor
+// trei reale (8,89 · 6,26 · 5,74). Proba cea mai grea a cursei ar fi fost cronometrată pe
+// o distanță cu 63% mai mare — adică exact partea care merge ar fi dat cifre false.
+//
+// Promptul s-a întărit (vezi scan.js), modelul de date s-a reparat (un box poate purta
+// mai multe semne), dar niciuna din cele două nu garantează nimic pe un roadbook nou.
+// Singurul lucru care garantează e ca omul să poată corecta în douăzeci de secunde,
+// stând în parcare, cu roadbook-ul de hârtie în mână. Asta face cardul ăsta.
+const _probeExtra = new Set();          // boxuri deschise manual, fără semn de probă
+
+function cheieViteza(b) { return `${b.num}_${Math.round(b.sumKm * 100)}`; }
+
+function renderProbe() {
+  const wrap = $('prep-probe');
+  if (!wrap) return;
+  wrap.textContent = '';
+  const rez = $('probe-rezumat');
+  if (rez) {
+    const n = plan.rts.length;
+    rez.textContent = n
+      ? `${n} ${n === 1 ? 'probă' : 'probe'}: ` +
+        plan.rts.map(r => `${r.name} ${r.distKm.toFixed(2)} km` +
+                          (r.kmh != null ? ` la ${r.kmh}` : ' FĂRĂ VITEZĂ')).join(' · ')
+      : 'Nicio probă detectată — dacă roadbook-ul are, adaug-o mai jos.';
+    rez.style.color = n && plan.rts.every(r => r.kmh != null) ? 'var(--ok)' : 'var(--warn)';
+  }
+  if (!plan.boxes.length) return;
+  const relevante = plan.boxes.filter(b => esteStart(b) || esteFinish(b) ||
+                                           (b.num != null && _probeExtra.has(b.num)));
+  if (!relevante.length) {
+    const p = document.createElement('p');
+    p.className = 'line dim';
+    p.textContent = 'Niciun box cu semn de probă. Caută boxul după număr, mai jos, ca să-i pui unul.';
+    wrap.appendChild(p);
+    return;
+  }
+  for (const b of relevante) wrap.appendChild(randProba(b));
+}
+
+function randProba(b) {
+  const rand = document.createElement('div');
+  rand.className = 'probe-rand';
+  const cap = document.createElement('p');
+  cap.className = 'line';
+  const tare = document.createElement('b');
+  tare.textContent = `box ${b.num != null ? b.num : '?'} · ${b.sumKm.toFixed(2)} km`;
+  cap.appendChild(tare);
+  // textContent, nu innerHTML: comentariul vine din scanarea unui document EXTERN
+  const com = document.createElement('span');
+  com.className = 'dim';
+  com.textContent = b.comment ? ' · ' + b.comment.slice(0, 46) : '';
+  cap.appendChild(com);
+  rand.appendChild(cap);
+
+  const butoane = document.createElement('div');
+  butoane.className = 'row';
+  const SEMNE = [
+    { f: 'RT_START_AUTO', txt: '🏁 START din mers' },
+    { f: 'RT_START_STANDING', txt: '❄ START oprit' },
+    { f: 'RT_FINISH', txt: '🔲 FINISH' }
+  ];
+  for (const s of SEMNE) {
+    const activ = areFlag(b, s.f);
+    const btn = document.createElement('button');
+    btn.className = 'btn sm ' + (activ ? (s.f === 'RT_FINISH' ? 'danger' : 'ok') : 'sec');
+    btn.textContent = (activ ? '✓ ' : '') + s.txt;
+    btn.addEventListener('click', () => comutaFlag(b, s.f));
+    butoane.appendChild(btn);
+  }
+  rand.appendChild(butoane);
+
+  // viteza se cere DOAR pe boxurile de start — acolo o scrie și roadbook-ul
+  if (esteStart(b)) {
+    const r2 = document.createElement('div');
+    r2.className = 'row';
+    const et = document.createElement('span');
+    et.className = 'line dim'; et.textContent = 'viteza probei:';
+    const inp = document.createElement('input');
+    inp.type = 'number'; inp.placeholder = 'km/h'; inp.min = 5; inp.max = 120; inp.step = 0.1;
+    inp.style.maxWidth = '110px';
+    const rt = plan.rts.find(r => plan.boxes[r.startIdx] === b);
+    if (rt && rt.kmh != null) inp.value = rt.kmh;
+    inp.addEventListener('change', async () => {
+      const v = parseFloat(String(inp.value).replace(',', '.'));
+      if (!(isFinite(v) && v >= 5 && v <= 120)) return;
+      const speeds = (await store.get('rt_speeds')) || {};
+      speeds[cheieViteza(b)] = v;
+      await store.put('rt_speeds', speeds);
+      try { store.log('flag_manual', { ce: 'viteza', boxNum: b.num, km: b.sumKm, kmh: v }, Date.now()); } catch (e) {}
+      await rebuildPlan();
+    });
+    r2.append(et, inp);
+    rand.appendChild(r2);
+  }
+  return rand;
+}
+
+// Comutarea unui semn. Se scrie în boxurile BRUTE (sursa adevărului, cea salvată), se
+// jurnalizează cu starea de dinainte și de după, apoi planul se reconstruiește — deci
+// verificatorul și lista de probe se recalculează singure.
+async function comutaFlag(box, flag) {
+  const b = boxesRaw.find(x => x === box) ||
+            boxesRaw.find(x => legKey(x) === plan.legKey && x.num === box.num &&
+                               Math.abs(x.sumKm - box.sumKm) < 0.005);
+  if (!b) return;
+  const inainte = normFlags(b);
+  const dupa = normFlags({ flags: inainte.includes(flag)
+    ? inainte.filter(f => f !== flag) : [...inainte, flag] });
+  b.flags = dupa;
+  b.flag = dupa.length ? dupa[0] : null;      // terenul derivat, ținut sincron
+  if (b.num != null) _probeExtra.add(b.num);  // rândul rămâne pe ecran și după ce l-ai golit
+  await store.put('plan_raw', boxesRaw);
+  try { store.log('flag_manual', { ce: 'semn', boxNum: b.num, km: b.sumKm,
+                                   leg: plan.legKey, inainte, dupa }, Date.now()); } catch (e) {}
+  await rebuildPlan();
 }
 
 // Rândul de geometrie din panoul de pregătire. Cerut după 04.08.2026: aplicația are
@@ -865,7 +988,7 @@ async function gasesteTraseulPeHarta() {
     btn.disabled = false; return;
   }
   // ancorele care contrazic kilometrajul se aruncă (o „Str. Turda" din alt oraș)
-  const v = verificaAncore(rez.ancore.map(a => ({ ...a, flag: (plan.boxes.find(b => b.num === a.num) || {}).flag })));
+  const v = verificaAncore(rez.ancore.map(a => ({ ...a, flags: (plan.boxes.find(b => b.num === a.num) || {}).flags })));
   const harta = {};
   // doar boxurile CU numar: sanitizeBoxes lasa num:null pentru randurile pe care
   // scanarea nu le-a putut numerota, iar toate ar ajunge sub aceeasi cheie „null"
@@ -1079,7 +1202,7 @@ function bind() {
         // apasă la repere fizice, nu la „reper — drum drept". Pe 02.08 poziția crezută
         // era 5,17 și butonul a sugerat box 11 („reper", 5,07) în loc de TC-ul de
         // final (box 12, 5,35) — unde era mașina de fapt.
-        const marcat = c => c.box.flag != null || (c.box.dir && c.box.dir !== 'ÎNAINTE');
+        const marcat = c => normFlags(c.box).length > 0 || (c.box.dir && c.box.dir !== 'ÎNAINTE');
         const pool = cands.filter(c => marcat(c) && Math.abs(c.deltaM) < 450);
         const alege = (pool.length ? pool : cands)
           .reduce((a, c) => Math.abs(c.deltaM) < Math.abs(a.deltaM) ? c : a);
@@ -1164,6 +1287,25 @@ function bind() {
     locInp.value = localStorage.getItem('r2_localitate') || '';
     locInp.addEventListener('change', () => localStorage.setItem('r2_localitate', locInp.value.trim()));
   }
+  // căutarea unui box care n-are niciun semn de probă: se deschide în editor ca să i se
+  // poată PUNE unul (finish-urile ratate n-au niciun semn, deci nu apar singure în listă)
+  const cautaProba = () => {
+    const inp = $('probe-cauta');
+    const n = parseInt(inp ? inp.value : '', 10);
+    if (!isFinite(n)) return;
+    const b = plan.boxes.find(x => x.num === n);
+    if (!b) {
+      const rez = $('probe-rezumat');
+      if (rez) { rez.textContent = `Boxul ${n} nu există în ${plan.legLabel || 'leg-ul activ'}.`;
+                 rez.style.color = 'var(--bad)'; }
+      return;
+    }
+    _probeExtra.add(n);
+    if (inp) inp.value = '';
+    renderProbe();
+  };
+  $('btn-probe-cauta')?.addEventListener('click', cautaProba);
+  $('probe-cauta')?.addEventListener('keydown', e => { if (e.key === 'Enter') cautaProba(); });
   $('btn-geocod')?.addEventListener('click', gasesteTraseulPeHarta);
   $('btn-harta')?.addEventListener('click', incarcaHarta);
   // ── harta vie: comutarea și comenzile de pe ecran ────────────────────────

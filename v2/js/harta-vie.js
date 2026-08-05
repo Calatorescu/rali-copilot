@@ -11,7 +11,7 @@
 // Ce NU face modulul ăsta: nu rutează, nu caută adrese, nu vorbește. Desenează unde
 // ești, pe ce drum ești și unde sunt boxurile.
 
-import { TURN_DIRS } from './route.js';
+import { TURN_DIRS, flagPrincipal } from './route.js';
 
 export const DALA_PX = 256;
 
@@ -189,7 +189,9 @@ function calcTraseu(plan) {
 // distinct fiindcă sunt singurele puncte unde se OPREȘTE sau se schimbă regimul cursei.
 export function tipBox(b) {
   if (!b) return 'reper';
-  switch (b.flag) {
+  // normFlags pune finish-ul primul, deci boxul care e și finish, și start apare pe
+  // hartă ca finish — semnul care contează pentru cronometru
+  switch (flagPrincipal(b)) {
     case 'TC': return 'tc';
     case 'RT_START_AUTO': case 'RT_START_STANDING': return 'start';
     case 'RT_FINISH': return 'finish';
