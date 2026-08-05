@@ -132,3 +132,74 @@ input { background: var(--bg); border: 1px solid var(--border); border-radius: 1
 .debrief { background: #0a84ff22; border-radius: 10px; padding: 9px 12px; font-size: 13px; margin-bottom: 8px; }
 .rts-line { font-size: 13px; color: var(--dim); text-align: center; margin-bottom: 8px; font-variant-numeric: tabular-nums; }
 .bignum { font-size: 44px; font-weight: 800; font-variant-numeric: tabular-nums; padding: 8px 0; }
+
+/* ══ ECRAN ÎMPĂRȚIT (split screen) ══════════════════════════════════════════
+   Decizia lui Andreas, 05.08.2026: la Sibiu conduce cu RALI SUS și Google Maps JOS,
+   amândouă vizibile. Adică RALI primește jumătate de ecran — pe Galaxy S25 Ultra vreo
+   500 px CSS înălțime, cu lățimea neatinsă.
+
+   De ce se rupea layout-ul vechi: toate mărimile mari erau în `vw` (săgeata
+   clamp(118px, 46vw, 190px)). În ecran împărțit LĂȚIMEA rămâne întreagă, deci săgeata
+   rămânea de 190 px într-un viewport de 500 — o singură piesă mânca o treime din tot
+   ce se vedea, iar distanța și devierea ieșeau sub margine.
+
+   Deci aici totul se măsoară în `vh`: unitatea urmărește fereastra aplicației, nu
+   ecranul telefonului, deci se potrivește singură și la o treime de ecran, și la două.
+   Regula de citit rămâne aceeași: la o privire de 0,3 s trebuie să vezi CÂT MAI AM și
+   ÎNCOTRO. Ordinea pe orizontală e cea din frază — „300 de metri — dreapta" — ca urechea
+   și ochiul să primească aceeași informație în aceeași ordine. */
+@media (max-height: 620px) {
+  #app { padding: 4px 10px 10px; }
+  #hdr { padding: 2px 2px 4px; gap: 6px; }
+  #cp-clock { font-size: 15px; }
+  .cp-state { font-size: 10px; letter-spacing: 1px; padding: 3px 7px; }
+  .hbtn { font-size: 17px; padding: 2px 6px; }
+  .posrow { padding: 2px 2px 5px; }
+  .posrow #cp-km, .posrow #cp-spd { font-size: 19px; }
+  .warnband, .tcband { padding: 5px; font-size: 12px; margin-bottom: 5px; }
+  .corrline { padding: 4px 8px; font-size: 12px; margin-bottom: 5px; }
+
+  /* CARDUL DE NAVIGAȚIE, pe orizontală: distanța la stânga, săgeata la dreapta.
+     Săgeata rămâne elementul dominant, dar proporțional cu cât ecran există. */
+  #cp-nav { display: flex; flex-wrap: wrap; align-items: center; justify-content: center;
+    column-gap: 14px; row-gap: 2px; padding: 4px 12px 6px; margin-bottom: 6px; }
+  #cp-nav .nx-dist { order: 1; font-size: clamp(30px, 11vh, 68px); }
+  #cp-nav .nx-dir  { order: 2; font-size: clamp(58px, 20vh, 190px); line-height: .9; }
+  #cp-nav .nx-box  { order: 3; flex-basis: 100%; text-align: center; }
+  #cp-nav .nx-com  { order: 4; flex-basis: 100%; text-align: center; font-size: 13px;
+    min-height: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #cp-nav .nx-after { order: 5; flex-basis: 100%; margin-top: 3px; padding-top: 3px; font-size: 12px; }
+  #cp-nav.compact .nx-dir { font-size: clamp(44px, 13vh, 96px); }
+  #cp-nav.compact .nx-dist { font-size: clamp(24px, 7vh, 40px); }
+
+  /* ÎN PROBĂ cifra de deviere e cea urmărită — rămâne cea mai mare de pe ecran,
+     iar restul (acum/țintă, rămas) se strânge pe un rând sub ea. */
+  #cp-rt { display: flex; flex-wrap: wrap; align-items: center; justify-content: center;
+    column-gap: 12px; padding: 4px 10px 6px; margin-bottom: 6px; }
+  #cp-rt .cp-dev { order: 1; font-size: clamp(48px, 17vh, 92px); }
+  #cp-rt #cp-dev-lbl { order: 2; font-size: 10px; text-align: left; max-width: 45%; }
+  #cp-rt .rt-cols { order: 3; flex-basis: 100%; margin-top: 2px; }
+  #cp-rt .cp-target { font-size: 21px; }
+
+  .btn.big { padding: 11px; font-size: 15px; }
+  .btn { padding: 10px; font-size: 14px; }
+  .row { margin: 5px 0; gap: 6px; }
+  .card { padding: 9px 11px; margin-bottom: 8px; }
+  .rts-line, .debrief { font-size: 11px; margin-bottom: 5px; }
+  #map-wrap { height: min(48vh, 400px); }
+  .mbtn { width: 42px; height: 42px; font-size: 19px; }
+}
+
+/* Și mai strâns (o treime de ecran, sau telefon în peisaj): rămâne DOAR banda care
+   răspunde la „cât mai am și încotro". Numele străzii, manevra de după și lista de
+   probe dispar — se citesc cu ochii pe roadbook sau pe ecranul întreg, nu de aici. */
+@media (max-height: 460px) {
+  #cp-nav .nx-com, #cp-nav .nx-after, .rts-line, .debrief { display: none; }
+  #cp-nav .nx-dist { font-size: clamp(26px, 13vh, 50px); }
+  #cp-nav .nx-dir { font-size: clamp(48px, 24vh, 120px); }
+  #cp-rt .cp-dev { font-size: clamp(40px, 20vh, 76px); }
+  .posrow { padding: 1px 2px 3px; }
+  .posrow #cp-km, .posrow #cp-spd { font-size: 16px; }
+  .btn.big { padding: 9px; font-size: 14px; }
+  #map-wrap { height: min(40vh, 300px); }
+}
