@@ -123,16 +123,31 @@ export function makeUi() {
       // Rândul de dedesubt: la boxuri ÎNLĂNȚUITE (sub 60 m) nu mai arată un kilometraj
       // absolut pe care nimeni nu-l poate folosi la volan, ci manevra imediat următoare
       // și la câți metri după cea curentă vine — cu tot cu direcție și săgeată.
+      // PE SECȚIUNE DEASĂ se arată DOUĂ manevre, nu una: cea de acum mare, următoarea
+      // sub ea, cu distanța DINTRE ELE. Pe bucla din Brebu, unde între viraje sunt 7-18
+      // secunde, „ce urmează" e la fel de important ca „ce e acum" — iar dacă îl afli
+      // abia când ajungi, e prea târziu să alegi banda. (Andreas, 05.08.2026.)
       const b2 = plan.boxes[M.nextBoxIdx + 1];
       const af = $('cp-after');
       if (b2 && b) {
         const gapM = Math.round((b2.sumKm - b.sumKm) * 1000);
         const inlantuit = gapM <= 60;
+        const dens = !!M.deasa && gapM <= 400;
         af.textContent = inlantuit
           ? `IMEDIAT APOI (${gapM} m): ${dirGlyph(b2)} box ${b2.num != null ? b2.num : '?'}`
-          : `apoi: ${dirGlyph(b2)} la ${b2.sumKm.toFixed(2)} km`;
-        af.className = 'nx-after' + (inlantuit ? ' inlantuit' : '');
+          : dens
+            ? `APOI, la ${gapM} m: ${dirGlyph(b2)} box ${b2.num != null ? b2.num : '?'}`
+            : `apoi: ${dirGlyph(b2)} la ${b2.sumKm.toFixed(2)} km`;
+        af.className = 'nx-after' + (inlantuit || dens ? ' inlantuit' : '');
       } else { af.textContent = ''; af.className = 'nx-after'; }
+      // banda de lanț: „3 la rând: 105 · 106 · 107" — pilotul vede că vin trei, nu una
+      const lb = $('cp-lant');
+      if (lb) {
+        if (M.lant && M.lant.length) {
+          lb.textContent = `⛓ ${M.lant.length} MANEVRE LA RÂND: boxurile ${M.lant.join(' · ')}`;
+          lb.className = 'lantband';
+        } else lb.className = 'lantband hidden';
+      }
 
       // probele — bara de jos
       $('cp-rts').textContent = plan.rts.map(r =>

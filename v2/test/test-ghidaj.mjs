@@ -91,18 +91,27 @@ console.log('\n═══ Boxuri apropiate: treptele care nu încap se sar singur
   ]);
   const w = lume(APROAPE, { viteze: {} });
   w.drum(1.95);
-  const b3 = w.vorbit(/de metri — stânga/).map(s => s.t);
-  ok('boxul 3 (la 290 m de boxul 2) primește o singură treaptă cu cifră, cea de 150',
-     b3.length === 1 && parseInt(b3[0], 10) <= 160, JSON.stringify(b3));
-  const b4 = w.vorbit(/de metri — dreapta$/).map(s => s.t)
-    .filter(t => parseInt(t, 10) < 200);
-  ok('boxul 4 (la 90 m de boxul 3) nu primește nicio treaptă cu cifră — doar „acum"',
-     b4.length === 0, JSON.stringify(b4));
-  ok('dar „acum"-ul lui se aude, cu manevra următoare în coadă',
-     w.vorbit(/^dreapta acum/).length >= 1, JSON.stringify(w.said.map(s => s.t)));
-  ok('și niciun anunț nu se repetă de două ori',
-     new Set(w.said.map(s => s.t)).size === w.said.length,
-     JSON.stringify(w.said.map(s => s.t).filter((t, i, a) => a.indexOf(t) !== i)));
+  // Boxurile 2-3-4 sunt trei manevre în 380 m, deci de la v37 intră pe drumul LANȚULUI:
+  // un preambul înaintea primei, apoi câte un ecou de un cuvânt la fiecare. Ce se
+  // verifică aici rămâne același lucru — nicio treaptă cu cifră nu pleacă acolo unde
+  // n-are unde încăpea — doar că acum e servit prin lanț.
+  const cuCifra = w.said.filter(s => s.cls === 'manevra' && /^\d+ de metri/.test(s.t));
+  ok('boxul 2 (cu 1,5 km de drum liber înainte) primește trepte cu cifră',
+     cuCifra.length >= 1 && cuCifra.every(s => /dreapta$/.test(s.t)), JSON.stringify(cuCifra.map(s => s.t)));
+  ok('dar boxurile 3 și 4, la 290 și 90 m, NU primesc nicio treaptă cu cifră',
+     !cuCifra.some(s => /stânga/.test(s.t)), JSON.stringify(cuCifra.map(s => s.t)));
+  const preambul = w.said.filter(s => /^Trei la rând/.test(s.t));
+  ok('în schimb, pilotul le află pe toate trei dintr-o singură frază, dinainte',
+     preambul.length === 1, JSON.stringify(w.said.map(s => s.t)));
+  const ecouri = w.said.filter(s => /^(dreapta|stânga)$/.test(s.t));
+  ok('și fiecare își primește ecoul scurt la momentul ei',
+     ecouri.length === 3 && ecouri.map(s => s.t).join(' ') === 'dreapta stânga dreapta',
+     JSON.stringify(ecouri.map(s => s.t)));
+  // „dreapta" apare de două ori — dar sunt DOUĂ boxuri diferite, nu o repetare
+  const perBox = w.store.journal.filter(e => e.type === 'cue')
+    .reduce((h, e) => { h[e.boxNum] = (h[e.boxNum] || 0) + 1; return h; }, {});
+  ok('niciun box nu e anunțat de două ori',
+     Object.values(perBox).every(n => n === 1), JSON.stringify(perBox));
 }
 
 console.log('\n═══ Confirmarea periodică: „ești pe traseu", pe tronsonul lung ═══');

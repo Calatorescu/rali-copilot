@@ -16,9 +16,9 @@
 //       repede. Înainte, totul important era 3, iar mesajele de 3 se ucideau între
 //       ele: un „dreapta acum" pus în spatele unui anunț lung de TC era ARUNCAT.
 export function makeVoice({ tts = null, audio = null, now = () => Date.now(),
-                            onDrop = null, onSpeak = null } = {}) {
+                            onDrop = null, onSpeak = null, onDurata = null } = {}) {
   const q = [];
-  let cur = null, curAt = 0, last = null;
+  let cur = null, curAt = 0, last = null, anulat = false;
 
   const T = tts || defaultTts();
   const A = audio;   // AudioContext factory — null în teste
@@ -30,9 +30,42 @@ export function makeVoice({ tts = null, audio = null, now = () => Date.now(),
   const spus = m => { if (onSpeak) try { onSpeak(m.text, m.cls || null, m.prio); } catch (e) {} };
 
   function ttl(m) {
+    // ECOURILE de lanț („dreapta", „stânga") sunt bune DOAR la momentul lor: un ecou
+    // rostit cu trei secunde întârziere arată spre virajul greșit. Se aruncă repede.
+    if (m.cat === 'ecou') return 2500;
     if (m.prio >= 4) return 12000;          // manevrele imediate nu se aruncă ușor
     if (m.cat === 'turn') return 8000;      // un viraj „stătut" tot e mai bun decât tăcerea
     return m.prio >= 3 ? 3500 : 5000;
+  }
+
+  // ── CÂT DUREAZĂ O FRAZĂ ─────────────────────────────────────────────────
+  // Nu se presupune: se MĂSOARĂ, pe telefonul și cu vocea care chiar rostesc. La fiecare
+  // frază terminată normal se compară lungimea cu durata reală, iar estimarea se mută
+  // încet spre ce s-a măsurat. Prima zi pornește de la 90 ms/caracter — cifra scoasă din
+  // jurnalele reale (04-05.08.2026): cele mai strânse patru perechi de rostiri
+  // consecutive dau 75, 79, 99 și 107 ms/caracter, iar intervalele mai mari conțin și
+  // așteptare cu coada goală, deci nu spun durata. 90 stă la mijlocul plajei măsurate.
+  //
+  // La ce folosește: mașina de stări întreabă „încape fraza asta până la virajul
+  // următor?" și, dacă nu, spune o variantă mai scurtă. Fără o durată reală, întrebarea
+  // n-are răspuns — iar pe bucla din Brebu, unde între două manevre sunt 7 secunde,
+  // răspunsul decide dacă pilotul aude a doua manevră sau o ratează.
+  const MSC_MIN = 40, MSC_MAX = 160, PORNIRE_MS = 350;
+  let msPerChar = 90, nMasurat = 0;
+
+  function durataMs(text) {
+    return PORNIRE_MS + String(text || '').length * msPerChar;
+  }
+  function invata(text, durataReala) {
+    const n = String(text || '').length;
+    if (n < 12 || !(durataReala > 300) || durataReala > 30000) return;   // prea scurt/absurd
+    const m = (durataReala - PORNIRE_MS) / n;
+    if (!(m > MSC_MIN * 0.5) || m > MSC_MAX * 2) return;
+    // medie alunecătoare lentă: o singură rostire ciudată nu mută estimarea
+    msPerChar = Math.max(MSC_MIN, Math.min(MSC_MAX,
+      nMasurat < 3 ? (msPerChar * nMasurat + m) / (nMasurat + 1) : msPerChar * 0.8 + m * 0.2));
+    nMasurat++;
+    if (onDurata) try { onDurata({ n, durataReala, msPerChar: Math.round(msPerChar), nMasurat }); } catch (e) {}
   }
 
   // CLASELE DE ANUNȚ (cerute de Andreas, 03.08.2026): „să aibă prioritate anunțul de
@@ -84,9 +117,16 @@ export function makeVoice({ tts = null, audio = null, now = () => Date.now(),
     }
     cur = q.splice(idx, 1)[0];
     curAt = nowMs;
+    anulat = false;
     last = { text: cur.text, at: nowMs };    // pentru butonul REPETĂ
     spus(cur);
-    T.speak(cur.text, () => { cur = null; pump(); });
+    const rostit = cur, pornitLa = nowMs;
+    T.speak(cur.text, () => {
+      // durata REALĂ a frazei — dar numai dacă s-a terminat singură. O frază tăiată
+      // la mijloc ar învăța o viteză de vorbire de două ori mai mare decât e.
+      if (!anulat) invata(rostit.text, now() - pornitLa);
+      cur = null; pump();
+    });
   }
 
   // Watchdog: pe Android, onend poate să nu vină. Iar `speechSynthesis.speaking`
@@ -98,7 +138,7 @@ export function makeVoice({ tts = null, audio = null, now = () => Date.now(),
     const estMs = Math.max(6000, cur.text.length * 90);
     const varsta = now() - curAt;
     if (varsta > estMs && !T.busy()) { cur = null; pump(); }
-    else if (varsta > estMs * 2) { T.cancel(); cur = null; pump(); }
+    else if (varsta > estMs * 2) { anulat = true; T.cancel(); cur = null; pump(); }
     T.keepAlive && T.keepAlive();
   }, 2000);
 
@@ -108,6 +148,7 @@ export function makeVoice({ tts = null, audio = null, now = () => Date.now(),
       if (cat) for (let i = q.length - 1; i >= 0; i--)
         if (q[i].cat === cat) drop(q.splice(i, 1)[0], 'inlocuit');
       if (poateIntrerupe(cls, prio, cur)) {
+        anulat = true;
         T.cancel(); drop(cur, 'intrerupt'); cur = null;
       }
       q.push({ text, prio, cat, cls, at: now() });
@@ -120,7 +161,11 @@ export function makeVoice({ tts = null, audio = null, now = () => Date.now(),
       pump();
       return true;
     },
-    flush() { q.length = 0; cur = null; T.cancel(); },
+    flush() { q.length = 0; anulat = true; cur = null; T.cancel(); },
+    // cât durează fraza asta, după ce s-a măsurat pe telefonul ăsta (vezi durataMs)
+    durataMs,
+    get msPerChar() { return Math.round(msPerChar); },
+    get masuratori() { return nMasurat; },
     // tonuri — starea continuă, fără cuvinte
     tone(kind) {
       if (!A) return;

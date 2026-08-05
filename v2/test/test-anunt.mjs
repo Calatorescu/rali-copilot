@@ -176,9 +176,28 @@ console.log('\n═══ Corecțiile mici rămân tăcute, dar vizibile ══�
 const drumDrept = (w, n = 90) => w.drept(n, 10, 0);      // n × 10 m la 36 km/h
 const acumuri = w => w.said.filter(s => s.cls === 'manevra' && /acum|giratoriu/.test(s.t));
 
+// PERECHEA (nu lanțul): două manevre apropiate, cu drum liber după ele. Roadbook-ul
+// BUCLA de mai sus are TREI manevre în 160 m, deci de la v37 intră pe drumul lanțului
+// (vezi test-lant.mjs). Coada de pereche rămâne pentru cazul cu DOUĂ — cel mai des
+// întâlnit — și se verifică pe fixturile de mai jos, cu aceleași distanțe reale.
+const PERECHE = sanitizeBoxes([
+  { num: 1, sumKm: 0.00, dir: 'ÎNAINTE', flag: 'TC', comment: 'START / TC' },
+  { num: 2, sumKm: 0.32, dir: 'DREAPTA', comment: 'Dreapta' },
+  { num: 3, sumKm: 0.41, dir: 'STÂNGA', comment: 'capătul buclei (90 m)' },
+  { num: 5, sumKm: 3.00, dir: 'ÎNAINTE', flag: 'RT_START_AUTO', comment: 'START RT 1 · 35 km/h' },
+  { num: 7, sumKm: 5.00, dir: 'ÎNAINTE', flag: 'RT_FINISH', comment: 'FINISH RT 1' }
+]);
+const PERECHE_STRANSA = sanitizeBoxes([
+  { num: 1, sumKm: 0.00, dir: 'ÎNAINTE', flag: 'TC', comment: 'START / TC' },
+  { num: 2, sumKm: 0.32, dir: 'DREAPTA', comment: 'Dreapta' },
+  { num: 3, sumKm: 0.39, dir: 'STÂNGA-T', comment: 'stânga la T, la 70 m' },
+  { num: 5, sumKm: 3.00, dir: 'ÎNAINTE', flag: 'RT_START_AUTO', comment: 'START RT 1 · 35 km/h' },
+  { num: 7, sumKm: 5.00, dir: 'ÎNAINTE', flag: 'RT_FINISH', comment: 'FINISH RT 1' }
+]);
+
 console.log('\n═══ Coada „acum": manevra următoare la 90 m — se spune cu cifră ═══');
 {
-  const w = lume();
+  const w = lume(PERECHE);
   drumDrept(w, 33);                            // 330 m: boxul 2 (0,32) tocmai a fost anunțat
   const a = w.said.filter(s => /dreapta acum/.test(s.t));
   ok('anunțul „acum" al boxului 2 spune și manevra de după',
@@ -193,11 +212,11 @@ console.log('\n═══ Coada „acum": manevra următoare la 90 m — se spune
 
 console.log('\n═══ Coada „acum": manevra următoare la 70 m — „imediat", fără cifră ═══');
 {
-  const w = lume();
-  drumDrept(w, 42);                            // 420 m: și boxul 3 (0,41) a fost anunțat
-  const a = w.said.filter(s => /^stânga acum, și/.test(s.t));
-  ok('boxul 3 anunță și stânga de la T, care vine la 70 m',
-     a.length === 1 && a[0].t === 'stânga acum, și imediat stânga la T',
+  const w = lume(PERECHE_STRANSA);
+  drumDrept(w, 33);
+  const a = w.said.filter(s => /^dreapta acum, și/.test(s.t));
+  ok('boxul 2 anunță și stânga de la T, care vine la 70 m',
+     a.length === 1 && a[0].t === 'dreapta acum, și imediat stânga la T',
      JSON.stringify(w.said.map(s => s.t)));
   ok('sub 80 m nu se rostește nicio cifră — s-ar învechi în timpul frazei',
      a.length === 1 && !/de metri/.test(a[0].t), a[0] && a[0].t);
@@ -205,12 +224,12 @@ console.log('\n═══ Coada „acum": manevra următoare la 70 m — „imedi
 
 console.log('\n═══ Coada „acum": manevra următoare la 2,6 km — tăcere ═══');
 {
-  const w = lume();
-  drumDrept(w, 52);                            // 520 m: boxul 4 (0,48) anunțat
-  const a = w.said.filter(s => /^stânga acum, la T/.test(s.t));
-  ok('boxul 4 se anunță singur, fără coadă', a.length === 1 && a[0].t === 'stânga acum, la T',
+  const w = lume(PERECHE);
+  drumDrept(w, 43);                            // 430 m: boxul 3 (0,41) anunțat
+  const a = w.said.filter(s => /^stânga acum$/.test(s.t));
+  ok('boxul 3 se anunță singur, fără coadă', a.length === 1,
      JSON.stringify(w.said.map(s => s.t)));
-  ok('startul de probă de la 360 m NU intră în coadă (nu e manevră)',
+  ok('startul de probă de la 2,6 km NU intră în coadă (nu e manevră)',
      acumuri(w).every(s => !/probă|Start/.test(s.t.split(', și ')[1] || '')),
      JSON.stringify(acumuri(w).map(s => s.t)));
 }
@@ -259,24 +278,35 @@ console.log('\n═══ În probă nu se schimbă nimic: doar cazul „imediat"
 {
   // Aceleași reguli ar da „și în 300 de metri stânga" pe legătură. În probă, urechea e
   // pe cifrele de ritm — rămâne doar coada care ține loc de anunț ratat (sub 80 m).
+  // DOUĂ manevre, la 300 m: în probă coada tace (pe legătură ar fi spus „și în 300 de
+  // metri stânga"). Trei manevre apropiate ar intra pe drumul lanțului — vezi test-lant.
   const PROBA = sanitizeBoxes([
     { num: 1, sumKm: 0.00, dir: 'ÎNAINTE', flag: 'TC', comment: 'START / TC' },
     { num: 2, sumKm: 0.32, dir: 'ÎNAINTE', flag: 'RT_START_AUTO', comment: 'START RT 1 · 35 km/h' },
     { num: 3, sumKm: 0.90, dir: 'DREAPTA', comment: 'dreapta în probă' },
     { num: 4, sumKm: 1.20, dir: 'STÂNGA', comment: 'stânga, la 300 m' },
-    { num: 5, sumKm: 1.26, dir: 'DREAPTA-T', comment: 'dreapta la T, la 60 m' },
     { num: 7, sumKm: 2.50, dir: 'ÎNAINTE', flag: 'RT_FINISH', comment: 'FINISH RT 1' }
   ]);
   const w = lume(PROBA);
-  drumDrept(w, 130);
+  drumDrept(w, 95);
   ok('proba chiar rulează', w.m.M.state === 'RT_RUN', w.m.M.state);
   ok('la 300 m de manevra următoare, în probă coada tace',
      w.said.some(s => s.t === 'dreapta acum') &&
      !w.said.some(s => /, și în \d+/.test(s.t)), JSON.stringify(w.said.map(s => s.t)));
-  const st = w.said.filter(s => /^stânga acum/.test(s.t));
+  // …dar la 60 m coada rămâne: acolo e singura ocazie ca a doua manevră să fie auzită
+  const PROBA_STRANSA = sanitizeBoxes([
+    { num: 1, sumKm: 0.00, dir: 'ÎNAINTE', flag: 'TC', comment: 'START / TC' },
+    { num: 2, sumKm: 0.32, dir: 'ÎNAINTE', flag: 'RT_START_AUTO', comment: 'START RT 1 · 35 km/h' },
+    { num: 4, sumKm: 1.20, dir: 'STÂNGA', comment: 'stânga în probă' },
+    { num: 5, sumKm: 1.26, dir: 'DREAPTA-T', comment: 'dreapta la T, la 60 m' },
+    { num: 7, sumKm: 2.50, dir: 'ÎNAINTE', flag: 'RT_FINISH', comment: 'FINISH RT 1' }
+  ]);
+  const w2 = lume(PROBA_STRANSA);
+  drumDrept(w2, 125);
+  const st = w2.said.filter(s => /^stânga acum/.test(s.t));
   ok('dar la 60 m coada rămâne — altfel anunțul ar veni după viraj',
      st.length === 1 && st[0].t === 'stânga acum, și imediat dreapta la T',
-     JSON.stringify(w.said.map(s => s.t)));
+     JSON.stringify(w2.said.map(s => s.t)));
 }
 
 // ════════════════════════════════════════════════════════════════════════════

@@ -317,6 +317,10 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
                    accM: fix.accM != null ? Math.round(fix.accM) : null });
     }
     refaTintaMaps();
+    // Pentru ECRAN: pe secțiune deasă se arată DOUĂ manevre, nu una. Andreas a cerut deja
+    // text și săgeți mai mari (v32); aici e vorba de a vedea CE URMEAZĂ, nu doar ce e acum.
+    M.deasa = sectiuneDeasa();
+    M.lant = M._lant ? M._lant.idx.map(j => plan.boxes[j] && plan.boxes[j].num) : null;
     ui.render(M, plan);
   }
 
@@ -574,6 +578,113 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
     return TIERS_M.filter(t => t <= gapM - TREAPTA_SPATIU_M);
   }
 
+  // ── LANȚURILE DE MANEVRE ȘI SECȚIUNILE DESE ───────────────────────────────
+  // Cererea lui Andreas, 05.08.2026, după ce a văzut ruta: „pe ruta cu multe bucle din
+  // Brebu am avut cele mai mari probleme de navigație […] trebuie să fie perfect făcute,
+  // să nu stea mult într-o fereastră de manevră și să o piardă pe următoarea care este
+  // din scurt."
+  //
+  // MĂSURAT pe roadbook-ul real (Reșița Leg 2, boxurile 75-110, zona Brebu Nou–Gărâna):
+  // 23 de manevre, distanța mediană între ele 430 m — dar cinci perechi sub 150 m, iar
+  // cazul cel mai greu e 105 → 106 → 107: trei viraje în T în 170 m (120 m, apoi 50 m).
+  // La viteza probei RT4 (24,3 km/h = 6,75 m/s) alea sunt 17,8 s și 7,4 s. Paisprezece
+  // dintre manevre cad ÎN INTERIORUL probei, unde aplicația vorbește și despre ritm.
+  //
+  // Trei reguli, în ordinea în care contează:
+  //  1. pilotul trebuie să știe DINAINTE că vin trei, altfel le tratează ca surprize;
+  //  2. nicio frază n-are voie să ocupe difuzorul până peste momentul „acum" al manevrei
+  //     următoare — mai bine scurt și la timp decât complet și târziu;
+  //  3. în probă, pe secțiune deasă, ritmul tace: la 24 km/h cifra de deviere poate
+  //     aștepta 20 de secunde, un viraj ratat nu se mai recuperează.
+  const LANT_N = 3;              // câte manevre fac un lanț
+  const LANT_MAX_M = 400;        // pe cât drum (măsurat: 105→107 = 170 m)
+  const DEASA_M = 600;           // „secțiune deasă": următoarele 3 manevre în sub atât
+  const PREAMBUL_MAX_M = 200;    // mai devreme de atât, treptele normale sunt mai bune
+  const ACUM_MIN_M = 8;          // podeaua „acum"-ului: sub atât niciun cuvânt nu mai ajută
+  const RITM_DEASA_MS = 30000;   // pe secțiune deasă, ritmul vorbește cel mult o dată la 30 s
+  const RITM_TACE_INAINTE_S = 12; // și tace de tot în ultimele 12 s dinaintea unui viraj
+
+  const durataMs = t => (voice && voice.durataMs ? voice.durataMs(t) : 350 + String(t).length * 90);
+  const esteManevra = b => !!b && TURN_DIRS.has(b.dir || '');
+
+  // indicii următoarelor `n` manevre, pornind de la `i` (inclusiv)
+  function manevreDeLa(i, n) {
+    const out = [];
+    for (let j = Math.max(0, i); j < plan.boxes.length && out.length < n; j++)
+      if (esteManevra(plan.boxes[j])) out.push(j);
+    return out;
+  }
+
+  // Lanțul care ÎNCEPE la boxul i: trei manevre în sub 400 m. Un box cu semn (TC, linie
+  // de probă) nu intră niciodată într-un lanț — acolo se spune semnul, nu o listă.
+  function lantDeLa(i) {
+    if (!esteManevra(plan.boxes[i])) return null;
+    const idx = manevreDeLa(i, LANT_N);
+    if (idx.length < LANT_N || idx[0] !== i) return null;
+    if (idx.some(j => normFlags(plan.boxes[j]).length)) return null;
+    const span = (plan.boxes[idx[LANT_N - 1]].sumKm - plan.boxes[i].sumKm) * 1000;
+    return span <= LANT_MAX_M ? idx : null;
+  }
+
+  function sectiuneDeasa() {
+    const idx = manevreDeLa(M.nextBoxIdx, LANT_N);
+    if (idx.length < LANT_N) return false;
+    return (plan.boxes[idx[LANT_N - 1]].sumKm - M.routeKm) * 1000 <= DEASA_M;
+  }
+
+  // CÂND SE ROSTEȘTE „ACUM" (regula nouă, v37). Până acum era o podea fixă de 25 m, ceea
+  // ce la 24 km/h însemna 3,7 s — dar între boxurile 106 și 107 sunt 50 m, deci pragul
+  // trebuie să poată coborî. Formula spune ce trebuie: cât drum se face cât se ROSTEȘTE
+  // fraza, plus timpul de reacție învățat. Plafonul e jumătate din distanța până la boxul
+  // DINAINTE, ca „acum"-ul unei manevre să nu plece înaintea manevrei de dinaintea ei.
+  function pragAcum(i, txt) {
+    const v = Math.max(2.5, (M.speedKmh || 20) / 3.6);
+    const reactie = driver.latencyS ? driver.latencyS() : 1.2;
+    const nevoie = (reactie + durataMs(txt) / 1000) * v;
+    const b = plan.boxes[i], pb = i > 0 ? plan.boxes[i - 1] : null;
+    const gapPrev = pb ? (b.sumKm - pb.sumKm) * 1000 : Infinity;
+    const plafon = Math.min(ACUM_MAX_M, gapPrev / 2);
+    return Math.max(ACUM_MIN_M, Math.min(nevoie, plafon));
+  }
+
+  // Câte secunde mai am până la momentul „acum" al manevrei URMĂTOARE. Asta e fereastra
+  // în care trebuie să încapă fraza de acum — dincolo de ea, aș vorbi peste virajul care
+  // vine. Exact defectul din tura Tresor, unde „stânga acum" a stat în coadă în spatele
+  // unei fraze de patru secunde și pilotul a ratat ieșirea.
+  function secundePanaLaUrmatorulCritic(i) {
+    const urm = manevreDeLa(i + 1, 1)[0];
+    if (urm == null) return Infinity;
+    const nb = plan.boxes[urm];
+    const kmCritic = nb.sumKm - pragAcum(urm, maneuver(nb.dir, true)) / 1000;
+    const v = Math.max(2.5, (M.speedKmh || 20) / 3.6);
+    return ((kmCritic - M.routeKm) * 1000) / v;
+  }
+
+  // Prima variantă care ÎNCAPE în fereastră. Variantele vin de la cea mai completă la cea
+  // mai scurtă; dacă nu încape niciuna, se rostește cea mai scurtă — un cuvânt la timp
+  // bate o frază corectă și târzie.
+  function alegeFraza(variante, secunde) {
+    for (const t of variante) if (durataMs(t) / 1000 <= secunde) return t;
+    return variante[variante.length - 1];
+  }
+
+  // ecoul dintr-un lanț: un cuvânt, două. Direcția e deja cunoscută din preambul.
+  function ecouRo(dir) {
+    if (/^GIRATORIU-/.test(dir || '')) return `ieșirea ${dir.slice(-1)}`;
+    if (dir === 'STÂNGA' || dir === 'STÂNGA-T') return 'stânga';
+    if (dir === 'DREAPTA' || dir === 'DREAPTA-T') return 'dreapta';
+    return 'acum';
+  }
+
+  // Preambulul, în două lungimi. Cel scurt renunță la „la T" — informația aia se
+  // recuperează pe ecran și la ecou; ce nu se recuperează e timpul.
+  function texteLant(idx) {
+    const lung = idx.map(j => maneuver(plan.boxes[j].dir, false));
+    const scurt = idx.map(j => ecouRo(plan.boxes[j].dir));
+    return [`Trei la rând: ${lung[0]}, ${lung[1]}, apoi ${lung[2]}.`,
+            `Trei la rând: ${scurt[0]}, ${scurt[1]}, ${scurt[2]}.`];
+  }
+
   function announceBoxes() {
     // Pe dinafară, planul ÎNGHEAȚĂ. În teren, aplicația a continuat să dea cue-uri
     // pentru boxurile 15, 16, 17 și 18 în timp ce mașina era pe alte străzi — instrucțiuni
@@ -581,15 +692,75 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
     if (M.offRoute) return;
     const boxes = plan.boxes;
     while (M.nextBoxIdx < boxes.length && M.routeKm > pragTrecere(M.nextBoxIdx)) M.nextBoxIdx++;
-    const b = boxes[M.nextBoxIdx];
+    const i = M.nextBoxIdx;
+    const b = boxes[i];
+    // lanțul consumat se uită: altfel un box din față ar fi tratat ca ecou de lanț vechi
+    if (M._lant && i > M._lant.idx[M._lant.idx.length - 1]) M._lant = null;
     if (!b) return;
     const dM = (b.sumKm - M.routeKm) * 1000;
     const silent = b.dir === 'ÎNAINTE' && !normFlags(b).length;   // „drept înainte" nu se rostește
     const key = `${b.num}_${Math.round(b.sumKm * 100)}`;
-    // anticipare personalizată, dar plafonată: vezi ACUM_MAX_M
-    const nowM = Math.min(ACUM_MAX_M, Math.max(25, driver.leadM(M.speedKmh || 30)));
 
-    const tiers = [...trepteUtile(M.nextBoxIdx), nowM].sort((a, b2) => b2 - a);
+    // ── 1. PREAMBULUL DE LANȚ ────────────────────────────────────────────
+    // „Trei la rând: dreapta la T, stânga la T, apoi dreapta la T." O singură dată,
+    // înaintea primei manevre. De aici încolo fiecare primește doar un ecou scurt.
+    if (!M._lant && !M._ann[key + '_lant']) {
+      const lant = lantDeLa(i);
+      if (lant) {
+        const pb = i > 0 ? boxes[i - 1] : null;
+        const gapPrev = pb ? (b.sumKm - pb.sumKm) * 1000 : Infinity;
+        const pragPre = Math.min(PREAMBUL_MAX_M, Math.max(40, gapPrev * 0.7));
+        if (dM <= pragPre) {
+          // ÎNCAPE PREAMBULUL până la momentul în care trebuie rostit primul ecou? Dacă
+          // nu încape nici varianta scurtă, lanțul NU se folosește deloc: se cade pe
+          // coada normală („dreapta acum, și imediat stânga"), care e făcută exact
+          // pentru cazurile foarte strânse. Un preambul care încă vorbește când ajungi
+          // în prima intersecție e mai rău decât niciun preambul.
+          const v = Math.max(2.5, (M.speedKmh || 20) / 3.6);
+          const fereastraS = (dM - pragAcum(i, ecouRo(b.dir))) / v;
+          const variante = texteLant(lant);
+          const txt = variante.find(t => durataMs(t) / 1000 <= fereastraS);
+          if (!txt) {
+            M._ann[key + '_lant'] = true;      // nu se mai încearcă la fiecare fix
+            log('lant_prea_strans', { boxuri: lant.map(j => boxes[j].num),
+                                      fereastraS: Math.round(fereastraS * 10) / 10,
+                                      cerutMs: Math.round(durataMs(variante[1])) });
+          } else {
+          M._ann[key + '_lant'] = true;
+          M._lant = { idx: lant, de: clock.mono() };
+          say(txt, 4, 'turn', 'manevra');
+          M._ghidT = clock.mono(); M._ghidKm = M.routeKm;
+          log('lant', { boxuri: lant.map(j => boxes[j].num), dM: Math.round(dM),
+                        spanM: Math.round((boxes[lant[2]].sumKm - b.sumKm) * 1000),
+                        kmh: Math.round(M.speedKmh), durataMs: Math.round(durataMs(txt)) });
+          return;
+          }
+        }
+      }
+    }
+
+    // ── 2. ECOUL, pentru boxurile dintr-un lanț deja anunțat ─────────────
+    if (M._lant && M._lant.idx.includes(i)) {
+      if (M._ann[key + '_ecou']) return;
+      const ecou = ecouRo(b.dir);
+      if (dM > pragAcum(i, ecou)) return;
+      M._ann[key + '_ecou'] = true;
+      // cat 'ecou': un ecou nou îl înlocuiește pe cel vechi din coadă, iar TTL-ul lui e
+      // de 2,5 s — dacă pilotul merge mai repede decât m-am așteptat, ecoul vechi se
+      // aruncă în loc să se rostească peste virajul următor (vezi voice.ttl)
+      say(ecou, 4, 'ecou', 'manevra');
+      M._ghidT = clock.mono(); M._ghidKm = M.routeKm;
+      driver.cueGiven(b.num, clock.wall());
+      log('cue', { boxNum: b.num, dM: Math.round(dM), kmh: Math.round(M.speedKmh), ecou: true });
+      return;
+    }
+
+    // ── 3. TREPTELE NORMALE ──────────────────────────────────────────────
+    // Pragul „acum" se calculează pe fraza de bază; variantele mai lungi se aleg mai jos,
+    // după cât timp e până la manevra următoare.
+    const nowM = pragAcum(i, silent ? '' : turnText(b, dM, true));
+
+    const tiers = [...trepteUtile(i), nowM].sort((a, b2) => b2 - a);
     // Se alege treapta cea mai APROPIATĂ care se aplică și nu s-a rostit — dacă apari
     // direct lângă box (repornire, salt) primești „acum", nu „în 300" (#23).
     let ti = -1;
@@ -609,7 +780,7 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
     for (let j = 0; j <= ti; j++) M._ann[key + '_' + j] = true;
     if (!silent) {
       // „acum" = prio 4: întrerupe orice și nu expiră repede (audit, #9)
-      let txt = turnText(b, dM, isNow);
+      const baza = turnText(b, dM, isNow);
       // CE URMEAZĂ DUPĂ MANEVRĂ, spus din timp: „dreapta acum, și imediat stânga" /
       // „150 de metri — dreapta, apoi în 300 de metri stânga". Pilotul are nevoie de
       // secvență cât mai are timp să aleagă banda și viteza. (Andreas, 04.08.2026.)
@@ -617,33 +788,35 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
       // Coada stă pe DOUĂ anunțuri, nu doar pe „acum": și pe ultima treaptă cu cifră
       // (150 m). Motivul e măsurat în tura Tresor: „acum" poate ajunge la ureche prea
       // târziu sau deloc — la boxul 12 a plecat cu 13 m înainte de viraj și a intrat în
-      // coadă în spatele frazei de finish, iar pilotul a ratat ieșirea. Treapta cu cifră
-      // e anunțul pe care îl aude sigur, la viteză, cu drum în față. Dublarea nu strică
-      // (aceeași informație, la 90 m distanță una de alta); lipsa costă un viraj.
-      // Legătura diferă, ca urechea să știe pe ce anunț e: „apoi" pe treapta cu cifră,
-      // „și" pe „acum". Virgula dinainte nu e ortografie, e pauza de TTS.
+      // coadă în spatele frazei de finish, iar pilotul a ratat ieșirea.
       //
-      // Coadă primesc boxurile de MANEVRĂ (un TC n-are „ce urmează" de planificat) și
-      // liniile de FINISH — vezi COADA_FINISH_M: acolo e singura ocazie de a spune la
-      // timp virajul de după tabelă. În rest, în probă rămâne doar cazul „imediat":
-      // urechea e pe cifrele de ritm, iar un anunț separat ar ajunge după viraj.
+      // NOU în v37: fraza completă se rostește DOAR dacă încape până la momentul „acum"
+      // al manevrei următoare. Dacă nu, se scurtează — întâi metrii, apoi legătura.
       const capManevra = TURN_DIRS.has(b.dir || ''), capFinish = esteFinish(b);
+      let txt = baza;
       if ((isNow || ultimaCuCifra) && (capManevra || capFinish)) {
-        const coada = coadaManevra(M.nextBoxIdx);
+        const coada = coadaManevra(i);
         const limita = capFinish ? COADA_FINISH_M : (M.rt ? COADA_IMEDIAT_M : COADA_MAX_M);
-        if (coada && coada.gapM <= limita) {
-          txt += `${isNow ? ', și ' : ', apoi '}${coada.text}`;
+        // dacă boxul ăsta e capul unui lanț, coada de pereche se sare: preambulul de
+        // lanț spune oricum toate trei, iar două fraze despre aceeași secvență înseamnă
+        // doar mai multe cuvinte în difuzor
+        if (coada && coada.gapM <= limita && !lantDeLa(i)) {
+          const leg = isNow ? ', și ' : ', apoi ';
+          const variante = [
+            baza + leg + coada.text,                       // „…, și în 100 de metri stânga la T"
+            baza + leg + maneuver(coada.box.dir, false),   // „…, și stânga la T" — fără metri
+            baza + ' — apoi ' + ecouRo(coada.box.dir),     // „… — apoi stânga"
+            baza                                           // doar manevra de acum
+          ];
+          txt = alegeFraza(variante, secundePanaLaUrmatorulCritic(i));
           // ce s-a spus aici nu se mai repetă după linie, la închiderea probei
-          if (capFinish) M._coadaFinish = coada.box.num;
+          if (capFinish && txt !== baza) M._coadaFinish = coada.box.num;
         }
       }
       // Clasa 'manevra' lipsea tocmai de la anunțurile de viraj — adică fix de la ce
       // descrie regula. Comitul „paznic de directie" (03.08) a pus clasele pe alarme și
       // pe ritm, dar anunțul principal („150 de metri — dreapta") rămăsese neclasificat,
-      // deci orice mesaj cu prioritate mai mare îl putea tăia din difuzor. Măsurat în
-      // jurnalul de 04.08, bucla József: „40 de metri — stânga" (11:27:58), „30 de metri
-      // — stânga la T" (11:28:25) și „Start probă în 140 de metri" (11:28:55) apar toate
-      // în `voce_aruncata` cu motivul „intrerupt".
+      // deci orice mesaj cu prioritate mai mare îl putea tăia din difuzor.
       say(txt, isNow ? 4 : (M.rt ? 3 : 2), 'turn', 'manevra');
       // Orice anunț de box repornește ceasul ghidajului continuu: o confirmare de tipul
       // „ești pe traseu" la două secunde după „stânga acum" e zgomot, nu liniște.
@@ -653,7 +826,9 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
       // se estima (04.08, analiza turei Tresor — o eroare de până la 75 m la 54 km/h).
       if (isNow) {
         driver.cueGiven(b.num, clock.wall());
-        log('cue', { boxNum: b.num, dM: Math.round(dM), kmh: Math.round(M.speedKmh) });
+        log('cue', { boxNum: b.num, dM: Math.round(dM), kmh: Math.round(M.speedKmh),
+                     fereastraS: Math.round(secundePanaLaUrmatorulCritic(i) * 10) / 10,
+                     durataMs: Math.round(durataMs(txt)) });
       }
     }
   }
@@ -779,7 +954,41 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
       const a = Math.abs(dev);
       if (a <= 1) tone('ok'); else tone(dev < 0 ? 'ahead' : 'behind');
       // cuvinte doar când devierea depășește pragul — și scurt
-      if (a > (def.voiceThr || 3)) {
+      // ── RITMUL TACE PE SECȚIUNE DEASĂ ──────────────────────────────────
+      // La 24 km/h, cifra de deviere poate aștepta douăzeci de secunde fără să se
+      // schimbe ceva; un viraj ratat nu se mai recuperează. Deci cât timp următoarele
+      // trei manevre sunt în sub 600 m, ritmul se reduce la cel mult o frază la 30 s —
+      // și tace complet între preambulul unui lanț și ultimul lui ecou, ca să nu se
+      // strecoare între „trei la rând" și „dreapta".
+      const deasa = sectiuneDeasa();
+      // …și, separat de „secțiune deasă", regula simplă care acoperă și perechile
+      // izolate (83→84 la 100 m, 87→88 la 110 m, cu drum liber după ele): în ultimele
+      // 12 secunde dinaintea unui viraj nu se mai vorbește despre secunde. Coada
+      // garantează deja că manevra nu e TĂIATĂ de ritm, dar urechea pilotului nu e o
+      // coadă — ce aude în secundele dinaintea unei intersecții trebuie să fie despre
+      // intersecție.
+      // Prima manevră care e CHIAR ÎN FAȚĂ. `nextBoxIdx` rămâne pe un box până la 80 m
+      // după el (vezi pragTrecere), deci „manevra următoare" putea fi în spate cu până
+      // la 80 m — adică 12 secunde la viteza probei, cu semn schimbat. Măsurat aici, în
+      // testul pe proba RT4: valori de −9,2 și −12 secunde.
+      const urmM = manevreDeLa(M.nextBoxIdx, 3).find(j => plan.boxes[j].sumKm > M.routeKm);
+      const vNow = Math.max(2.5, (M.speedKmh || 20) / 3.6);
+      const secPanaLaViraj = urmM != null
+        ? ((plan.boxes[urmM].sumKm - M.routeKm) * 1000) / vNow : Infinity;
+      // Fereastra de tăcere se socotește pe MOMENTUL ÎN CARE FRAZA SE TERMINĂ, nu pe cel
+      // în care începe: o cifră care începe cu 14 secunde înainte și se aude încă la 11
+      // e tot vorbă în intervalul care trebuie să rămână al virajului. Se adaugă și
+      // întârzierea maximă în coadă (TTL-ul unui mesaj de ritm, 3,5 s).
+      const durataRitmS = durataMs(`${secRo(a)} în avans, ține 99`) / 1000 + 3.5;
+      const linisteInainteaVirajului = secPanaLaViraj - durataRitmS < RITM_TACE_INAINTE_S;
+      // Ordinea contează: liniștea dinaintea virajului e ABSOLUTĂ, nu o rărire. Regula
+      // „cel mult o frază la 30 s" de pe secțiunile dese nu are voie s-o calce — altfel
+      // fraza permisă de cronometru pică exact în ultima secundă dinaintea intersecției
+      // (măsurat în testul pe RT4: o cifră rostită cu 1,2 s înainte de viraj).
+      const potVorbi = linisteInainteaVirajului ? false
+        : deasa ? (!M._lant && clock.mono() - (M._ritmVorbaT || 0) >= RITM_DEASA_MS)
+        : true;
+      if (a > (def.voiceThr || 3) && potVorbi) {
         // Viteza REALĂ care anulează devierea până la finish, FĂRĂ plafon (cerut de
         // Andreas, 02.08, după tura 4): „ține 52" plafonat la +30% suna identic la 20
         // și la 40 de secunde întârziere. Acum cifra e cea adevărată — 58, 65, cât
@@ -792,10 +1001,19 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
           if (tDisponibilS > 1) fraza += `, ține ${Math.round(remKm * 3600 / tDisponibilS)}`;
           else fraza += ' — nu se mai prinde până la finish';
         }
-        say(fraza, 3, 'pace', 'ritm');
+        // pe secțiune deasă fraza se scurtează la cifră: „ține 58" cere gândire, iar
+        // gândirea aia se face acum cu volanul în mâini
+        say(deasa || linisteInainteaVirajului
+          ? `${secRo(a)} ${dev >= 0 ? 'în urmă' : 'în avans'}` : fraza, 3, 'pace', 'ritm');
+        M._ritmVorbaT = clock.mono();
+        // cât drum liber era în față când s-a vorbit despre secunde — ca la debrief
+        // („de ce mi-a zis de cifre fix în viraj?") răspunsul să fie o măsurătoare
+        log('ritm_vorba', { secPanaLaViraj: secPanaLaViraj === Infinity ? null
+                              : Math.round(secPanaLaViraj * 10) / 10,
+                            deasa, scurt: deasa || linisteInainteaVirajului });
       }
       // banca de timp: zonele lente din față cer avans acum
-      if (rt.zonesAdvised !== false && def.zones && def.zones.length && clock.mono() - M._lastBank > 15000) {
+      if (potVorbi && rt.zonesAdvised !== false && def.zones && def.zones.length && clock.mono() - M._lastBank > 15000) {
         const adv = bankingAdvice(rt.distKm * 1000, def.kmh, def.zones);
         if (adv) { M._lastBank = clock.mono(); say(`Bancă: ia ${secRo(adv.bankS)} avans — zonă lentă în ${distRo(adv.inM)}.`, 3, 'bank', 'ritm'); }
       }
@@ -1711,6 +1929,7 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
       // ghidajul continuu repornește la fiecare zi/leg: prima confirmare vine după
       // primul tronson lung, nu ca ecou al leg-ului dinainte
       M._ghidT = null; M._ghidKm = null;
+      M._lant = null; M.deasa = false; M.lant = null; M._ritmVorbaT = 0;
       M._dirStart = M._lastPos ? { ...M._lastPos } : null;
       M._lastFixMono = null; M._gpsLostSaid = false;
       // zi/leg nou = riglă nouă: măsurătorile de calibrare NU se moștenesc între leg-uri

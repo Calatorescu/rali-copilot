@@ -213,3 +213,8 @@ input { background: var(--bg); border: 1px solid var(--border); border-radius: 1
 .probe-rand:first-child { border-top: 0; }
 .probe-rand .row { margin: 4px 0; flex-wrap: wrap; }
 .probe-rand .btn.sm { flex: 1; min-width: 96px; font-size: 12px; padding: 10px 6px; }
+
+/* banda de lanț de manevre — pe bucla din Brebu vin trei viraje în 170 m; pilotul
+   trebuie să vadă că vin trei, nu să le primească una câte una ca surprize */
+.lantband { background: #ff7a0022; color: var(--pri); text-align: center; font-size: 13px;
+  font-weight: 800; padding: 6px; border-radius: 10px; margin-bottom: 6px; letter-spacing: .5px; }

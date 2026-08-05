@@ -510,14 +510,21 @@ console.log('\n═══ 03.08: boxurile înlănțuite se văd și se aud la tim
 {
   const w = lumeCuBusola(BUCLA);
   w.drept(23, 12, 0);                       // 276 m — chiar înainte de boxul 2
-  const acum = w.said.filter(s => /dreapta acum/.test(s.t));
-  ok('anunțul „acum" al boxului 2 spune ȘI manevra următoare',
-     acum.length >= 1 && /și imediat stânga/i.test(acum[acum.length - 1].t),
-     JSON.stringify(acum.map(s => s.t)));
-  // 04.08: coada nu mai dă cifra sub 80 m. La 29 m și 40 km/h, „la 30 de metri" se
-  // termină de rostit după ce virajul a trecut — „imediat" e adevărat mai mult timp.
-  ok('…fără cifră, fiindcă la 29 m cifra e stătută înainte de a fi rostită',
-     acum.every(s => !/de metri/.test(s.t)), JSON.stringify(acum.map(s => s.t)));
+  // De la v37, bucla asta (TREI manevre în 160 m) intră pe drumul LANȚULUI: pilotul
+  // află toate trei dintr-o singură frază, înainte de prima, apoi primește câte un ecou
+  // de un cuvânt la fiecare. Lecția din 03.08 rămâne aceeași — nu afli de manevra
+  // următoare abia când ajungi la ea — dar acum e servită mai bine. Vezi test-lant.mjs.
+  const preambul = w.said.filter(s => /^Trei la rând/.test(s.t));
+  ok('pilotul află despre toate trei manevrele înainte de prima',
+     preambul.length === 1, JSON.stringify(w.said.map(s => s.t)));
+  ok('și fraza le numește în ordinea de pe drum',
+     /dreapta.*stânga.*stânga/.test(preambul[0] ? preambul[0].t : ''),
+     preambul[0] && preambul[0].t);
+  // 04.08: nicio cifră sub 80 m. La 29 m și 40 km/h, „la 30 de metri" se termină de
+  // rostit după ce virajul a trecut.
+  ok('…fără nicio cifră de metri, care s-ar învechi în timpul frazei',
+     !w.said.some(s => s.cls === 'manevra' && /de metri/.test(s.t)),
+     JSON.stringify(w.said.filter(s => s.cls === 'manevra').map(s => s.t)));
 
   // ecranul: boxul 3 (0,32) nu mai are voie să țină cardul până la 0,40 — boxul 4 (0,35)
   // e mai aproape decât el încă de la 0,335. Măsurat în teren: 23 s de întârziere.
