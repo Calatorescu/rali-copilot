@@ -86,7 +86,15 @@ export function makeHartaEcran({ canvas, stare, onProba = null, log = null,
     for (let n = 1; n <= 3; n++) {
       const p = parinteDala(d.x, d.y, d.z, n);
       if (!p) break;
-      const pe = memo.get(urlDala(p.x, p.y, p.z, sablon));
+      const u = urlDala(p.x, p.y, p.z, sablon);
+      // Când dala cerută a EȘUAT (offline la munte, sau un zoom pe care nu l-am
+      // descărcat), părintele se CERE, nu se caută doar în memorie: descărcarea aduce
+      // z14-15, deci la z16-17 părintele n-a fost niciodată încărcat ca imagine, iar o
+      // simplă căutare în memorie n-ar găsi nimic — exact cazul pentru care există
+      // mecanismul. Cât timp copilul e încă pe drum, ne uităm doar în ce avem deja,
+      // ca să nu dublăm traficul degeaba. (`dala` memoizează, deci e o cerere, nu una
+      // pe cadru.)
+      const pe = e.st === 'err' ? dala(u) : memo.get(u);
       if (pe && pe.st === 'ok') return { img: pe.img, sx: p.sx, sy: p.sy, sm: p.marime };
     }
     return null;

@@ -191,6 +191,7 @@ input { background: var(--bg); border: 1px solid var(--border); border-radius: 1
   .row { margin: 5px 0; gap: 6px; }
   .card { padding: 9px 11px; margin-bottom: 8px; }
   .rts-line, .debrief { font-size: 11px; margin-bottom: 5px; }
+  .undeline { font-size: 12px; padding: 6px 9px; margin-bottom: 6px; line-height: 1.25; }
   #map-wrap { height: min(48vh, 400px); }
   .mbtn { width: 42px; height: 42px; font-size: 19px; }
 }
