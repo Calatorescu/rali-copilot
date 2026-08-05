@@ -51,12 +51,20 @@ export function makeUi() {
       const nav = $('cp-nav'), offBtn = $('btn-offroute');
       nav.classList.toggle('offroute', !!M.offRoute);
       if (offBtn) offBtn.textContent = M.offRoute ? '✓ AM REVENIT PE TRASEU' : '↩ AM GREȘIT DRUMUL';
-      // butonul care predă ghidajul lui Google Maps — doar când avem unde trimite
-      const mb = $('btn-maps-off');
+      // Butonul care predă ghidajul lui Google Maps. De la v35 e PERMANENT: pe traseu
+      // țintește boxul următor cu coordonată, pe dinafară punctul de reintrare. Ținta o
+      // alege mașina de stări (machine.tintaMaps) — ecranul doar o scrie. În probă
+      // dispare: o atingere care trimite aplicația în fundal costă cronometrul.
+      const mb = $('btn-maps');
       if (mb) {
-        const link = M.offRoute && M.offRoute.pct ? linkMaps(M.offRoute.pct) : null;
+        const t = M.tintaMaps || null;
+        const link = t ? linkMaps(t.pct) : null;
         mb.classList.toggle('hidden', !link);
-        if (link) { mb.href = link; mb.textContent = `📍 NAVIGHEAZĂ CU MAPS LA BOXUL ${M.offRoute.boxNum}`; }
+        if (link) {
+          mb.href = link;
+          mb.textContent = (t.deCe === 'offroute' ? '🧭 MAPS ÎNAPOI LA BOXUL ' : '🧭 MAPS PÂNĂ LA BOXUL ') +
+                           t.boxNum + (t.aproximativa ? ' (punct aproximativ)' : '');
+        }
       }
       if (M.offRoute) {
         const o = M.offRoute;

@@ -17,6 +17,8 @@ import { repereBoxuri, faGeocoder, geocodeazaRepere, verificaAncore } from './re
 import { linkuriTraseu, linkNavigare } from './maps.js';
 import { makeSync } from './sync.js';
 import { efficiencyPoints, efficiencyGap } from './pace.js';
+import { makeHartaEcran, descarcaDale, testeazaDale } from './harta-ecran.js';
+import { daleCoridor, traseuDinPlan } from './harta-vie.js';
 
 const $ = id => document.getElementById(id);
 let store, clock, voice, ui, driver, machine = null, gps = null, plan = null, sync = null;
@@ -799,9 +801,114 @@ function incarcaHarta() {
   inp.click();
 }
 
+// ── HARTA VIE ───────────────────────────────────────────────────────────────
+// Ecranul cu dale, linia traseului și punctul meu. Are bucla LUI de desen (vezi
+// harta-ecran.js) — mașina de stări nu-l cheamă niciodată, deci nicio dală lentă nu
+// poate întârzia un fix GPS. Se oprește la ieșirea de pe ecran, la stingerea ecranului
+// și la începutul oricărei probe.
+let harta = null, hartaInfoId = null;
+
+function hartaVie() {
+  if (harta) return harta;
+  const cv = $('map-canvas');
+  if (!cv) return null;
+  harta = makeHartaEcran({
+    canvas: cv,
+    stare: () => ({ M: machine ? machine.M : null, plan }),
+    onProba: () => { if (!$('scr-map').classList.contains('hidden')) showScreen('run'); },
+    log: (t, d) => { try { store.log(t, d, clock.rally()); } catch (e) {} }
+  });
+  return harta;
+}
+
+// ── DESCĂRCAREA CORIDORULUI, pentru munte ───────────────────────────────────
+// Se apasă ACASĂ, pe WiFi. Limitele (rază, plafon, ritm, oprire) sunt în harta-ecran.js
+// și nu sunt decor: serverul de dale e public, gratuit și comun, iar politica lui
+// interzice descărcarea în masă. Ce nu încape într-o rulare se ia la a doua — ce e deja
+// în cache nu se recere.
+let _daleStop = false;
+async function descarcaCoridorul() {
+  const st = $('prep-dale-st'), rand = $('dale-progres-row'), bara = $('dale-bara');
+  const tr = traseuDinPlan(plan);
+  if (tr.pts.length < 2) {
+    st.textContent = 'Întâi am nevoie de traseu: fie recunoaștere înregistrată, fie ' +
+                     'butonul „Găsește traseul pe hartă".';
+    return;
+  }
+  const c = daleCoridor(tr.pts, { razaM: 400, zoomuri: [14, 15], maxDale: 800 });
+  st.style.color = '';
+  st.textContent = `Descarc ${c.dale.length} dale` + (c.taiat
+    ? ` din ${c.total} (plafon pe rulare — apasă din nou după ce se termină, continuă de unde a rămas)` : '') +
+    (tr.aproximativ ? ' · coridor în jurul traseului APROXIMATIV din adrese' : '') + '…';
+  rand.classList.remove('hidden');
+  _daleStop = false;
+  const r = await descarcaDale(c.dale, {
+    opritDe: () => _daleStop,
+    onPas: (i, rez) => {
+      bara.style.width = Math.round(i / c.dale.length * 100) + '%';
+      st.textContent = `${i} din ${c.dale.length} · ${rez.aduse} aduse, ${rez.dinCache} aveam deja` +
+                       (rez.esuate ? `, ${rez.esuate} ratate` : '');
+    }
+  });
+  rand.classList.add('hidden');
+  bara.style.width = '0';
+  st.textContent = (r.oprit ? `Oprit: ${r.motiv} · ` : 'Gata. ') +
+    `${r.aduse} dale noi, ${r.dinCache} erau deja, ${r.esuate} ratate` +
+    (c.taiat && !r.oprit ? ` · mai sunt ${c.total - c.dale.length} — apasă din nou.` : '');
+  st.style.color = r.oprit ? 'var(--warn)' : 'var(--ok)';
+  try { store.log('dale_descarcate', { cerute: c.dale.length, total: c.total,
+    aduse: r.aduse, dinCache: r.dinCache, esuate: r.esuate, oprit: r.oprit,
+    motiv: r.motiv, sursaTraseu: tr.sursa }, Date.now()); } catch (e) {}
+}
+
+// Butonul care predă ghidajul lui Google Maps, pe ecranul de hartă. Ținta o alege
+// mașina de stări (are firimiturile și harta) — aici doar se scrie pe buton.
+function legaButonMaps(el) {
+  const t = machine.tintaMaps ? machine.tintaMaps() : null;
+  const link = t ? linkNavigare(t.pct) : null;
+  el.classList.toggle('hidden', !link);
+  if (!link) return;
+  el.href = link;
+  el.textContent = (t.deCe === 'offroute' ? '🧭 MAPS ÎNAPOI LA BOXUL ' : '🧭 MAPS PÂNĂ LA BOXUL ') +
+                   t.boxNum + (t.aproximativa ? ' (punct aproximativ)' : '');
+}
+
+// banda de sus și rândul de sub hartă: ce vezi și CÂT DE BUN e ce vezi
+function renderHartaInfo() {
+  if (!harta) return;
+  const i = harta.info() || {};
+  const el = $('map-info');
+  if (el) el.textContent = i.text || '';
+  const b = $('map-banner');
+  if (b) {
+    if (i.faraDale) {
+      b.textContent = '⚠ fără fundal de hartă (fără semnal sau server refuzat) — ' +
+                      'rămân linia traseului, boxurile și poziția ta';
+      b.className = 'mapband rau';
+    } else if (i.aproximativ) {
+      b.textContent = 'traseu APROXIMATIV, din adrese — linia punctată e ordinea boxurilor, ' +
+                      'nu drumul dintre ele';
+      b.className = 'mapband';
+    } else b.className = 'mapband hidden';
+  }
+  const rb = $('btn-map-rot');
+  if (rb) { rb.textContent = harta.rotit ? '🚗' : 'N'; rb.className = 'mbtn' + (harta.rotit ? ' on' : ''); }
+  const za = $('btn-map-zauto');
+  if (za) za.className = 'mbtn' + (harta.zoomFixat ? '' : ' on');
+  const mb = $('btn-map-maps');
+  if (mb && machine) legaButonMaps(mb);
+}
+
 // ── ecrane + legături ───────────────────────────────────────────────────────
 function showScreen(name) {
-  for (const s of ['prep', 'run', 'recon', 'set']) $('scr-' + s).classList.toggle('hidden', s !== name);
+  for (const s of ['prep', 'run', 'map', 'recon', 'set'])
+    $('scr-' + s).classList.toggle('hidden', s !== name);
+  const h = harta || (name === 'map' ? hartaVie() : null);
+  if (h) {
+    if (name === 'map') { h.porneste(); renderHartaInfo(); } else h.opreste();
+  }
+  clearInterval(hartaInfoId); hartaInfoId = null;
+  if (name === 'map') hartaInfoId = setInterval(renderHartaInfo, 500);
 }
 
 function bind() {
@@ -971,6 +1078,30 @@ function bind() {
   }
   $('btn-geocod')?.addEventListener('click', gasesteTraseulPeHarta);
   $('btn-harta')?.addEventListener('click', incarcaHarta);
+  // ── harta vie: comutarea și comenzile de pe ecran ────────────────────────
+  $('btn-harta-vie')?.addEventListener('click', () => {
+    if (machine && machine.M.state === 'RT_RUN') {
+      voice.say('Ești în probă — harta rămâne închisă până la finish.', 2, null, 'ritm');
+      return;
+    }
+    showScreen('map');
+  });
+  $('btn-map-inapoi')?.addEventListener('click', () => showScreen('run'));
+  $('btn-map-rot')?.addEventListener('click', () => { hartaVie()?.roteste(); renderHartaInfo(); });
+  $('btn-map-zin')?.addEventListener('click', () => { hartaVie()?.zoom(+1); renderHartaInfo(); });
+  $('btn-map-zout')?.addEventListener('click', () => { hartaVie()?.zoom(-1); renderHartaInfo(); });
+  $('btn-map-zauto')?.addEventListener('click', () => { hartaVie()?.zoomAutomat(); renderHartaInfo(); });
+  // ── dalele offline ──────────────────────────────────────────────────────
+  $('btn-dale-test')?.addEventListener('click', async () => {
+    const st = $('prep-dale-st');
+    st.textContent = 'Cer o dală de probă…';
+    const r = await testeazaDale();
+    st.textContent = r.text;
+    st.style.color = r.ok ? 'var(--ok)' : 'var(--warn)';
+    try { store.log('dale_test', { ok: r.ok, status: r.status, ms: r.ms, octeti: r.octeti || null }, Date.now()); } catch (e) {}
+  });
+  $('btn-dale-desc')?.addEventListener('click', descarcaCoridorul);
+  $('btn-dale-stop')?.addEventListener('click', () => { _daleStop = true; });
   $('btn-harta-clear')?.addEventListener('click', async () => {
     if (!confirm('Ștergi harta traseului?')) return;
     await store.put('harta', null);

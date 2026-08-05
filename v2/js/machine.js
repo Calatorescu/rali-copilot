@@ -289,7 +289,19 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
                    lat: r6(fix.lat), lng: r6(fix.lng),
                    accM: fix.accM != null ? Math.round(fix.accM) : null });
     }
+    refaTintaMaps();
     ui.render(M, plan);
+  }
+
+  // Ținta butonului de Maps stă pe M, ca ecranul să rămână o funcție de stare (vezi
+  // ui.js). Se recalculează la 2 s: căutarea punctului unui box parcurge urma de
+  // recunoaștere, iar la 265 km aia are zeci de mii de puncte — de zece ori pe secundă
+  // ar fi muncă degeaba fix în bucla care trebuie să rămână liberă pentru GPS.
+  function refaTintaMaps(fortat) {
+    const acum = clock.mono();
+    if (!fortat && M._tintaMapsT != null && acum - M._tintaMapsT < 2000) return;
+    M._tintaMapsT = acum;
+    M.tintaMaps = tintaMaps();
   }
 
   // ── PAZNICUL DE DIRECȚIE ─────────────────────────────────────────────────
@@ -1369,6 +1381,7 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
     // drum în memorie" nu-i spunea pilotului nici ce s-a întâmplat, nici ce să facă.
     else say('Am oprit instrucțiunile — nu mai ești pe traseu. Fără harta traseului nu știu unde e boxul; oprește și apasă SUNT LA BOX.', 4, 'offroute', 'manevra');
     tone('alarm');
+    refaTintaMaps(true);            // ținta butonului de Maps devine punctul de reintrare
     ui.render(M, plan);
   }
 
@@ -1446,12 +1459,53 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
     snapToBox(o.idx, 'offroute_' + cum);
     say(`Te-am prins, continuăm de la boxul ${o.boxNum}.`, 4, 'offroute', 'manevra');
     tone('ok');
+    refaTintaMaps(true);            // înapoi pe traseu: ținta redevine boxul următor
     ui.render(M, plan);
+  }
+
+  // ── NAVIGAREA PREDATĂ LUI GOOGLE MAPS ────────────────────────────────────
+  // RALI n-are hărți rutiere și nu va avea: ghidajul pe străzi îl face Maps, care are
+  // sensurile unice, restricțiile și vocea. Până la v34 butonul apărea DOAR când te
+  // rătăceai; Andreas l-a cerut permanent (05.08.2026) — vrea plasa de siguranță tot
+  // timpul, nu doar după ce a greșit.
+  //
+  // ȚINTA, în ordine:
+  //  1. pe dinafară — punctul de reintrare (ăla e singurul loc unde vrei să ajungi);
+  //  2. pe traseu — boxul următor, dacă i se cunoaște coordonata;
+  //  3. dacă boxul următor n-are coordonată — primul de după care are. Un link către
+  //     „nimic" e mai rău decât niciun buton: îl apeși în mers și te uiți la o hartă goală.
+  // ÎN PROBĂ nu se întoarce nimic: acolo o atingere care trimite aplicația în fundal
+  // costă cronometrul, adică exact partea pe care se dau punctele.
+  function tintaMaps() {
+    if (M.rt || M.state === 'RT_RUN') return null;
+    if (M.offRoute && M.offRoute.pct) {
+      const s = M.offRoute.pct.sursa;
+      return { boxNum: M.offRoute.boxNum, pct: M.offRoute.pct, idx: M.offRoute.idx,
+               deCe: 'offroute', sursa: s, aproximativa: s !== 'recon' };
+    }
+    let sarite = 0;             // boxuri din față pe care pur și simplu nu le știm pe hartă
+    for (let i = Math.max(0, M.nextBoxIdx); i < plan.boxes.length; i++) {
+      const b = plan.boxes[i];
+      // boxul pe care stai nu e o destinație: la START, „boxul următor" e chiar cel de
+      // sub roți încă 80 de metri (vezi pragTrecere), iar Maps ar deschide un traseu de
+      // zero metri — exact genul de buton care arată că merge și nu face nimic
+      if (b.sumKm <= M.routeKm + 0.03) continue;
+      const p = pctBox(b);
+      // FIRIMITURILE nu sunt o coordonată de box, sunt urma noastră: spun unde am fost
+      // NOI când credeam că suntem la kilometrul ăla. Pentru un box din FAȚĂ înseamnă
+      // „du-te unde ești deja" (lecția din tura poligon, 04.08, 18:01). Doar recunoașterea
+      // și harta au voie să dea ținta; punctul de reintrare, de mai sus, are alte reguli.
+      if (!p || p.sursa === 'urme') { sarite++; continue; }
+      return { boxNum: b.num, pct: p, idx: i,
+               deCe: sarite ? 'primul_cu_ancora' : 'urmator',
+               sursa: p.sursa, aproximativa: p.sursa !== 'recon' };
+    }
+    return null;
   }
 
   // ── API public ────────────────────────────────────────────────────────────
   return {
-    M, onFix, atBox, setTcSchedule, previzualizeazaBox, boxuriApropiate,
+    M, onFix, atBox, setTcSchedule, previzualizeazaBox, boxuriApropiate, tintaMaps,
     // Butonul „am greșit drumul": pilotul știe primul, întotdeauna. Detectarea automată
     // are nevoie de două semne și, în tura Tresor, al doilea a venit după 3 minute —
     // o apăsare le sare pe amândouă.
@@ -1542,6 +1596,7 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
         rtTick();
       }
       tcTick();
+      refaTintaMaps();
       ui.render(M, plan);
     },
     extSpeed(kmh) { M._extSpeedKmh = kmh; M._extSpeedT = clock.mono(); },   // priza BLE

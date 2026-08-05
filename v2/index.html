@@ -8,8 +8,17 @@
 <!-- connect-src: Anthropic (scanarea roadbook-ului) · GitHub (sincronizarea jurnalului) ·
      Nominatim/OpenStreetMap (căutarea reperelor pe hartă, DOAR la apăsarea butonului din
      panoul de pregătire, niciodată în cursă). Ghidajul pe străzi NU e un serviciu apelat
-     de aplicație: se predă aplicației Google Maps printr-un link, deci nu apare aici. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self' blob:; script-src 'self'; connect-src 'self' blob: https://api.anthropic.com https://api.github.com https://nominatim.openstreetmap.org; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'none'; form-action 'none'">
+     de aplicație: se predă aplicației Google Maps printr-un link, deci nu apare aici.
+
+     DALELE DE HARTĂ (v35, harta vie): tile.openstreetmap.org apare în DOUĂ directive —
+     `img-src` fiindcă dalele se desenează ca imagini pe canvas, și `connect-src` fiindcă
+     descărcarea pentru offline le cere cu fetch(), ca să poată vedea codul de răspuns
+     (429/403 opresc descărcarea). Sursa e aleasă anume: fără cheie, fără cont, fără
+     nicio credențială de ținut undeva. Nu se adaugă alte surse de hartă.
+     Pagina rămâne `no-referrer` pentru tot; DOAR cererile de dale trimit `origin`
+     (adresa publică a aplicației, fără cale și fără parametri), fiindcă politica OSM
+     cere ca aplicațiile să se poată identifica. Nimic despre cursă nu pleacă acolo. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'self' blob:; script-src 'self'; connect-src 'self' blob: https://api.anthropic.com https://api.github.com https://nominatim.openstreetmap.org https://tile.openstreetmap.org; img-src 'self' data: blob: https://tile.openstreetmap.org; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'none'; form-action 'none'">
 <meta name="referrer" content="no-referrer">
 <link rel="manifest" href="manifest.json">
 <link rel="icon" href="icon.svg" type="image/svg+xml">
@@ -89,6 +98,27 @@
       <p id="prep-harta-st" class="line dim"></p>
       <!-- traseul dus pe telefon, în aplicația care are hărțile -->
       <div id="prep-maps"></div>
+    </div>
+
+    <!-- ══ HARTA VIE: dalele pentru offline ══ -->
+    <div class="card">
+      <p class="lbl">HARTA DE PE ECRAN (DALE OFFLINE)</p>
+      <!-- Etapa 2 are 265 km pe Transfăgărășan: acolo semnalul lipsește pe bucăți
+           întregi, iar o hartă care se încarcă din rețea e o hartă care nu există
+           exact unde ai nevoie de ea. Descărcarea se face ACASĂ, o dată. -->
+      <p class="line dim">Aduce fundalul de hartă pentru un coridor de ±400 m în jurul
+        traseului, ca să existe și fără semnal, la munte. Se apasă acasă sau la hotel,
+        pe WiFi. Serverul de hărți e gratuit și comun (OpenStreetMap), deci descărcarea
+        merge încet, cu limită și cu buton de oprire — asta e regula lor, nu un capriciu.</p>
+      <div class="row">
+        <button class="btn sec" id="btn-dale-test">📡 Merg dalele?</button>
+        <button class="btn pri grow" id="btn-dale-desc">⬇ Descarcă harta traseului</button>
+      </div>
+      <div class="row hidden" id="dale-progres-row">
+        <div class="bara"><div id="dale-bara"></div></div>
+        <button class="btn danger sm" id="btn-dale-stop">■</button>
+      </div>
+      <p id="prep-dale-st" class="line dim"></p>
     </div>
 
     <div class="card">
@@ -200,16 +230,44 @@
       </div>
       <button class="btn sec big" id="btn-talk">🎤</button>
     </div>
+    <!-- HARTA și „UNDE SUNT": cele două întrebări la care săgeata singură nu răspunde.
+         (Andreas, 05.08.2026: „am o problemă destul de mare de orientare în spațiu".) -->
+    <button class="btn pri big" id="btn-harta-vie">🗺 HARTĂ</button>
     <!-- Ieșirea de pe traseu: pilotul o știe întotdeauna primul. Detectarea automată are
          nevoie de două semne; în tura Tresor (04.08.2026) al doilea a venit după 3 minute
          de condus pe alt drum. O apăsare le sare pe amândouă. -->
     <!-- Ghidajul pe străzi îl face Google Maps: RALI dă punctul, Maps dă vocea și
-         hărțile. Apare doar cât timp ești pe dinafară și avem coordonata boxului. -->
-    <a class="btn ok big hidden" id="btn-maps-off" target="_blank" rel="noopener noreferrer">📍 NAVIGHEAZĂ CU GOOGLE MAPS</a>
+         hărțile. De la v35 butonul e PERMANENT (plasă de siguranță, nu doar remediu la
+         rătăcire): pe traseu țintește boxul următor, pe dinafară punctul de reintrare. -->
+    <a class="btn ok big hidden" id="btn-maps" target="_blank" rel="noopener noreferrer">🧭 NAVIGHEAZĂ CU MAPS</a>
     <button class="btn sec big" id="btn-offroute">↩ AM GREȘIT DRUMUL</button>
     <!-- apare doar la final de leg, când mai există unul -->
     <button class="btn pri big hidden" id="btn-nextleg">▶ LEG URMĂTOR</button>
     <button class="btn danger" id="btn-stop">■ STOP ZIUA</button>
+  </section>
+
+  <!-- ══ HARTA VIE ══ -->
+  <!-- Al doilea ecran de cursă, comutabil cu cockpitul. Răspunde la întrebarea la care
+       o săgeată relativă nu poate răspunde: „unde sunt EU față de traseu". Se închide
+       singur când începe o probă — acolo contează cifra de deviere, nu drumul. -->
+  <section id="scr-map" class="hidden">
+    <p id="map-banner" class="mapband hidden"></p>
+    <div id="map-wrap">
+      <canvas id="map-canvas"></canvas>
+      <div id="map-ctrl-st">
+        <button class="mbtn" id="btn-map-zin">+</button>
+        <button class="mbtn" id="btn-map-zout">−</button>
+        <button class="mbtn" id="btn-map-zauto">A</button>
+      </div>
+      <div id="map-ctrl-dr">
+        <button class="mbtn" id="btn-map-rot">🚗</button>
+      </div>
+    </div>
+    <p id="map-info" class="line dim center"></p>
+    <button class="btn pri big" id="btn-map-inapoi">◀ COCKPIT</button>
+    <a class="btn ok big hidden" id="btn-map-maps" target="_blank" rel="noopener noreferrer">🧭 NAVIGHEAZĂ CU MAPS</a>
+    <p class="line dim center">Harta consumă baterie cât e deschisă — la 265 km ține
+      telefonul pe încărcător. Se oprește singură în probă și când ecranul e stins.</p>
   </section>
 
   <!-- ══ RECUNOAȘTERE ══ -->

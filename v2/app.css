@@ -108,6 +108,27 @@ input { background: var(--bg); border: 1px solid var(--border); border-radius: 1
   font-size: 13px; font-weight: 700; margin-bottom: 8px; text-align: center;
   font-variant-numeric: tabular-nums; }
 
+/* ══ HARTA VIE ═════════════════════════════════════════════════════════════
+   Ecranul care răspunde la „unde sunt EU față de traseu". Harta ocupă tot ce se
+   poate: butoanele stau PESTE ea, în colțuri, ca suprafața utilă să rămână la
+   pilot. Ținte mari (48 px) — se apasă la volan, cu mănuși, în mișcare. */
+#map-wrap { position: relative; width: 100%; height: min(62vh, 560px);
+  border-radius: 14px; overflow: hidden; background: #12131a; margin-bottom: 6px; }
+#map-canvas { display: block; width: 100%; height: 100%; touch-action: none; }
+#map-ctrl-st { position: absolute; left: 8px; top: 8px; display: flex; flex-direction: column; gap: 6px; }
+#map-ctrl-dr { position: absolute; right: 8px; top: 8px; display: flex; flex-direction: column; gap: 6px; }
+.mbtn { width: 48px; height: 48px; border: 0; border-radius: 12px; background: #000000b0;
+  color: #fff; font-size: 22px; font-weight: 800; backdrop-filter: blur(2px); }
+.mbtn.on { background: var(--pri); }
+/* banda de avertizare a hărții: „traseu aproximativ, din adrese" / „fără dale".
+   Nu e o notă de subsol — e limita a ceea ce vezi, deci stă sus, peste hartă. */
+.mapband { background: #ffd60a22; color: var(--warn); text-align: center; font-size: 13px;
+  font-weight: 700; padding: 7px; border-radius: 10px; margin-bottom: 6px; }
+.mapband.rau { background: var(--bad); color: #fff; }
+/* bara de progres a descărcării de dale */
+.bara { flex: 1; height: 14px; background: #2c2c33; border-radius: 7px; overflow: hidden; }
+.bara > div { height: 100%; width: 0; background: var(--pri); transition: width .2s; }
+
 .debrief { background: #0a84ff22; border-radius: 10px; padding: 9px 12px; font-size: 13px; margin-bottom: 8px; }
 .rts-line { font-size: 13px; color: var(--dim); text-align: center; margin-bottom: 8px; font-variant-numeric: tabular-nums; }
 .bignum { font-size: 44px; font-weight: 800; font-variant-numeric: tabular-nums; padding: 8px 0; }
