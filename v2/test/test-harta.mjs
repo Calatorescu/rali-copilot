@@ -408,8 +408,10 @@ console.log('\n═══ Punctul de reintrare: ÎN FAȚĂ, nu în spate ══�
   ok('ținta nu mai e boxul din spate', !!o && o.boxNum !== 2, JSON.stringify(o));
   ok('ci un box din fața direcției de mers', !!o && o.inFata === true && o.boxNum >= 3,
      JSON.stringify({ boxNum: o && o.boxNum, inFata: o && o.inFata }));
+  // (v42: fraza continuă cu descrierea boxului — „…la boxul 3 — dreapta, Str. Quasar."
+  // Punctul de după număr nu mai e obligatoriu; ce se verifică aici e alegerea cuvântului.)
   ok('și vocea spune „prinde traseul", nu „întoarcere"',
-     w.said.some(s => /Prinde traseul la boxul \d+\./.test(s.t)) &&
+     w.said.some(s => /Prinde traseul la boxul \d+/.test(s.t)) &&
      !w.said.some(s => /Te întorc/.test(s.t)),
      JSON.stringify(w.said.filter(s => /traseu/.test(s.t)).map(s => s.t)));
   ok('jurnalul ține minte că ținta era în față',

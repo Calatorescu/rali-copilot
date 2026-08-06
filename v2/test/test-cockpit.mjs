@@ -163,6 +163,21 @@ console.log('\n═══ Capcana care se vede doar pe telefon: id-uri care nu ex
   ok('și cele cerute de main.js la fel', lipsaMain.length === 0, JSON.stringify(lipsaMain));
 }
 
+console.log('\n═══ Pe dinafară, ecranul spune CE E boxul de reintrare ═══');
+{
+  // Sibiu, 06.08.2026: ecranul arăta „box 10 · hartă" și o săgeată. Nimic despre
+  // giratoriul de pe Str. Constituției, deși textul exista în roadbook. Descrierea stă
+  // pe linia numărului de box fiindcă e SINGURA din cardul de navigație care nu dispare
+  // pe ecran scund — .nx-com și .nx-after sunt ascunse la max-height 460px.
+  ok('linia „box N" din ui.js include descrierea țintei',
+     /cp-next-box'\)\.textContent = 'box ' \+ o\.boxNum \+\s*\n?\s*\(o\.descriere \?/.test(ui),
+     'ui.js nu mai scrie o.descriere pe linia de box');
+  ok('și linia aia chiar rămâne vizibilă pe ecranul cel mai scund',
+     /max-height:\s*460px/.test(css) &&
+     !/#cp-nav \.nx-com,[^}]*\.nx-box/.test(css.split('max-height: 460px')[1] || ''),
+     'nx-box a ajuns printre elementele ascunse');
+}
+
 console.log('\n═══ Versiunea: BUILD și CACHE nu au voie să se despartă ═══');
 {
   // un main.js nou lângă module vechi din cache oprește init() cu totul (audit 04.08)

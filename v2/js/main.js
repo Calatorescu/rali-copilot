@@ -36,7 +36,7 @@ let hartaIncoerenta = null;
 // Versiunea build-ului — se ține SINCRON cu CACHE din sw.js la fiecare deploy.
 // Vizibilă în antet și scrisă în jurnal la fiecare pornire: „ce versiune rulează
 // telefonul?" se citește, nu se ghicește (02.08, seara — nu se putea ști).
-const BUILD = 'v40';
+const BUILD = 'v42';
 
 async function init() {
   store = await makeStore();
@@ -1466,9 +1466,12 @@ async function gasesteTraseulPeHarta() {
   if (!plan.boxes.length) { st.textContent = 'Întâi scanează roadbook-ul.'; return; }
   const localitate = ($('set-localitate').value || '').trim();
   if (localitate) localStorage.setItem('r2_localitate', localitate);
-  const r = repereBoxuri(plan.boxes.map(b => ({ ...b, comment: b.comment })));
-  // localitatea scrisă de om bate ce s-a dedus din text
-  const loc = localitate || r.localitate;
+  // Localitatea scrisă de om ÎNLOCUIEȘTE ce s-a dedus din text — nu se adaugă peste.
+  // Se dă mai departe, în construcția reperelor, tocmai ca nimic dedus să nu apuce să se
+  // lipească de ele. (06.08.2026: se lipea, și ieșea „Piața Mică, Zonă Pietonală, Sibiu".)
+  const r = repereBoxuri(plan.boxes.map(b => ({ ...b, comment: b.comment })),
+                         { localitate });
+  const loc = r.localitate;
   // FĂRĂ LOCALITATE NU SE CAUTĂ NIMIC (06.08.2026). Până azi se căuta oricum, cu o notă
   // pe ecran — iar „DJ 691" fără oraș a nimerit în Wisconsin, la 7933 km, pe 11 boxuri
   // deodată. Nota pe ecran n-a oprit nimic, fiindcă nu era o oprire. Acum e.
@@ -1480,9 +1483,7 @@ async function gasesteTraseulPeHarta() {
     return;
   }
   st.style.color = '';
-  const repere = r.repere.map(x => ({
-    ...x, reper: x.reper && !x.reper.includes(loc) ? `${x.reper}, ${loc}` : x.reper
-  }));
+  const repere = r.repere;
   // Reperele care sunt DOAR un număr de drum nu se mai întreabă deloc: „DJ 691" e o linie
   // de zeci de kilometri, nu un punct, iar răspunsul ar cădea identic pe toate boxurile.
   const doarDrum = repere.filter(x => x.reper && reperEDoarDrum(x.reper, loc));
@@ -1506,8 +1507,10 @@ async function gasesteTraseulPeHarta() {
   const geo = faGeocoder({});
   let rez;
   try {
-    rez = await geocodeazaRepere(deCautat, geo,
-      { onPas: (i, n) => { st.textContent = `Caut… ${i} din ${n}`; } });
+    rez = await geocodeazaRepere(deCautat, geo, {
+      onPas: (i, n) => { st.textContent = `Caut… ${i} din ${n}`; },
+      onReincercare: (k, n) => { st.textContent = `Mai încerc o dată, cu numele scurt… ${k} din ${n}`; }
+    });
   } catch (e) {
     st.textContent = 'Fără internet — căutarea pe hartă merge doar cu semnal.';
     btn.disabled = false; return;

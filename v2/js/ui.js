@@ -119,7 +119,12 @@ export function makeUi() {
         // DE UNDE ȘTIM unde e punctul — pilotul are dreptul să știe cât de bună e cifra
         // pe care o urmează: urma condusă la recunoaștere e exactă, coordonata de pe
         // hartă e la nivel de stradă, iar firimiturile sunt unde CREDEAM că suntem.
-        $('cp-next-box').textContent = 'box ' + o.boxNum + ' · ' + sursaRo(o.pct && o.pct.sursa);
+        // ȘI CE E BOXUL ĂLA (v42): „giratoriu, ieșirea 2 · Str. Constituției". Linia asta
+        // e singura din card care rămâne vizibilă pe orice înălțime de ecran (vezi
+        // app.css, @media max-height 460px, unde .nx-com și .nx-after dispar) — deci
+        // descrierea stă aici, lângă numărul boxului, nu în titlul roșu.
+        $('cp-next-box').textContent = 'box ' + o.boxNum +
+          (o.descriere ? ' · ' + o.descriere : '') + ' · ' + sursaRo(o.pct && o.pct.sursa);
         af0.textContent = 'linie dreaptă către punct — nu traseu pe străzi';
         af0.className = 'nx-after';
         $('cp-rts').textContent = plan.rts.map(r => r.name).join('  ');

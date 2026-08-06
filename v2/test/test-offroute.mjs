@@ -266,5 +266,204 @@ console.log('\n═══ Butonul: pilotul știe primul ═══');
      w.said.some(s => /Te-am prins/.test(s.t)), JSON.stringify(w.said.slice(-2).map(s => s.t)));
 }
 
+// ══════════════════════════════════════════════════════════════════════════════
+// CITY DEMO SIBIU, 06.08.2026 — ținta care sare între două boxuri opuse
+// ══════════════════════════════════════════════════════════════════════════════
+// Ce s-a întâmplat, din jurnalul real (jurnale/2026-08-06.json, după 19:13): 36 de
+// boxuri, 3,7 km prin centrul vechi, harta COMPLET GOALĂ (0 ancore) — deci punctele de
+// reintrare veneau numai din firimituri. Manevra de la boxul 10 a fost ratată, iar în
+// trei minute ținta a sărit de trei ori între boxul 10 și boxul 9:
+//   19:18:14  boxul 10 → boxul 9,  711 m, inFata true
+//   19:18:29  boxul 9  → boxul 10, 373 m, inFata false
+//   19:19:32  boxul 10 → boxul 9,  798 m, inFata true
+//   19:21:03  ieșire manuală, la boxul 9, după 1094 m rătăciți
+// Cele două boxuri sunt în direcții OPUSE pe traseu (0,62 km și 1,05 km), iar regula
+// „în față bate aproape" își schimba răspunsul la fiecare cotitură prin oraș.
+//
+// Și ce a auzit Andreas, de opt ori la rând: „Boxul 10 la 240 de metri, în spate."
+// Nicio vorbă despre CE e boxul 10 — deși roadbook-ul scria „GIRATORIU-2 ·
+// Str. Constituției", iar aplicația avea textul de la scanare.
+//
+// Fixtura de mai jos are DOAR num, sumKm, dir și comment pentru boxurile 8-12, exact
+// cum sunt în roadbook-ul de la Sibiu. Coordonatele reale nu intră în teste.
+const SIBIU = sanitizeBoxes([
+  { num: 8,  sumKm: 0.55, dir: 'DREAPTA',     comment: 'Tribunalul și Judecătoria Sibiu' },
+  { num: 9,  sumKm: 0.62, dir: 'GIRATORIU-1', comment: 'Str. Nicolae Teclu' },
+  { num: 10, sumKm: 1.05, dir: 'GIRATORIU-2', comment: 'Str. Constituției' },
+  { num: 11, sumKm: 1.22, dir: 'ÎNAINTE',     comment: 'Str. Constituției' },
+  { num: 12, sumKm: 1.33, dir: 'ÎNAINTE',     comment: 'Str. Constituției' }
+]);
+
+// Drumul CORECT până imediat înainte de boxul 10, apoi mașina merge drept peste el.
+// Boxurile 8 și 9 sunt la 70 m unul de altul, deci în teren sunt un singur cot —
+// aici la fel: un singur viraj de 77 m le acoperă pe amândouă, iar detectorul îl
+// leagă de boxul 9 (sync, how: turn). Fără cotul ăsta, aplicația ar declara pe bună
+// dreptate două manevre ratate și n-am mai ajunge la cazul care ne interesează.
+function panaDupaBoxul10(w) {
+  w.drept(540, 0);                 // start → boxul 8 (km 0,55), cap nord
+  const d = ((90 - 0 + 540) % 360 - 180) / 7;
+  for (let i = 1; i <= 7; i++) w.pas(11, 0 + d * i);   // cotul de la boxurile 8-9
+  w.drept(480, 90);                // mai departe spre est, până la km ~1,10
+}
+
+console.log('\n═══ Sibiu: ținta nu se mai întoarce la boxul tocmai părăsit ═══');
+{
+  const w = lume(SIBIU);
+  panaDupaBoxul10(w);
+  ok('drumul până aici e curat: nicio manevră declarată ratată',
+     w.jurnal('offroute_semn').length === 0 && !w.m.M.offRoute,
+     JSON.stringify(w.jurnal('offroute_semn')));
+
+  w.m.offRouteManual();            // ca în teren: pilotul își dă seama primul
+  ok('ținta de plecare e boxul 10, în spate (în teren: boxul 10, 114 m, inFata false)',
+     w.m.M.offRoute.boxNum === 10 && w.m.M.offRoute.inFata === false,
+     JSON.stringify({ box: w.m.M.offRoute.boxNum, d: w.m.M.offRoute.distM,
+                      inFata: w.m.M.offRoute.inFata }));
+
+  // REJUCAREA celor trei reevaluări, pe capete compas: est = ambele boxuri în spate,
+  // vest = ambele în față. Fiecare bucată de drum durează peste OFF_REEVAL_MS (15 s),
+  // deci fiecare declanșează exact o reevaluare.
+  w.drept(400, 90);                // 1) mai departe: ținta rămâne boxul 10
+  ok('cât merge înainte, ținta nu se schimbă degeaba', w.m.M.offRoute.boxNum === 10,
+     JSON.stringify(w.jurnal('offroute_tinta_noua')));
+  w.drept(200, 270);               // 2) întoarce: ambele boxuri devin „în față"
+  ok('prima comutare TRECE: boxul 10 → boxul 9 (în teren, 19:18:14)',
+     w.m.M.offRoute.boxNum === 9, JSON.stringify(w.jurnal('offroute_tinta_noua')));
+  w.drept(200, 90);                // 3) se învârte iar: boxul 10 redevine cel mai aproape
+  ok('a doua comutare e BLOCATĂ: boxul 10 a fost părăsit acum câteva secunde',
+     w.m.M.offRoute.boxNum === 9, JSON.stringify(w.jurnal('offroute_tinta_blocata')));
+  w.drept(200, 270);               // 4) și încă o cotitură
+  ok('a treia nu mai e o comutare: ținta e deja boxul 9',
+     w.m.M.offRoute.boxNum === 9, JSON.stringify(w.jurnal('offroute_tinta_noua')));
+
+  const noi = w.jurnal('offroute_tinta_noua'), blocate = w.jurnal('offroute_tinta_blocata');
+  ok('bilanțul: O SINGURĂ comutare, în loc de trei', noi.length === 1,
+     JSON.stringify(noi.map(e => `${e.deLaBox}→${e.laBox}`)));
+  ok('și e chiar cea bună: 10 → 9, boxul la care Andreas a reintrat pe traseu',
+     noi[0] && noi[0].deLaBox === 10 && noi[0].laBox === 9, JSON.stringify(noi));
+  ok('refuzul e scris în jurnal, cu boxul respins și de câte secunde',
+     blocate.length >= 1 && blocate[0].respins === 10 && blocate[0].tinta === 9 &&
+     blocate[0].deS < 60, JSON.stringify(blocate));
+  ok('nimic din regula de alegere n-a fost schimbat: comutarea permisă e tot spre „în față"',
+     noi[0] && noi[0].inFata === true, JSON.stringify(noi));
+}
+
+console.log('\n═══ Sibiu: 60 de secunde e o AMÂNARE, nu o interdicție ═══');
+{
+  // Pragul apără de oscilația de busolă, nu de o schimbare reală de plan. După ce
+  // fereastra trece, ținta are voie să se întoarcă unde arată regula.
+  const w = lume(SIBIU);
+  panaDupaBoxul10(w);
+  w.m.offRouteManual();
+  w.drept(400, 90);
+  w.drept(200, 270);               // comutare 10 → 9
+  ok('ținta e boxul 9', w.m.M.offRoute.boxNum === 9);
+  w.salt(61000);                   // trece fereastra de 60 s
+  w.drept(200, 90);                // și abia acum se cere înapoi boxul 10
+  ok('după 60 de secunde, întoarcerea la boxul 10 e permisă',
+     w.m.M.offRoute.boxNum === 10,
+     JSON.stringify({ noi: w.jurnal('offroute_tinta_noua'),
+                      blocate: w.jurnal('offroute_tinta_blocata') }));
+}
+
+console.log('\n═══ Sibiu: ghidajul spune CE E boxul, nu doar cât și încotro ═══');
+{
+  const w = lume(SIBIU);
+  panaDupaBoxul10(w);
+  w.m.offRouteManual();
+  const intrare = w.said.filter(s => /Ai ieșit de pe traseu/.test(s.t));
+  ok('anunțul de intrare are direcția boxului, în vorbă de om',
+     intrare.length === 1 && /giratoriu, ieșirea 2/.test(intrare[0].t),
+     JSON.stringify(intrare.map(s => s.t)));
+  ok('și reperul din roadbook — singurul lucru pe care îl poate recunoaște pe stradă',
+     intrare[0] && /Str\. Constituției/.test(intrare[0].t), intrare[0] && intrare[0].t);
+  ok('descrierea e și pe ecran, nu doar în difuzor',
+     w.m.M.offRoute.descriere === 'giratoriu, ieșirea 2, Str. Constituției',
+     JSON.stringify(w.m.M.offRoute.descriere));
+
+  w.drept(400, 90);
+  const ghid = w.said.filter(s => /^Boxul 10 la /.test(s.t));
+  ok('rostirile care urmează pe ACEEAȘI țintă nu mai repetă descrierea',
+     ghid.length >= 1 && ghid.every(s => !/giratoriu/.test(s.t)),
+     JSON.stringify(ghid.map(s => s.t)));
+  ok('ele rămân forma scurtă: box, distanță, direcție',
+     ghid.every(s => /^Boxul 10 la .+, (în|la|drept) .+\.$/.test(s.t)),
+     JSON.stringify(ghid.map(s => s.t)));
+
+  w.drept(200, 270);               // ținta devine boxul 9
+  ok('ținta s-a schimbat pe boxul 9', w.m.M.offRoute.boxNum === 9,
+     JSON.stringify(w.jurnal('offroute_tinta_noua')));
+  w.drept(150, 300);               // încă puțin drum, cât să încapă o rostire (12 s)
+  const ghid9 = w.said.filter(s => /^Boxul 9 la /.test(s.t));
+  ok('la SCHIMBAREA țintei, descrierea se reia — e vorba despre alt loc',
+     ghid9.length >= 1 && /giratoriu, ieșirea 1, Str\. Nicolae Teclu/.test(ghid9[0].t),
+     JSON.stringify(ghid9.map(s => s.t)));
+  ok('și doar la prima rostire pe ținta nouă',
+     ghid9.filter(s => /giratoriu/.test(s.t)).length === 1,
+     JSON.stringify(ghid9.map(s => s.t)));
+
+  // fraza trebuie să încapă între două rostiri (OFF_VORBA_MS = 12 s), la 90 ms/caracter
+  const lunga = ghid9.find(s => /giratoriu/.test(s.t));
+  ok('fraza lungă tot încape în fereastra de 12 secunde a ghidajului',
+     lunga && (350 + lunga.t.length * 90) < 12000,
+     lunga && `${Math.round((350 + lunga.t.length * 90) / 100) / 10} s · ${lunga.t}`);
+}
+
+console.log('\n═══ Sibiu: butonul „unde sunt" răspunde cu locul, nu cu o cifră ═══');
+{
+  const w = lume(SIBIU);
+  panaDupaBoxul10(w);
+  w.m.offRouteManual();
+  const r = w.m.undeSunt();
+  ok('„Nu ești pe traseu" spune și ce e boxul de reintrare',
+     /^Nu ești pe traseu\./.test(r.text) && /giratoriu, ieșirea 2, Str\. Constituției/.test(r.text),
+     r.text);
+}
+
+console.log('\n═══ Un box fără direcție și fără comentariu: rămâne forma veche ═══');
+{
+  const GOL = sanitizeBoxes([
+    { num: 8,  sumKm: 0.55, dir: 'DREAPTA', comment: 'Tribunalul și Judecătoria Sibiu' },
+    { num: 9,  sumKm: 0.62, dir: 'GIRATORIU-1', comment: 'Str. Nicolae Teclu' },
+    { num: 10, sumKm: 1.05, dir: 'ÎNAINTE', comment: '' },
+    { num: 11, sumKm: 1.22, dir: 'ÎNAINTE', comment: '' }
+  ]);
+  const w = lume(GOL);
+  panaDupaBoxul10(w);
+  w.m.offRouteManual();
+  ok('ținta e tot boxul 10', w.m.M.offRoute.boxNum === 10, JSON.stringify(w.m.M.offRoute));
+  ok('n-are ce descrie, deci nu inventează nimic', w.m.M.offRoute.descriere == null,
+     JSON.stringify(w.m.M.offRoute.descriere));
+  ok('și fraza e exact cea de până acum',
+     w.said.some(s => /^Ai ieșit de pe traseu\. Prinde traseul la boxul 10\.$/.test(s.t)),
+     JSON.stringify(w.said.filter(s => /traseu/.test(s.t)).map(s => s.t)));
+  w.drept(300, 90);
+  const ghid = w.said.filter(s => /^Boxul 10 la /.test(s.t));
+  ok('ghidajul rămâne „box, distanță, direcție"',
+     ghid.length >= 1 && ghid.every(s => /^Boxul 10 la .+\.$/.test(s.t) && !/—/.test(s.t)),
+     JSON.stringify(ghid.map(s => s.t)));
+}
+
+console.log('\n═══ Reperul lung se scurtează, nu se rostește întreg ═══');
+{
+  const LUNG = sanitizeBoxes([
+    { num: 8,  sumKm: 0.55, dir: 'DREAPTA', comment: 'Tribunalul și Judecătoria Sibiu' },
+    { num: 9,  sumKm: 0.62, dir: 'GIRATORIU-1', comment: 'Str. Nicolae Teclu' },
+    { num: 10, sumKm: 1.05, dir: 'GIRATORIU-2',
+      comment: 'Bulevardul General Ion Dragalina Prelungirea Sudului Est · nu opri · atenție la tramvai' },
+    { num: 11, sumKm: 1.22, dir: 'ÎNAINTE', comment: '' }
+  ]);
+  const w = lume(LUNG);
+  panaDupaBoxul10(w);
+  w.m.offRouteManual();
+  const d = w.m.M.offRoute.descriere || '';
+  ok('descrierea începe tot cu direcția', /^giratoriu, ieșirea 2, /.test(d), d);
+  ok('reperul e tăiat sub 40 de caractere', d.replace(/^giratoriu, ieșirea 2, /, '').length <= 40, d);
+  ok('și tăietura cade între cuvinte, nu în mijlocul unuia',
+     !/\s$/.test(d) && d.split(' ').every(x => x.length > 0), JSON.stringify(d));
+  ok('nimic din coada comentariului nu ajunge în difuzor',
+     !/nu opri|tramvai/.test(d), d);
+}
+
 console.log(`\n──────── ${pass} trecute, ${fail} căzute ────────`);
 process.exit(fail ? 1 : 0);

@@ -68,28 +68,105 @@ function curata(s) {
     .trim();
 }
 
-// LOCALITATEA leg-ului. Roadbook-ul o scrie o dată, de obicei în boxul de start
-// („Str. Exemplu 7, Dumbrăvița"), iar restul boxurilor o subînțeleg. Fără ea,
-// „Str. Turda" există în zeci de orașe și geocodarea nimerește altundeva.
-// Localitatea se ia DOAR din forma de adresă („Str. Exemplu 7, Dumbrăvița"), nu din
-// orice pomenire a unui oraș. Prima versiune căuta orice nume cunoscut oriunde în text și
-// a pus „Sibiu" pe tot roadbook-ul de Timișoara, dintr-o singură notă de regulament:
-// „SIMULARE — trecere CFR cu STOP … La Sibiu: STOP obligatoriu la tabelă". Toate cele 19
-// repere ar fi plecat la geocodare cu orașul greșit — și geocodarea ar fi răspuns ceva,
-// fiindcă „Str. Turda" există și acolo. Când roadbook-ul n-o spune în forma asta,
-// localitatea se cere OMULUI, în panoul de pregătire.
+// ── LOCALITATEA LEG-ULUI ────────────────────────────────────────────────────
+// Fără ea, „Str. Turda" există în zeci de orașe și geocodarea nimerește altundeva.
+//
+// ISTORIC, două greșeli plătite pe teren — a doua e cea care a născut regula de azi:
+//  • 04.08.2026: prima versiune căuta orice nume de oraș oriunde în text și a pus „Sibiu"
+//    pe tot roadbook-ul de Timișoara, dintr-o notă de regulament („La Sibiu: STOP
+//    obligatoriu la tabelă"). S-a restrâns la forma de adresă.
+//  • 06.08.2026, Sibiu, roadbook OFICIAL: boxul 3 scrie „Piața Mică, Zonă Pietonală".
+//    Forma de adresă a citit „Zonă Pietonală" ca localitate și a lipit-o pe toate cele 35
+//    de repere: „Piața Mică, Zonă Pietonală", „Turnul Sfatului, Zonă Pietonală". Zero
+//    ancore din 36. „Piața Mică, Sibiu" s-ar fi găsit din prima.
+//
+// De unde se citește ACUM localitatea — și DOAR de acolo:
+//  1. PLĂCUȚA de intrare/ieșire din localitate, așa cum o scrie roadbook-ul în text:
+//     „Enter Brebu Nou", „Exit Văliug", „Welcome Gărâna", „Exit Municipiul Reșița"
+//     (toate reale, roadbook-ul de la Reșița, 05.08.2026), plus formele românești
+//     („intrare în ...", „la ieșirea din localitatea ..."). Asta e plăcuța albă de drum,
+//     singurul loc din roadbook care spune negru pe alb într-ce localitate ești.
+//  2. ADRESA POȘTALĂ COMPLETĂ, cu NUMĂR: „Str. Marte 35, Dumbrăvița" (real, 04.08.2026).
+//     Numărul e ce deosebește o adresă de o simplă înșiruire: „Piața Mică, Zonă Pietonală"
+//     și „Str. Cetății, Turnul Dulgherilor" n-au număr, deci nu sunt adrese.
+//
+// Orice altceva → `null`, iar `null` e un răspuns BUN: aplicația știe deja să ceară
+// localitatea omului și refuză să caute fără ea.
+//
+// Și dacă evidențele se contrazic (roadbook-ul de la Reșița trece prin Reșița, Văliug,
+// Gărâna și Brebu Nou), tot `null`: un leg care traversează patru localități n-are UNA,
+// iar a alege pe cea mai des pomenită înseamnă a lipi orașul greșit pe restul boxurilor.
+
+// Numele unei localități: „Dumbrăvița", „Brebu Nou", „Sânnicolau Mare", „Ocna Sibiului".
+const NUME_LOC = `[${MAJ}][${MIC}]{2,}(?:[ \\-][${MAJ}][${MIC}]{2,}){0,2}`;
+// Prefixele administrative de pe plăcuță se aruncă: „Exit Municipiul Reșița" → „Reșița".
+const PREFIX_ADM = '(?:Municipiul|MUNICIPIUL|Ora[șs]ul|Comuna|Satul|Localitatea|localitatea)\\s+';
+
+// Plăcuța de localitate. Cuvintele-cheie se scriu cu toate casetele posibile în loc de
+// flagul `i`, fiindcă `i` ar strica și clasele de majuscule din NUME_LOC — iar acolo
+// majuscula e chiar dovada că urmează un nume propriu.
+// ATENȚIE la ce NU e aici: „To X". „To Brebu Nou", „To Center", „To Podul Mincinilor"
+// sunt panouri de DIRECȚIE — spun încotro mergi, nu unde ești. Toate trei apar în
+// roadbook-urile reale, iar „To Podul Mincinilor" ar fi dat „Podul Mincinilor" ca oraș.
+const rePlacutaLocalitate = new RegExp(
+  '(?:\\b[Ee][Nn][Tt][Ee][Rr]\\b|\\b[Ee][Xx][Ii][Tt]\\b|\\b[Ww][Ee][Ll][Cc][Oo][Mm][Ee]\\b(?:\\s+to\\b)?' +
+  '|\\b[Ii]ntrare[a]?\\s+[îi]n\\b|\\b[Ii]e[șs]ire[a]?\\s+din\\b|\\b[Bb]un venit\\s+(?:[îi]n|la)\\b)' +
+  `\\s+(?:${PREFIX_ADM})?(${NUME_LOC})`, 'u');
+
+// Adresa poștală completă: arteră + nume + NUMĂR + virgulă + localitate.
 const reAdresaLocalitate = new RegExp(
-  `(?:${ARTERE.join('|')}|Inelul)\\s+[${MAJ}][^,;·|]{1,40},\\s*([${MAJ}][${MIC}]{3,}(?:[ \\-][${MAJ}][${MIC}]{2,})?)`, 'u');
+  `(?:${ARTERE.join('|')}|Inelul)\\s+[${MAJ}][^,;·|]{0,40}\\s\\d{1,4},\\s*(${NUME_LOC})`, 'u');
+
+// ── A DOUA APĂRARE: ce nu poate fi niciodată o localitate ────────────────────
+// Prima apărare e restrângerea sursei de mai sus; asta e plasa de sub ea. Se compară pe
+// text fără diacritice și cu litere mici, ca „Zonă Pietonală" și „ZONA PIETONALA" să cadă
+// amândouă. Toate intrările vin din roadbook-uri reale sau din vocabularul lor obișnuit.
+const NU_E_LOCALITATE = new Set([
+  'zona pietonala', 'zona rezidentiala', 'zona industriala', 'zona', 'pietonala',
+  'centru', 'centrul', 'center', 'city center', 'city demo', 'centru vechi',
+  'sens unic', 'sens giratoriu', 'giratoriu', 'giratoriul', 'rond', 'rondul',
+  'parcare', 'parcarea', 'parking', 'start', 'finish', 'stop', 'service',
+  'gara', 'garaj', 'benzinarie', 'benzinaria', 'spital', 'spitalul', 'primaria',
+  'sat vacanta', 'zona pietonal', 'drum inchis', 'sens interzis', 'trecere cfr'
+]);
+// Cuvintele-articol care încep un OBIECTIV, nu o localitate: „Turnul Dulgherilor",
+// „Piața Mare", „Podul Minciunilor", „Oficiul Poștal", „Tribunalul și Judecătoria Sibiu".
+// Forma cu articol hotărât („Turnul", „Podul") nu apare în numele de localități românești
+// — alea sunt „Turnu Măgurele", „Podu Iloaiei", fără -l. Deci lista e sigură.
+const CAP_DE_OBIECTIV = new Set(['turnul', 'piata', 'podul', 'oficiul', 'tribunalul',
+  'muzeul', 'biserica', 'catedrala', 'parcul', 'hotelul', 'spitalul', 'primaria',
+  'filarmonica', 'judecatoria', 'strada', 'bulevardul', 'calea', 'aleea', 'soseaua',
+  'splaiul', 'intrarea', 'drumul', 'inelul', 'hala', 'stadionul', 'scoala', 'liceul']);
+
+// fără diacritice și cu litere mici — singura formă în care se compară numele de mai sus
+function normNume(s) {
+  return String(s || '').toLowerCase()
+    .replace(/[ăâ]/g, 'a').replace(/[îi]/g, 'i').replace(/[șş]/g, 's').replace(/[țţ]/g, 't')
+    .replace(/[áàä]/g, 'a').replace(/[éè]/g, 'e').replace(/[óöő]/g, 'o').replace(/[úüű]/g, 'u')
+    .replace(/\s+/g, ' ').trim();
+}
+
+// E numele ăsta o localitate plauzibilă? (a doua apărare, nu prima)
+export function poateFiLocalitate(nume) {
+  const n = normNume(nume);
+  if (n.length < 3) return false;
+  if (NU_E_LOCALITATE.has(n)) return false;
+  if (CAP_DE_OBIECTIV.has(n.split(' ')[0])) return false;
+  return true;
+}
 
 export function localitateBoxuri(boxes = []) {
-  const nr = new Map();
+  const gasite = new Set();
   for (const b of boxes) {
-    const m = reAdresaLocalitate.exec(curata(b && b.comment));
-    if (m) { const k = curata(m[1]); nr.set(k, (nr.get(k) || 0) + 1); }
+    const c = curata(b && b.comment);
+    if (!c) continue;
+    for (const re of [rePlacutaLocalitate, reAdresaLocalitate]) {
+      const m = re.exec(c);
+      if (m && poateFiLocalitate(m[1])) gasite.add(curata(m[1]));
+    }
   }
-  let best = null;
-  for (const [k, v] of nr) if (!best || v > best.n) best = { nume: k, n: v };
-  return best ? best.nume : null;
+  // exact una, altfel nu știm — și „nu știu" se rezolvă întrebând omul
+  return gasite.size === 1 ? [...gasite][0] : null;
 }
 
 // REPERUL unui box: șirul care se trimite la geocodare, sau null dacă boxul n-are nimic
@@ -125,21 +202,67 @@ export function extrageReper(comment, { localitate = null } = {}) {
   return localitate ? `${nume}, ${localitate}` : nume;
 }
 
-// Reperele întregului leg, cu localitatea dedusă o dată pentru tot roadbook-ul.
-export function repereBoxuri(boxes = []) {
-  const localitate = localitateBoxuri(boxes);
+// ── LOCALITATEA SCRISĂ DE OM ÎNLOCUIEȘTE, NU SE ADAUGĂ ───────────────────────
+// Regula, scrisă ca atare (06.08.2026): dacă omul a scris o localitate în panoul de
+// pregătire, ea e SINGURA folosită. Localitatea dedusă din text se ignoră complet,
+// inclusiv coada ei deja lipită de reper.
+//
+// De ce trebuie spus explicit: până azi, omul scria „Sibiu" și codul o ADĂUGA peste ce
+// dedusese singur. Reperele plecau „Piața Mică, Zonă Pietonală, Sibiu" — adică o adresă
+// care nu există nicăieri. Corectura omului nu corecta nimic; doar mai punea un cuvânt.
+
+function escapeRe(s) { return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+
+// Scoate de la coada reperului „, Localitate" — repetat, dacă s-a lipit de mai multe ori.
+function faraCoada(reper, loc) {
+  let s = curata(reper);
+  if (!s || !loc) return s;
+  const re = new RegExp(`[,;]\\s*${escapeRe(loc)}\\s*$`, 'iu');
+  for (let prev = null; s && s !== prev;) { prev = s; s = curata(s.replace(re, '')); }
+  return s;
+}
+
+// Reperul are deja localitatea la coadă? Se cere potrivire pe CUVÂNT ÎNTREG la final,
+// nu „conține undeva": „Str. Sibiului" conține „Sibiu" fără să fie în Sibiu, iar cu
+// verificarea veche (`includes`) rămânea pe veci fără oraș și se căuta în toată lumea.
+// „Tribunalul și Judecătoria Sibiu" chiar se termină cu numele orașului — ăla rămâne cum e.
+function areLocalitateaLaCoada(reper, loc) {
+  if (!reper || !loc) return false;
+  return new RegExp(`(?:^|[\\s,])${escapeRe(loc)}$`, 'iu').test(curata(reper));
+}
+
+// Reperul „curat": doar prima bucată, fără ce s-a mai înșirat după virgulă. Din
+// „Piața Mică, Zonă Pietonală" rămâne „Piața Mică" — varianta cu care se face a doua
+// încercare la geocodare, când prima n-a găsit nimic.
+function primaBucata(s) { return curata(String(s || '').split(/\s*[,;]\s*/)[0]); }
+
+// Reperele întregului leg. `localitate` e ce a scris OMUL; dacă n-a scris nimic, se
+// folosește ce s-a putut deduce cinstit din roadbook (de multe ori: nimic).
+export function repereBoxuri(boxes = [], { localitate: locOm = null } = {}) {
+  const dedusa = localitateBoxuri(boxes);
+  const scrisaDeOm = curata(locOm) || null;
+  const localitate = scrisaDeOm || dedusa;
+  // când omul a scris una, cea dedusă e coada de curățat; altfel n-avem ce curăța
+  const deSters = scrisaDeOm && dedusa && normNume(scrisaDeOm) !== normNume(dedusa) ? dedusa : null;
+
+  const construieste = (b) => {
+    // Scanarea poate da reperul direct (vezi promptul din scan.js); dacă nu l-a dat,
+    // se scoate din comentariu. Roadbook-urile deja scanate merg pe a doua cale.
+    let baza = (typeof b.reper === 'string' && b.reper.trim())
+      ? curata(b.reper) : extrageReper(b.comment, {});
+    if (!baza) return { reper: null, reper2: null };
+    baza = faraCoada(baza, deSters);            // afară cu localitatea dedusă greșit
+    if (!baza) return { reper: null, reper2: null };
+    if (!localitate) return { reper: baza, reper2: null };
+    const cuLoc = t => areLocalitateaLaCoada(t, localitate) ? t : `${t}, ${localitate}`;
+    const reper = cuLoc(baza);
+    const scurt = cuLoc(primaBucata(baza));
+    return { reper, reper2: scurt !== reper ? scurt : null };
+  };
+
   return {
     localitate,
-    repere: boxes.map(b => ({
-      num: b.num,
-      sumKm: b.sumKm,
-      // Scanarea poate da reperul direct (vezi promptul din scan.js); dacă nu l-a dat,
-      // se scoate din comentariu. Roadbook-urile deja scanate merg pe a doua cale.
-      reper: (typeof b.reper === 'string' && b.reper.trim())
-        ? (!localitate || b.reper.includes(localitate)
-            ? curata(b.reper) : `${curata(b.reper)}, ${localitate}`)
-        : extrageReper(b.comment, { localitate })
-    }))
+    repere: boxes.map(b => ({ num: b.num, sumKm: b.sumKm, ...construieste(b) }))
   };
 }
 
@@ -162,7 +285,11 @@ export function reperEDoarDrum(reper, localitate = null) {
   let s = curata(reper);
   if (!s) return false;
   // localitatea lipită la coadă („DJ 691, Dumbrăvița") nu face reperul mai identificabil
-  if (localitate) s = curata(s.replace(new RegExp(`,\\s*${localitate}\\s*$`, 'iu'), ''));
+  // escapeRe, ca la liniile 220 și 231 (audit, 06.08.2026, seara dinaintea Sibiului):
+  // localitatea o scrie OMUL. Un „Sibiu (" tastat greșit arunca SyntaxError din constructorul
+  // de RegExp, iar apelul e înaintea lui `btn.disabled` și în afara oricărui try — deci
+  // butonul „Găsește traseul pe hartă" părea că nu face nimic, fără niciun mesaj pe ecran.
+  if (localitate) s = curata(s.replace(new RegExp(`,\\s*${escapeRe(localitate)}\\s*$`, 'iu'), ''));
   if (!DRUMURI.test(s)) return false;        // niciun număr de drum → nu e cazul
   return !reArteraCuvant.test(s);            // are drum, dar n-are stradă → doar o linie
 }
@@ -441,8 +568,11 @@ export function faGeocoder({ fetchFn, pauzaMs = 1100, timeoutMs = 8000, baza = N
 // Geocodează reperele unui leg, în ordine, cu pauza cerută de serviciu. `onPas` e
 // chemat după fiecare reper ca panoul să arate progresul — la 20 de boxuri durează
 // ~20 de secunde și pilotul trebuie să vadă că se mișcă.
-export async function geocodeazaRepere(repere, geocoder, { onPas = null } = {}) {
+export async function geocodeazaRepere(repere, geocoder, { onPas = null, onReincercare = null } = {}) {
   const ancore = [], ratate = [];
+  // ratatele care mai au o variantă de încercat: [{ r, fisa }], `fisa` fiind chiar
+  // obiectul din `ratate`, ca să-l putem scoate de-acolo dacă a doua încercare reușește
+  const deReluat = [];
   let i = 0;
   for (const r of repere) {
     i++;
@@ -451,11 +581,42 @@ export async function geocodeazaRepere(repere, geocoder, { onPas = null } = {}) 
       const p = await geocoder.cauta(r.reper);
       if (p) ancore.push({ num: r.num, sumKm: r.sumKm, reper: r.reper,
                            lat: p.lat, lng: p.lng, incM: p.incM });
-      else ratate.push({ num: r.num, motiv: 'negăsit pe hartă', reper: r.reper });
+      else {
+        const fisa = { num: r.num, motiv: 'negăsit pe hartă', reper: r.reper };
+        ratate.push(fisa);
+        if (r.reper2 && r.reper2 !== r.reper) deReluat.push({ r, fisa });
+      }
     } catch (e) {
       ratate.push({ num: r.num, motiv: String(e && e.message || e).slice(0, 60), reper: r.reper });
     }
     if (onPas) onPas(i, repere.length, r);
   }
+
+  // ── A DOUA ÎNCERCARE, cu reperul curat ────────────────────────────────────
+  // 06.08.2026: „Piața Mică, Zonă Pietonală, Sibiu" nu există; „Piața Mică, Sibiu" există.
+  // Când prima căutare n-a găsit nimic, se mai încearcă o dată cu numele scurt plus
+  // localitatea scrisă de om — și atât, fără nimic dedus între ele.
+  //
+  // Trei limite, intenționate:
+  //  • se reia DOAR ce a răspuns „negăsit pe hartă", nu tot roadbook-ul (reperele găsite
+  //    n-au ce căuta aici, iar erorile de rețea/plafon se rezolvă altfel);
+  //  • plafonul de cereri și pauza de 1100 ms sunt cele existente — vin din `geocoder`,
+  //    nu se ocolesc;
+  //  • la prima excepție (plafon atins sau rețea căzută) se oprește tot: a doua încercare
+  //    e un bonus, nu se insistă pe un serviciu gratuit care deja ne-a spus stop.
+  for (let k = 0; k < deReluat.length; k++) {
+    const { r, fisa } = deReluat[k];
+    if (onReincercare) onReincercare(k + 1, deReluat.length, r);
+    let p = null;
+    try { p = await geocoder.cauta(r.reper2); }
+    catch (e) { fisa.motiv = String(e && e.message || e).slice(0, 60); break; }
+    if (!p) { fisa.siFara = r.reper2; continue; }   // nici așa — atunci chiar e ratat
+    ancore.push({ num: r.num, sumKm: r.sumKm, reper: r.reper2,
+                  lat: p.lat, lng: p.lng, incM: p.incM });
+    const poz = ratate.indexOf(fisa);
+    if (poz >= 0) ratate.splice(poz, 1);
+  }
+  // ancorele din a doua trecere s-ar așeza la coadă; ordinea de kilometraj e cea firească
+  ancore.sort((a, b) => (Number.isFinite(a.sumKm) ? a.sumKm : 0) - (Number.isFinite(b.sumKm) ? b.sumKm : 0));
   return { ancore, ratate };
 }

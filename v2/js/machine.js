@@ -120,6 +120,19 @@ const COADA_FINISH_M = 200;
 const OFF_BOX_M = 120, OFF_SEMNE_CERUTE = 2, OFF_FEREASTRA_MS = 180000;
 const OFF_DUPA_GPS_MS = 20000, OFF_PRINS_M = 40, OFF_VORBA_MS = 12000;
 const OFF_COT_GRD = 40, OFF_DRIFT_M = 250, OFF_VORBA_MAX_M = 2000, OFF_REEVAL_MS = 15000;
+// ANTI-OSCILAȚIE: cât timp o țintă părăsită rămâne interzisă. City Demo Sibiu,
+// 06.08.2026 — ținta a sărit de trei ori în trei minute între boxul 10 și boxul 9, două
+// boxuri aflate în direcții OPUSE (19:18:14 → 9, la 711 m; 19:18:29 → 10, la 373 m;
+// 19:19:32 → 9, la 798 m). Cauza nu e un bug de calcul: regula preferă un punct „în
+// față", iar „în față" se schimbă la fiecare cotitură prin centrul vechi. 60 de secunde
+// e cât ține o buclă de cvartal în oraș — sub atât, întoarcerea la boxul tocmai părăsit
+// e zgomot de busolă, nu informație nouă. REGULA DE ALEGERE RĂMÂNE NEATINSĂ; asta e
+// doar o interdicție pusă peste ea.
+const OFF_REVENIRE_MS = 60000;
+// Cât din reperul boxului încape într-o frază rostită la volan, la fiecare câteva
+// secunde. „Str. Constituției" are 17 caractere, „Tribunalul și Judecătoria Sibiu" 31.
+// Peste prag se taie la ultimul cuvânt întreg — se scurtează reperul, nu se adaugă vorbe.
+const OFF_REPER_MAX = 40;
 
 // ── CE E IMPOSIBIL NU SE SPUNE ──────────────────────────────────────────────
 // 06.08.2026, 08:19:45, la 40 de secunde de la start, vocea a rostit: „Nu ești pe traseu.
@@ -1751,13 +1764,18 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
   // îl putea face oricum: să tacă și să înghețe.
   function declaraOffRoute(cum) {
     const t = punctDeReintrare();
+    const desc = t ? descriereBox(t.box) : null;
     M.offRoute = t
       ? { boxNum: t.box.num, idx: t.idx, km: t.box.sumKm, pct: t.pct,
           distM: Math.round(t.distM), relDeg: null, de: clock.rally(), cum,
           kmLaIesire: M.routeKm, orb: false, inFata: t.inFata === true,
-          motivIntoarcere: t.motivIntoarcere || null, _reevalMono: clock.mono() }
+          motivIntoarcere: t.motivIntoarcere || null, _reevalMono: clock.mono(),
+          // descrierea e rostită chiar în anunțul de intrare, deci ghidajul care urmează
+          // nu o mai repetă — o reia doar dacă se schimbă ținta
+          descriere: desc, _descrisIdx: desc ? t.idx : null, _parasite: {} }
       : { boxNum: null, idx: null, km: null, pct: null, distM: null, relDeg: null,
-          de: clock.rally(), cum, kmLaIesire: M.routeKm, orb: true };
+          de: clock.rally(), cum, kmLaIesire: M.routeKm, orb: true,
+          descriere: null, _descrisIdx: null, _parasite: {} };
     M._offSector = null; M._offVorbaMono = 0;
     log('offroute_intrare', { cum, boxNum: t ? t.box.num : null, orb: !t,
                               distM: t ? Math.round(t.distM) : null, inFata: t ? t.inFata : null,
@@ -1767,7 +1785,8 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
     // inainte trebuie sa stie ce pierde daca nu intoarce.
     if (t && t.motivIntoarcere)
       say(`Ai ieșit de pe traseu. Te întorc la boxul ${t.box.num} — altfel ratezi ${t.motivIntoarcere}.`, 4, 'offroute', 'manevra');
-    else if (t) say(`Ai ieșit de pe traseu. Prinde traseul la boxul ${t.box.num}.`, 4, 'offroute', 'manevra');
+    else if (t) say(`Ai ieșit de pe traseu. Prinde traseul la boxul ${t.box.num}` +
+                    (desc ? ` — ${desc}.` : '.'), 4, 'offroute', 'manevra');
     // Mesajul „orb" spune ce LIPSEȘTE, nu ce nu poate aplicația. Vechiul „n-am destul
     // drum în memorie" nu-i spunea pilotului nici ce s-a întâmplat, nici ce să facă.
     else say('Am oprit instrucțiunile — nu mai ești pe traseu. Fără harta traseului nu știu unde e boxul; oprește și apasă SUNT LA BOX.', 4, 'offroute', 'manevra');
@@ -1784,8 +1803,10 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
     const o = M.offRoute;
     o.boxNum = t.box.num; o.idx = t.idx; o.km = t.box.sumKm; o.pct = t.pct;
     o.distM = Math.round(t.distM); o.orb = false;
+    o.descriere = descriereBox(t.box); o._descrisIdx = o.descriere ? t.idx : null;
     log('offroute_tinta', { boxNum: t.box.num, distM: o.distM });
-    say(`Am punctul: întoarcere la boxul ${t.box.num}.`, 4, 'offroute', 'manevra');
+    say(`Am punctul: întoarcere la boxul ${t.box.num}` +
+        (o.descriere ? ` — ${o.descriere}.` : '.'), 4, 'offroute', 'manevra');
   }
 
   // unde e punctul față de botul mașinii, în cuvinte de pilot
@@ -1796,6 +1817,38 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
     if (a <= 110) return rel > 0 ? 'la dreapta' : 'la stânga';
     if (a <= 155) return rel > 0 ? 'în spate-dreapta' : 'în spate-stânga';
     return 'în spate';
+  }
+
+  // ── CE E BOXUL DE REINTRARE, nu doar cât și încotro ───────────────────────
+  // City Demo Sibiu, 06.08.2026, harta complet goală (0 ancore). Vocea a repetat de opt
+  // ori, cu cifre diferite: „Boxul 10 la 350 de metri, în spate-stânga." În centrul vechi
+  // al Sibiului, o distanță și un sfert de ceas nu identifică NIMIC. Roadbook-ul scria
+  // pentru boxul 10 „GIRATORIU-2 · Str. Constituției" — aplicația avea informația de la
+  // scanare și n-a rostit-o niciodată. Andreas s-a rătăcit 1094 m.
+  //
+  // Descrierea are două bucăți, ambele deja existente în cod:
+  //  • CE FEL de box e — aceeași traducere folosită la anunțurile de manevră (tintaRo →
+  //    maneuver). „reper" e valoarea ei de umplutură: nu spune nimic, deci nu se rostește;
+  //  • REPERUL din comentariu — trecut prin aceeași sită ca la geocodare (extrageReper),
+  //    care scoate „Bd. Corneliu Coposu" din „To Center, Bd. Corneliu Coposu". Când sita
+  //    nu găsește nimic, se ia prima bucată a comentariului, până la primul separator.
+  // Fără nici direcție, nici comentariu, fraza rămâne exact cea de azi.
+  function scurtReper(s) {
+    const t = String(s || '').split(/\s*[·|;\/]\s*/)[0].replace(/\s+/g, ' ').trim();
+    if (t.length < 3) return null;
+    if (t.length <= OFF_REPER_MAX) return t;
+    const taiat = t.slice(0, OFF_REPER_MAX), sp = taiat.lastIndexOf(' ');
+    return (sp > 12 ? taiat.slice(0, sp) : taiat).trim();
+  }
+
+  function descriereBox(b) {
+    if (!b) return null;
+    const bucati = [];
+    const ce = tintaRo(b);
+    if (ce && ce !== 'reper') bucati.push(ce);
+    const rep = scurtReper(extrageReper(b.comment) || b.comment);
+    if (rep) bucati.push(rep);
+    return bucati.length ? bucati.join(', ') : null;
   }
 
   function offRouteGhidaj(fix) {
@@ -1813,11 +1866,24 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
       o._reevalMono = clock.mono();
       const t = punctDeReintrare();
       if (t && t.idx !== o.idx) {
-        log('offroute_tinta_noua', { deLaBox: o.boxNum, laBox: t.box.num,
-                                     distM: Math.round(t.distM), inFata: t.inFata });
-        o.boxNum = t.box.num; o.idx = t.idx; o.km = t.box.sumKm; o.pct = t.pct;
-        o.inFata = t.inFata === true; o.motivIntoarcere = t.motivIntoarcere || null;
-        M._offSector = null;
+        // ANTI-OSCILAȚIE: nu te întorci la un box pe care TOCMAI l-ai părăsit. Vezi
+        // OFF_REVENIRE_MS. Comutarea respinsă se scrie în jurnal, ca debrief-ul să
+        // poată arăta câte salturi s-au evitat și către ce.
+        const parasitLa = (o._parasite || {})[t.idx];
+        const deMs = parasitLa != null ? clock.mono() - parasitLa : Infinity;
+        if (deMs < OFF_REVENIRE_MS) {
+          log('offroute_tinta_blocata', { tinta: o.boxNum, respins: t.box.num,
+                                          deS: Math.round(deMs / 1000),
+                                          distM: Math.round(t.distM), inFata: t.inFata });
+        } else {
+          (o._parasite = o._parasite || {})[o.idx] = clock.mono();
+          log('offroute_tinta_noua', { deLaBox: o.boxNum, laBox: t.box.num,
+                                       distM: Math.round(t.distM), inFata: t.inFata });
+          o.boxNum = t.box.num; o.idx = t.idx; o.km = t.box.sumKm; o.pct = t.pct;
+          o.inFata = t.inFata === true; o.motivIntoarcere = t.motivIntoarcere || null;
+          o.descriere = descriereBox(t.box);
+          M._offSector = null;
+        }
       }
     }
     o.distM = Math.round(haversineM(fix.lat, fix.lng, o.pct.lat, o.pct.lng));
@@ -1837,8 +1903,15 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
     if (acum - M._offVorbaMono < OFF_VORBA_MS) return;
     if (sector === M._offSector && acum - M._offVorbaMono < 30000) return;
     M._offSector = sector; M._offVorbaMono = acum;
+    // PRIMA DATĂ ÎNTREAGĂ, APOI DOAR CIFRELE — același registru ca la lanțurile de
+    // manevre (preambul o dată, pe urmă ecou scurt). Descrierea se reia când se schimbă
+    // ținta, fiindcă atunci e vorba despre alt loc. Repetată la fiecare 12 secunde, ar
+    // deveni exact zgomotul pe care încearcă să-l înlocuiască.
+    const spuneDesc = !!o.descriere && o._descrisIdx !== o.idx;
+    if (spuneDesc) o._descrisIdx = o.idx;
     say(`Boxul ${o.boxNum} la ${distRo(o.distM)}` +
-        (o.relDeg != null ? `, ${ceasRo(o.relDeg)}.` : '.'), 3, 'offroute', 'manevra');
+        (o.relDeg != null ? `, ${ceasRo(o.relDeg)}` : '') +
+        (spuneDesc ? ` — ${o.descriere}.` : '.'), 3, 'offroute', 'manevra');
   }
 
   function iesiOffRoute(cum) {
@@ -1899,8 +1972,11 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
       // e o hartă stricată care se dă drept informație
       if (o.distM > IMPOSIBIL_DIST_M)
         return { text: 'Nu ești pe traseu. ' + HARTA_STRICATA_TXT, masurat: false };
+      // aici descrierea se spune ÎNTOTDEAUNA: butonul e apăsat de om, o dată, exact
+      // când vrea să știe unde e locul ăla — nu e o frază repetată în buclă
       return { text: `Nu ești pe traseu. Boxul ${o.boxNum} e la ${distRo(o.distM)}` +
-                     (o.relDeg != null ? `, ${ceasRo(o.relDeg)}.` : '.') + coada, masurat };
+                     (o.relDeg != null ? `, ${ceasRo(o.relDeg)}` : '') +
+                     (o.descriere ? ` — ${o.descriere}.` : '.') + coada, masurat };
     }
     const i = M.nextBoxIdx;
     const prev = i > 0 ? plan.boxes[i - 1] : null;
