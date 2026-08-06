@@ -99,6 +99,19 @@ export function makeUi() {
           $('cp-rts').textContent = plan.rts.map(r => r.name).join('  ');
           return;
         }
+        // CIFRA IMPOSIBILĂ NU SE SCRIE PE ECRAN (06.08.2026). „7933.2 km" cu o săgeată
+        // lângă ea arată exact ca o informație bună, doar cu un număr mare — și pilotul
+        // urmează săgeata. Peste 500 km ecranul spune ce e adevărat: harta e greșită.
+        if (o.distM > 500000) {
+          $('cp-next-dist').textContent = '—';
+          $('cp-next-dir').textContent = '⚠';
+          $('cp-next-com').textContent = 'HARTA TRASEULUI E GREȘITĂ';
+          $('cp-next-box').textContent = 'nu știu unde e boxul ' + o.boxNum;
+          af0.textContent = 'mergi după roadbook · apasă SUNT LA BOX când ajungi la un box';
+          af0.className = 'nx-after';
+          $('cp-rts').textContent = plan.rts.map(r => r.name).join('  ');
+          return;
+        }
         $('cp-next-dist').textContent = o.distM >= 1000
           ? (o.distM / 1000).toFixed(1) + ' km' : o.distM + ' m';
         $('cp-next-dir').textContent = sageata(o.relDeg);

@@ -121,6 +121,26 @@ const OFF_BOX_M = 120, OFF_SEMNE_CERUTE = 2, OFF_FEREASTRA_MS = 180000;
 const OFF_DUPA_GPS_MS = 20000, OFF_PRINS_M = 40, OFF_VORBA_MS = 12000;
 const OFF_COT_GRD = 40, OFF_DRIFT_M = 250, OFF_VORBA_MAX_M = 2000, OFF_REEVAL_MS = 15000;
 
+// ── CE E IMPOSIBIL NU SE SPUNE ──────────────────────────────────────────────
+// 06.08.2026, 08:19:45, la 40 de secunde de la start, vocea a rostit: „Nu ești pe traseu.
+// Boxul 5 e la 7933 virgulă 1 kilometri, la stânga." Iar la 08:23:23: „103 virgulă 3 în
+// urmă, ține 4557." Ambele cifre erau calculate corect din datele pe care le avea
+// aplicația — și ambele erau imposibile în lumea reală.
+//
+// Regula, de-acum: o cifră imposibilă nu e o cifră, e un semn că datele sunt stricate.
+// Nu se rostește și nu se scrie; se spune ce știm cu adevărat, adică „nu știu", plus ce
+// are pilotul de făcut. Un pilot care aude o cifră absurdă pierde încrederea în TOATE
+// cifrele următoare, inclusiv în cele bune.
+//
+// PRAGURILE, alese dinainte:
+//  • 500 km până la un box — un raliu de o zi are legul cel mai lung sub 100 km, deci
+//    500 km e de cinci ori peste orice traseu real. Nimic legitim nu-l atinge.
+//  • 200 km/h viteză-țintă rostită — mediile de la Sibiu sunt între 20 și 50 km/h, iar
+//    recuperările reale ajung la 60-70. La 200 km/h nu se mai discută despre ritm, ci
+//    despre o probă pierdută; cifra n-ar fi un sfat, ci o glumă periculoasă.
+const IMPOSIBIL_DIST_M = 500000, IMPOSIBIL_KMH = 200;
+const HARTA_STRICATA_TXT = 'Nu știu unde e boxul — harta traseului pare greșită. Mergi după roadbook.';
+
 export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }) {
   const M = {
     state: 'PREP',
@@ -142,7 +162,7 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
     unde: null,            // ultimul raspuns la „unde sunt", tinut 20 s pe ecran
     // ieșirea de pe traseu: starea, semnele strânse și firimiturile de drum
     offRoute: null, offRouteOn: opts.offRoute !== false, _offSemne: [], _urme: [],
-    _offVorbaMono: 0, _offSector: null, _hdg: null, _hartaIst: {},
+    _offVorbaMono: 0, _offSector: null, _hdg: null, _hartaIst: {}, _hartaStricata: false,
     // auto-calibrarea odometrului (vezi calibreaza + makeCalibrator din geo.js)
     calFactor: 1, _rawSinceAnchor: 0, _calAnchorKm: 0, _calN: 0,
     _anchorKm: 0,
@@ -387,7 +407,7 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
   const HARTA_START_M = 80, HARTA_START_GRD = 100;
 
   function hartaDirectieCheck(fix) {
-    if (!plan.harta || M._dirEtapa >= 2 || !M._dirStart) return;
+    if (!hartaOk() || M._dirEtapa >= 2 || !M._dirStart) return;
     const strM = haversineM(M._dirStart.lat, M._dirStart.lng, fix.lat, fix.lng);
     if (strM < HARTA_START_M) return;
     // primul box de după cel de start care are coordonată
@@ -397,6 +417,13 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
       if (p) { tinta = { box: plan.boxes[i], p }; break; }
     }
     if (!tinta) { M._dirEtapa = 2; return; }
+    // paznicul de plecare nu are voie să judece direcția după o ancoră imposibilă: la
+    // 7933 km orice azimut e „corect" din întâmplare, iar pe 06.08 a ieșit difGrd 90 —
+    // adică sub pragul de alarmă, deci tăcere, deci încredere într-o hartă otrăvită
+    if (haversineM(M._dirStart.lat, M._dirStart.lng, tinta.p.lat, tinta.p.lng) > IMPOSIBIL_DIST_M) {
+      stricaHarta(haversineM(M._dirStart.lat, M._dirStart.lng, tinta.p.lat, tinta.p.lng), tinta.box.num);
+      M._dirEtapa = 2; return;
+    }
     const mers = bearingDeg(M._dirStart.lat, M._dirStart.lng, fix.lat, fix.lng);
     const spre = bearingDeg(M._dirStart.lat, M._dirStart.lng, tinta.p.lat, tinta.p.lng);
     const dif = Math.abs(angDiff(mers, spre));
@@ -437,13 +464,33 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
   const HARTA_MARJA_M = 200;
   const HARTA_INC_IMPLICIT_M = 300, HARTA_TREND_N = 8, HARTA_TREND_MIN = 4, HARTA_SPRE_GRD = 40;
 
+  // HARTA POATE FI DECLARATĂ STRICATĂ ÎN MERS, nu doar la încărcare. Ancora otrăvită de
+  // pe 06.08 era deja salvată în telefon când a pornit cursa — deci nu ajunge s-o oprim
+  // la geocodare, trebuie și o poartă care se închide din mașină. Odată închisă, harta nu
+  // mai e folosită de nimeni (nici direcția de plecare, nici ghidajul de întoarcere), iar
+  // aplicația merge FĂRĂ hartă — stare sigură, deja gestionată: „nu știu unde e boxul
+  // dacă greșești drumul", și atât.
+  function hartaOk() { return !!plan.harta && !M._hartaStricata; }
+
+  function stricaHarta(dreaptaM, boxNum) {
+    if (M._hartaStricata) return;
+    M._hartaStricata = true;
+    M.dirAlerta = null;
+    log('harta_imposibila', { boxNum, dreaptaM: Math.round(dreaptaM), pragM: IMPOSIBIL_DIST_M });
+    say('Harta traseului e greșită — o opresc. Mergi după roadbook.', 4, 'harta', 'manevra');
+  }
+
   function hartaOffCheck() {
-    if (!plan.harta || M.offRoute || !M._lastPos || M.rt) return;
+    if (!hartaOk() || M.offRoute || !M._lastPos || M.rt) return;
     for (let i = M.nextBoxIdx; i < plan.boxes.length && i <= M.nextBoxIdx + 3; i++) {
       const b = plan.boxes[i];
       const p = plan.harta[b.num];
       if (!p) continue;
       const dreaptaM = haversineM(M._lastPos.lat, M._lastPos.lng, p.lat, p.lng);
+      // Înainte de orice judecată despre traseu: e cifra asta posibilă? Un box la 7933 km
+      // nu înseamnă „ai greșit drumul", înseamnă „harta minte". Diferența contează:
+      // prima citire l-a scos pe Andreas de pe traseu la 40 de secunde de la start.
+      if (dreaptaM > IMPOSIBIL_DIST_M) { stricaHarta(dreaptaM, b.num); return; }
       const drumM = Math.max(0, (b.sumKm - M.routeKm) * 1000);
       const depasireM = dreaptaM - drumM;
       // CÂT DE BINE ȘTIM UNDE E ANCORA. O coordonată geocodată e MIJLOCUL străzii, nu
@@ -1029,7 +1076,12 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
           // 20,5 e o cifră falsă. Cu un singur segment rezultatul e identic cu formula
           // veche (remKm / kmh × 3600), deci nimic nu se schimbă pe probele normale.
           const tDisponibilS = idealTimeS(def.distKm, segs) - idealTimeS(parcursKm, segs) - dev;
-          if (tDisponibilS > 1) fraza += `, ține ${Math.round(remKm * 3600 / tDisponibilS)}`;
+          const tinta = tDisponibilS > 1 ? Math.round(remKm * 3600 / tDisponibilS) : null;
+          // „ține 4557" (măsurat 06.08, 08:23:23) nu e un sfat, e o împărțire la aproape
+          // zero rostită cu voce tare. Peste pragul de imposibil, ritmul nu se mai poate
+          // calcula — și asta e informația corectă, nu numărul.
+          if (tinta != null && tinta <= IMPOSIBIL_KMH) fraza += `, ține ${tinta}`;
+          else if (tinta != null) fraza += ' — ritmul nu se mai poate calcula';
           else fraza += ' — nu se mai prinde până la finish';
         }
         // pe secțiune deasă fraza se scurtează la cifră: „ține 58" cere gândire, iar
@@ -1521,7 +1573,9 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
       if (p) return { lat: p.lat, lng: p.lng, sursa: 'recon' };
       if (seg) { /* urma există, dar kilometrul e în afara ei — cade pe sursele de mai jos */ }
     }
-    const h = plan.harta && b.num != null ? plan.harta[b.num] : null;
+    // harta declarată stricată nu mai e o sursă: mai bine firimituri sau nimic decât un
+    // punct despre care AM MĂSURAT că e imposibil
+    const h = hartaOk() && b.num != null ? plan.harta[b.num] : null;
     if (h) return { lat: h.lat, lng: h.lng, sursa: 'harta' };
     return punctLaKm(b.sumKm);
   }
@@ -1644,6 +1698,9 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
       const limita = ratatIdx != null ? ratatIdx : M.nextBoxIdx;
       if (p.sursa === 'urme' && i > limita) return;
       const d = haversineM(M._lastPos.lat, M._lastPos.lng, p.lat, p.lng);
+      // un punct de reintrare imposibil nu e o țintă, e o hartă stricată. Se scoate din
+      // candidați ȘI se închide harta — altfel ecranul ar arăta o săgeată spre Wisconsin.
+      if (d > IMPOSIBIL_DIST_M) { if (p.sursa === 'harta') stricaHarta(d, plan.boxes[i].num); return; }
       const brg = bearingDeg(M._lastPos.lat, M._lastPos.lng, p.lat, p.lng);
       const inFata = M._hdg == null ? null : Math.abs(angDiff(brg, M._hdg)) <= 90;
       cand.push({ box: plan.boxes[i], idx: i, pct: p, distM: d, inFata });
@@ -1838,6 +1895,10 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
       if (o.orb)
         return { text: 'Nu ești pe traseu, și nu știu unde e boxul. Oprește și apasă SUNT LA BOX.',
                  masurat: false };
+      // cifra imposibilă nu se rostește: „boxul e la 7933 kilometri" nu e o informație,
+      // e o hartă stricată care se dă drept informație
+      if (o.distM > IMPOSIBIL_DIST_M)
+        return { text: 'Nu ești pe traseu. ' + HARTA_STRICATA_TXT, masurat: false };
       return { text: `Nu ești pe traseu. Boxul ${o.boxNum} e la ${distRo(o.distM)}` +
                      (o.relDeg != null ? `, ${ceasRo(o.relDeg)}.` : '.') + coada, masurat };
     }

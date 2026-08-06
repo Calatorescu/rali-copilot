@@ -13,20 +13,47 @@ import { sanitizeBoxes, sanitizeBuletin } from './route.js';
 const API = 'https://api.anthropic.com/v1/messages';
 const MODEL_VISION = 'claude-sonnet-4-6';
 
+// ── PROMPTUL DE ROADBOOK ────────────────────────────────────────────────────
+// REPARAT 06.08.2026, pe adevăr măsurat. Până acum promptul spunea „dreptunghi/tabelă =
+// RT_FINISH", ceea ce e FALS: dreptunghiurile din roadbook sunt semne de DRUM (intrare
+// în localitate, ieșire, panou de direcție). Pe roadbook-ul oficial de la Reșița stăteau
+// pe boxurile 44, 45, 49, 51, 53, 55, 68, 70, 73, 75 și 108 — și scanarea le-a declarat
+// pe toate finișuri de probă. Tot promptul amorsa greșeala: dădea drept exemple de
+// comentarii „ratabile" chiar „To Brebu Nou" și „Exit Văliug", adică exact textul de pe
+// plăcuțele de localitate.
+//
+// Semnul REAL de cronometrare e o pereche de două cercuri alăturate (steguleț + ceas).
+// La Reșița apare exact la boxurile 1, 57, 64, 79 și 111, nicăieri altundeva.
+//
+// ȘI: aceeași pereche stă și pe Time Control (boxul 1: „Start Leg 2 / Time Control -
+// TC 3"), și pe startul de probă (boxul 57: „Start RT 2"). Icoana singură nu le
+// deosebește, iar promptul interzice — pe bună dreptate — citirea semnului din cuvinte.
+// De-aia modelul raportează acum percepția curată („TIMING"), iar judecata TC-vs-start
+// s-a mutat în cod determinist, în route.js → rezolvaTiming, unde se poate testa fără
+// cheie de API.
 const ROADBOOK_PROMPT = `Ești copilot de raliu. Extrage TOATE boxurile vizibile pe această pagină de roadbook în format JSON array.
 Pagina poate fi fotografiată rotit — rotește-o mental înainte de a citi.
 ANTETUL PAGINII (citește-l ÎNTÂI, repetă-l pe fiecare box): ex. „Day 2 - Leg 3" și „Page: 39" → "day":2,"leg":3,"page":39. Numerotarea boxurilor și km REPORNESC la fiecare leg. Antet ilizibil → null, NU ghici.
 COLOANE: Număr box | Sum km (bold) | Sum mile (ignoră) | Section km (bold) | Section mile (ignoră) | Diagrama tulip | Dist to target (ignoră) | Comment.
 TULIP: "ÎNAINTE","STÂNGA","DREAPTA","STÂNGA-T","DREAPTA-T","GIRATORIU-1".."GIRATORIU-4","STOP-CFR".
-ICOANE → "flags" (LISTĂ): steag+ceas="RT_START_AUTO" | steag+ceas+fulg="RT_START_STANDING" | dreptunghi/tabelă="RT_FINISH" | ceas+steag mare="TC" | P="PARKING" | fulger="EV". Fără icoană → [].
-UN BOX POATE AVEA MAI MULTE ICOANE, iar "flags" le conține pe TOATE. Cazul cel mai important, foarte frecvent: boxul unde se TERMINĂ o probă și ÎNCEPE imediat următoarea are DOUĂ icoane, una lângă alta → "flags":["RT_FINISH","RT_START_AUTO"]. Nu alege una dintre ele, nu le contopi: pune-le pe amândouă, în ordinea în care apar pe pagină.
-CAUTĂ EXPLICIT LINIILE DE FINISH. Ele sunt cel mai ușor de ratat, fiindcă icoana e mică și de multe ori comentariul e GOL sau vorbește despre altceva („To Brebu Nou", „Exit Văliug"). Pentru fiecare START de probă de pe pagină întreabă-te unde e finishul lui. Un finish ratat strică cronometrarea la fel de rău ca un start ratat.
-FLAG-UL SE CITEȘTE DOAR DIN ICOANĂ, niciodată din cuvintele comentariului. Asta merge în AMBELE sensuri: nu pune un semn fiindcă textul spune „Start RT 3" sau „Exit ..." și nu omite un semn fiindcă textul nu spune nimic. „START", „FINISH", „RT", „proba", „tabela roșie" apar des în TEXTE DESPRE probe („pregătește proba", „START · Time Control", „ascultă «Finish… apoi imediat stânga»") — alea sunt indicații pentru pilot, nu simboluri. Dacă boxul are icoană de Time Control, semnul e "TC" chiar dacă textul începe cu „START". Dacă un box n-are NICIO icoană, "flags" e [] chiar dacă în comentariu scrie „Start" sau „Exit".
+ICOANE → "flags" (LISTĂ). Descrii FORMA desenată, nu înțelesul ei. NUMAI formele de mai jos produc un flag; toate celelalte, oricâte ar fi pe box, se ignoră:
+1. DOUĂ CERCURI ALĂTURATE, de aceeași mărime: în primul o formă neregulată (un steguleț pe băț), în al doilea un CEAS (cadran rotund cu ace) → "TIMING". Perechea asta de cercuri e SINGURUL semn de cronometrare din roadbook.
+2. aceeași pereche de cercuri, iar imediat lângă ea un FULG DE NEA (linii scurte care se încrucișează într-un punct, ca o steluță) → "TIMING_STANDING".
+3. TABELĂ CULCATĂ PE UN STÂLP: dreptunghi mai LAT decât înalt, cu o bară groasă plină pe mijloc și un picioruș scurt dedesubt → "RT_FINISH".
+4. pătrat închis la culoare cu litera P → "PARKING". Săgeata de fulger (zigzag) → "EV".
+Fără nicio icoană → []. Orice altă formă → niciun flag.
+DREPTUNGHIURILE ÎN PICIOARE (mai ÎNALTE decât late) SUNT SEMNE DE DRUM, NU SEMNE DE CURSĂ, și NU produc niciun flag: dreptunghi gol = intrare în localitate; dreptunghi gol tăiat de o BARĂ OBLICĂ = ieșire din localitate; dreptunghi plin sau hașurat = panou de direcție. Sunt cele mai dese icoane din roadbook. Deosebirea de un finiș: finișul e CULCAT, are bară groasă pe mijloc și stă pe un picioruș; plăcuța de localitate e ÎN PICIOARE și goală pe dinăuntru.
+NEUTRE, fără flag: triunghi (cedează trecerea), pătrat mic, cerc cu săgeți (giratoriu semnalizat), STOP, hașuri late peste drum (denivelare/limitator), conifere, clădiri.
+UN BOX POATE AVEA MAI MULTE ICOANE, iar "flags" le conține pe TOATE. Cazul cel mai important, foarte frecvent: boxul unde se TERMINĂ o probă și ÎNCEPE imediat următoarea are DOUĂ icoane, una lângă alta → "flags":["RT_FINISH","TIMING"]. Nu alege una dintre ele, nu le contopi: pune-le pe amândouă, în ordinea în care apar pe pagină.
+CAUTĂ EXPLICIT TABELELE DE FINISH. Sunt ușor de ratat: icoana e mică, iar comentariul e de multe ori GOL. Pentru fiecare pereche de cercuri de pe pagină întreabă-te unde e tabela care închide proba. DAR un finish se recunoaște NUMAI după forma culcată cu bară groasă: nu transforma un dreptunghi în picioare în finish fiindcă „trebuia să fie unul pe undeva". Mai bine un finish lipsă decât unul inventat — cel lipsă se pune de mână, cel inventat cronometrează o probă care nu există.
+FLAG-UL SE CITEȘTE DOAR DIN ICOANĂ, niciodată din cuvintele comentariului. Asta merge în AMBELE sensuri: nu pune un semn fiindcă textul spune „Start RT 3", „Time Control" sau „Exit ..." și nu omite un semn fiindcă textul nu spune nimic. „START", „FINISH", „RT", „proba", „tabela roșie" apar des în TEXTE DESPRE probe („pregătește proba", „START · Time Control", „ascultă «Finish… apoi imediat stânga»") — alea sunt indicații pentru pilot, nu simboluri. Perechea de cercuri se scrie "TIMING" și când comentariul zice „Start RT 2", și când zice „Time Control - TC 4": e aceeași icoană, iar aplicația hotărăște singură, din text, care e care — tu raportează ce VEZI. Dacă un box n-are NICIO icoană, "flags" e [] chiar dacă în comentariu scrie „Start" sau „Exit".
 Ignoră adnotările de mână și transparența de pe verso.
 FIECARE rând numerotat din tabel = un box care APARE în răspuns — nu omite niciunul, oricât de neobișnuit i-ar fi comentariul sau simbolurile. Comentariul se transcrie scurtat dacă e lung, dar boxul nu dispare.
-REPER (câmpul "reper"): dacă în comentariu apare un loc care poate fi căutat pe hartă — nume de stradă, drum numerotat, giratoriu cu nume, obiectiv („Str. Avram Imbroane", „Calea Ghirodei", „DJ691", „giratoriu Kaufland") — scrie-l normalizat, cu tipul arterei în față („Str. Turda"). Adaugă localitatea DOAR dacă e scrisă pe pagină. Dacă boxul n-are niciun loc căutabil („tabela roșie", „drum drept"), scrie null. NU inventa și NU deduce localitatea.
+REPER (câmpul "reper"): dacă în comentariu apare un loc care poate fi căutat pe hartă — nume de stradă, giratoriu cu nume, obiectiv („Str. Avram Imbroane", „Calea Ghirodei", „giratoriu Kaufland", „Casa Gotschna") — scrie-l normalizat, cu tipul arterei în față („Str. Turda"). Adaugă localitatea DOAR dacă e scrisă pe pagină. Dacă boxul n-are niciun loc căutabil („tabela roșie", „drum drept"), scrie null. NU inventa și NU deduce localitatea.
+UN NUMĂR DE DRUM SINGUR NU E REPER — scrie null. „DJ 691", „DN 58B", „A1" sunt exemple de repere RELE: un drum numerotat e o linie de zeci de kilometri, nu un punct, iar căutat pe hartă poate nimeri pe alt continent. Un număr de drum e bun DOAR lipit de un nume de loc, fiindcă abia atunci arată un punct: „DJ 691 la Bartók Béla", „DN 68A la Făget", „Str. Petőfi Sándor / DJ 691".
+ACELAȘI REPER PE MULTE BOXURI NU AJUTĂ LA NIMIC: dacă zece boxuri primesc același text, toate ajung în același loc pe hartă, deși sunt la kilometri unul de altul. Un reper trebuie să fie DISTINCTIV pentru boxul lui. Dacă boxul n-are un loc distinctiv, răspunsul corect e null — nu o umplutură.
 DOAR JSON array valid:
-[{"day":1,"leg":1,"page":2,"num":6,"sumKm":3.10,"sectionKm":0.45,"dir":"ÎNAINTE","comment":"...","reper":"Str. Turda","flags":["RT_START_AUTO"]},{"day":1,"leg":1,"page":25,"num":64,"sumKm":47.69,"sectionKm":0.74,"dir":"ÎNAINTE","comment":"...","reper":null,"flags":["RT_FINISH","RT_START_AUTO"]},...]`;
+[{"day":1,"leg":1,"page":2,"num":6,"sumKm":3.10,"sectionKm":0.45,"dir":"ÎNAINTE","comment":"...","reper":"Str. Turda","flags":["TIMING"]},{"day":1,"leg":1,"page":25,"num":64,"sumKm":47.69,"sectionKm":0.74,"dir":"ÎNAINTE","comment":"...","reper":null,"flags":["RT_FINISH","TIMING"]},...]`;
 
 // ── BULETINUL DIRECTORULUI DE CURSĂ ─────────────────────────────────────────
 // Roadbook-ul NU conține probele de regularitate. Verificat pe paginile fotografiate de

@@ -71,6 +71,53 @@ export function groupByLeg(boxes) {
 const DIR_OK = new Set([...TURN_DIRS, 'ÎNAINTE', 'STOP-CFR']);
 const FLAG_OK = new Set(['TC', 'RT_START_AUTO', 'RT_START_STANDING', 'RT_FINISH', 'PARKING', 'EV']);
 
+// ── CE SCRIE ÎN COMENTARIU ──────────────────────────────────────────────────
+// Regexurile de citit text stau sus, fiindcă le folosesc DOUĂ părți: traducerea semnelor
+// de cronometrare (normFlags, imediat mai jos) și propunerile de corectură (jos de tot).
+// Roadbook-ul își scrie starturile de probă în comentariu: „Start RT 2", „Start TR 3".
+// Tolerant la spații, punctuație, majuscule și diacritice (textul trece prin faraDiacritice).
+// `\bstart\b` ține „restart" afară; „TR" e acceptat fiindcă aceleași probe se scriu în
+// documente și așa (TR2/TR3/TR4 în buletinul de cursă, RT în roadbook).
+const RE_START_DECLARAT = /\bstart\b[^a-z0-9]{0,4}(?:rt|tr)[^a-z0-9]{0,4}(\d{1,2})\b/;
+// Time Control = ștampilă de oră, nu linie cronometrată. Boxul 111 de la Reșița —
+// „Finish Leg 2 Time Control - TC 4" — a fost citit de scanare ca finiș de probă.
+const RE_TIME_CONTROL = /\btime control\b|\btc\s*[-–—.:#]?\s*\d+\b/;
+// singurele cuvinte pe care roadbook-ul le folosește pentru plecarea de pe loc
+const RE_STANDING = /\bstanding\b|\boprit[aă]?\b|\bde pe loc\b/;
+
+function faraDiacritice(s) {
+  return String(s == null ? '' : s).normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+}
+
+// ── DE LA CE SE VEDE, LA CE ÎNSEAMNĂ (v39) ──────────────────────────────────
+// Scanarea raportează PERCEPȚIA, nu înțelesul. Pe hârtie, punctul de cronometrare e o
+// pereche de două cercuri alăturate — unul cu un steguleț, celălalt cu un ceas. Măsurat
+// pe roadbook-ul oficial de la Reșița (05.08.2026): perechea apare la boxurile 1, 57,
+// 64, 79 și 111. Boxul 1 e „Start Leg 2 / Time Control - TC 3", boxul 57 e „Start RT 2".
+// ACEEAȘI ICOANĂ, două înțelesuri diferite. Icoana singură nu le deosebește, deci nu i se
+// mai cere modelului s-o facă: el scrie „TIMING" (sau „TIMING_STANDING", când lângă
+// cercuri e și fulgul de pornire de pe loc), iar judecata stă aici, în cod determinist,
+// unde se poate testa fără cheie de API.
+//
+// Regula, în ordine:
+//   „Time Control" / „TC <n>" în comentariu → TC
+//   „Start RT <n>" / „Start TR <n>"         → start de probă
+//   altfel, perechea simplă                 → TC
+//   altfel, perechea cu fulg                → start de pe loc
+// Penultima linie e prudența cerută: un TC luat drept probă pornește o cronometrare care
+// nu există și strică tot legul; o probă luată drept TC se repară dintr-o apăsare.
+// Ultima linie e altfel fiindcă fulgul E o informație măsurată: pe paginile de la Reșița
+// fulgul a apărut doar pe startul lui TR4 (boxul 79), niciodată pe un Time Control.
+const TIMING_FLAGS = new Set(['TIMING', 'TIMING_STANDING']);
+
+export function rezolvaTiming(flag, comment) {
+  const t = faraDiacritice(comment);
+  if (RE_TIME_CONTROL.test(t)) return 'TC';
+  if (RE_START_DECLARAT.test(t))
+    return flag === 'TIMING_STANDING' ? 'RT_START_STANDING' : 'RT_START_AUTO';
+  return flag === 'TIMING_STANDING' ? 'RT_START_STANDING' : 'TC';
+}
+
 // ── UN BOX POATE PURTA MAI MULTE SEMNE ──────────────────────────────────────
 // Roadbook-ul REAL de la Reșița (Leg 2, scanat 05.08.2026, 14 pagini, 120 de boxuri):
 // boxul 64, la km 47,69, e SIMULTAN finish-ul probei 2 și startul probei 3. În roadbook
@@ -97,8 +144,16 @@ const ORDINE_FLAG = ['RT_FINISH', 'RT_START_STANDING', 'RT_START_AUTO', 'TC', 'P
 export function normFlags(b) {
   const brut = Array.isArray(b && b.flags) ? b.flags
              : (b && b.flag != null ? [b.flag] : []);
+  // Comentariul boxului e singurul lucru care deosebește un Time Control de un start de
+  // probă (vezi rezolvaTiming). Aici e și singurul loc prin care trec TOATE căile —
+  // scanare proaspătă, plan_raw vechi de pe telefon, import de fișier — deci flag-urile
+  // intermediare se traduc o dată, aici, și nu ajung niciodată să fie stocate.
+  const com = b && typeof b.comment === 'string' ? b.comment : '';
   const bune = [];
-  for (const f of brut) if (FLAG_OK.has(f) && !bune.includes(f)) bune.push(f);
+  for (const f0 of brut) {
+    const f = TIMING_FLAGS.has(f0) ? rezolvaTiming(f0, com) : f0;
+    if (FLAG_OK.has(f) && !bune.includes(f)) bune.push(f);
+  }
   // START AUTO și START STANDING se exclud reciproc: aceeași linie nu poate fi și cu
   // oprire, și din mers. Dacă scanarea le dă pe amândouă, „standing" e cel restrictiv,
   // deci cel care se păstrează (o probă pornită din greșeală din mers pierde secunde).
@@ -113,6 +168,36 @@ export function areFlag(b, f) { return normFlags(b).includes(f); }
 export function esteStart(b) { return normFlags(b).some(f => START_FLAGS.includes(f)); }
 export function esteFinish(b) { return areFlag(b, 'RT_FINISH'); }
 export function flagPrincipal(b) { const f = normFlags(b); return f.length ? f[0] : null; }
+
+// ── REPERUL, CURĂȚAT ────────────────────────────────────────────────────────
+// Text venit dintr-un răspuns extern (modelul de scanare), deci trece prin sită: șir
+// scurt, fără caractere de control.
+//
+// ȘI O REGULĂ DE FOND: UN NUMĂR DE DRUM SINGUR NU E REPER — se golește aici, indiferent
+// ce a scris modelul. `ROADBOOK_PROMPT` i-o cere explicit, dar un prompt e o rugăminte,
+// nu o garanție, iar dovada e măsurată: pe 05.08.2026 modelul a pus „DJ 582"/„DN 58" ca
+// reper pe 45 de boxuri din 69 la Reșița, iar pe 06.08 „DJ 691" pe 11 din 18 la
+// Dumbrăvița. Fiecare a produs O SINGURĂ coordonată, copiată apoi pe toate boxurile
+// alea: la 8 146 km și, respectiv, la 7 933 km de traseu. Un drum numerotat e o linie de
+// zeci de kilometri — niciun punct de pe el nu e „acolo unde e boxul".
+//
+// Numărul de drum LIPIT DE UN NUME DE LOC rămâne întreg („Str. Petőfi Sándor / DJ 691",
+// „DJ 691 la Bartók Béla"): acolo numele e cel care arată punctul, iar numărul doar
+// confirmă drumul.
+const DOAR_DRUM = /^(?:[A-Z]{1,2}\s?\d{1,3}[A-Z]?)(?:\s*[\/,-]\s*(?:[A-Z]{1,2}\s?\d{1,3}[A-Z]?))*$/;
+const PREFIX_DRUM = /^(?:DJ|DN|DC|DE|A|E)$/;
+
+export function reperCurat(v) {
+  if (typeof v !== 'string' || !v.trim()) return null;
+  const s = v.replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 80);
+  if (!s) return null;
+  // e format DOAR din simboluri de drum numerotat? („DJ 691", „DN 58B", „A1", „DJ582/DN6")
+  if (DOAR_DRUM.test(s)) {
+    const litere = s.match(/[A-Z]{1,2}(?=\s?\d)/g) || [];
+    if (litere.length && litere.every(x => PREFIX_DRUM.test(x))) return null;
+  }
+  return s;
+}
 
 export function sanitizeBoxes(raw) {
   const num = v => {
@@ -134,8 +219,8 @@ export function sanitizeBoxes(raw) {
     // Reperul geocodabil, cerut explicit la scanare (vezi ROADBOOK_PROMPT). E tot text
     // din același răspuns extern, deci trece prin aceeași sită: șir scurt, fără
     // caractere de control. Când lipsește, se deduce din comentariu (repere.js).
-    reper: typeof b.reper === 'string' && b.reper.trim()
-      ? b.reper.replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 80) : null
+    // Numărul de drum singur se golește (vezi reperCurat, deasupra).
+    reper: reperCurat(b.reper)
     };
   }).filter(b => b.sumKm !== null);
   out.sort((a, b) => a.sumKm - b.sumKm);
@@ -146,7 +231,13 @@ export function sanitizeBoxes(raw) {
 // Erorile scanării se prind PARCAT, nu la 40 km/h: primul test de teren a eșuat
 // din distanțe greșite pe care nimeni nu le-a verificat înainte de plecare.
 // Primește TOATE boxurile scanate; verifică fiecare leg separat.
-export function verifyRoadbook(allBoxes) {
+//
+// `probeleVinDinBuletin` (v39): când probele sunt definite de Buletinul Directorului de cursă,
+// semnele de start/finiș din roadbook nu mai cronometrează nimic — deci avertismentele
+// DESPRE ELE nu mai cer nicio decizie de la om și se sting. Rămân aprinse verificările
+// care contează în continuare: kilometrajul, numerotarea, boxurile mute. Nu e o scutire
+// de verificare, e refuzul de a cere o decizie care nu schimbă rezultatul.
+export function verifyRoadbook(allBoxes, { probeleVinDinBuletin = false } = {}) {
   const probleme = [];
   const grupuri = groupByLeg(allBoxes);
   for (const g of grupuri) {
@@ -189,6 +280,9 @@ export function verifyRoadbook(allBoxes) {
     for (const x of b) {
       if (!x.dir && !normFlags(x).length) probleme.push(`${unde}: boxul ${x.num} n-are nici direcție, nici semn — verifică pagina`);
     }
+    // Toate verificările de mai jos privesc SEMNELE DE PROBĂ din roadbook. Când probele
+    // vin din buletin, semnele nu mai decid nimic, deci nici avertismentele lor.
+    if (probeleVinDinBuletin) continue;
     // Probele: fiecare START își are FINISH-ul? Ordinea în interiorul unui box e aceeași
     // ca la detectRts — întâi se închide, apoi se deschide — fiindcă boxul care e și
     // finish, și start (Reșița, boxul 64) e cazul normal, nu excepția.
@@ -314,6 +408,30 @@ export function verificaHarta(raw, grupuri = []) {
 export function coerentaHarta(pts, boxes) {
   const probleme = [];
   const nums = (boxes || []).filter(b => pts && pts[b.num]).sort((a, b) => a.sumKm - b.sumKm);
+  // BOXURI DIFERITE ÎN ACELAȘI PUNCT (adăugat 06.08.2026). Verificarea de mai jos compară
+  // boxuri VECINE și trece perfect când coordonatele sunt identice: 0 m în linie dreaptă
+  // nu depășește niciodată un prag. Exact așa a trecut de aici harta care a trimis mașina
+  // spre Wisconsin — 11 boxuri, întinse pe 7,6 km de roadbook, toate pe același punct.
+  // Regula e fizică: boxuri aflate la kilometraje diferite nu pot fi în același loc.
+  // (Două boxuri în același punct rămân normale — giratoriul luat de două ori, strada
+  // făcută dus-întors. Se acuză de la trei în sus, și doar peste 3 km de întindere.)
+  const grup = [];
+  for (const b of nums) {
+    const g = grup.find(x => haversineM(pts[x.nums[0]].lat, pts[x.nums[0]].lng,
+                                        pts[b.num].lat, pts[b.num].lng) <= 50);
+    if (g) { g.nums.push(b.num); g.kms.push(b.sumKm); }
+    else grup.push({ nums: [b.num], kms: [b.sumKm] });
+  }
+  for (const g of grup) {
+    const span = Math.max(...g.kms) - Math.min(...g.kms);
+    if (g.nums.length > 2 && span > 3) {
+      probleme.push(`boxurile ${g.nums.join(', ')} au toate exact aceeași coordonată, ` +
+        `deși roadbook-ul are ${span.toFixed(1)} km între primul și ultimul — ` +
+        `e un singur răspuns de căutare copiat pe toate, nu harta traseului.`);
+      break;
+    }
+  }
+  if (probleme.length) return { ok: false, probleme, boxuri: nums.length };
   for (let i = 1; i < nums.length; i++) {
     const a = nums[i - 1], b = nums[i];
     const drumM = Math.abs(b.sumKm - a.sumKm) * 1000;
@@ -771,20 +889,9 @@ export function probeDinBuletin(boxes, buletin, legPage, savedSpeeds = {}) {
 // cară motivul în română, cu comentariul boxului citat, ca omul să vadă pe ce s-a bazat
 // și să poată spune „nu".
 
-// Roadbook-ul își scrie starturile de probă în comentariu: „Start RT 2", „Start RT 3".
-// Tolerant la spații, punctuație, majuscule și diacritice (textul trece prin faraDiacritice).
-// `\bstart\b` ține „restart" afară; „TR" e acceptat fiindcă aceleași probe se scriu în
-// documente și așa (TR2/TR3/TR4 în buletinul de cursă, RT în roadbook).
-const RE_START_DECLARAT = /\bstart\b[^a-z0-9]{0,4}(?:rt|tr)[^a-z0-9]{0,4}(\d{1,2})\b/;
-// Time Control = ștampilă de oră, nu linie cronometrată. Boxul 111 de la Reșița —
-// „Finish Leg 2 Time Control - TC 4" — a fost citit de scanare ca finiș de probă.
-const RE_TIME_CONTROL = /\btime control\b|\btc\s*[-–—.:#]?\s*\d+\b/;
-// singurele cuvinte pe care roadbook-ul le folosește pentru plecarea de pe loc
-const RE_STANDING = /\bstanding\b|\boprit[aă]?\b|\bde pe loc\b/;
-
-function faraDiacritice(s) {
-  return String(s == null ? '' : s).normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
-}
+// RE_START_DECLARAT, RE_TIME_CONTROL, RE_STANDING și faraDiacritice stau sus, lângă
+// normFlags — aceleași cuvinte deosebesc un Time Control de un start de probă și la
+// traducerea icoanei, și la propunerile de mai jos.
 
 // Câte FINISH-uri n-au nicio probă deschisă înaintea lor. Aceeași logică de paranteze
 // ca detectRts și verifyRoadbook — un box care e ȘI finish, ȘI start se procesează
@@ -815,6 +922,13 @@ export function propuneCorecturiProbe(boxes) {
   const areF = i => virt[i].has('RT_FINISH');
   const cit = i => ord[i].comment ? `„${String(ord[i].comment).trim().slice(0, 44)}"`
                                   : 'fără comentariu';
+  // Motivele sunt CITITE DE UN OM ÎN PARCARE, cu cinci minute înainte de start (v39).
+  // Fără „flag", fără „probă deschisă", fără „orfan": fiecare rând spune ce box e, ce
+  // scrie roadbook-ul acolo, și de ce semnul citit nu se potrivește cu ce scrie.
+  const boxul = i => `Boxul ${ord[i].num != null ? ord[i].num : '?'}`;
+  const undeScrie = i => ord[i].comment
+    ? `în roadbook acolo scrie ${cit(i)}`
+    : 'boxul n-are niciun cuvânt scris în roadbook';
   const pune = (i, actiune, flag, motiv) => {
     const k = `${i}|${flag}`;
     if (vazut.has(k)) return false;         // un semn se propune o singură dată pe box
@@ -841,16 +955,17 @@ export function propuneCorecturiProbe(boxes) {
     for (const d of declarate) {
       if (areS(d.i)) continue;              // are deja un start: felul lui nu se atinge
       pune(d.i, 'adauga', d.standing ? 'RT_START_STANDING' : 'RT_START_AUTO',
-        `Roadbook-ul scrie aici „Start RT ${d.n}", dar boxul n-are semn de start.` +
-        (d.standing ? ' Textul zice „standing", deci plecare de pe loc.' : ''));
+        `${boxul(d.i)}: în roadbook scrie „Start RT ${d.n}", dar pe box nu e desenată ` +
+        `linia de start. Fără ea, proba nu pornește aici.` +
+        (d.standing ? ' Tot acolo scrie „standing" — se pleacă de pe loc, cu oprire.' : ''));
     }
     // b) are semn de start, dar nicăieri în leg nu scrie că aici începe o probă
     for (let i = 0; i < ord.length; i++) {
       if (!areS(i) || eDeclarat.has(i)) continue;
       const flag = [...virt[i]].find(f => START_FLAGS.includes(f));
       pune(i, 'scoate', flag,
-        `Are semn de START, dar textul nu declară nicio probă aici (${cit(i)}). ` +
-        `Roadbook-ul își numește starturile la boxurile ${lista}.`);
+        `${boxul(i)} a fost citit ca start de probă, dar ${undeScrie(i)} — nicio probă ` +
+        `nu începe aici. Roadbook-ul își scrie starturile la boxurile ${lista}.`);
     }
   }
 
@@ -858,7 +973,8 @@ export function propuneCorecturiProbe(boxes) {
   for (let i = 0; i < ord.length; i++) {
     if (!areF(i) || !RE_TIME_CONTROL.test(faraDiacritice(ord[i].comment))) continue;
     pune(i, 'scoate', 'RT_FINISH',
-      `${cit(i)} — e un Time Control (ștampilă de oră), nu finișul unei probe.`);
+      `${boxul(i)} a fost citit ca finiș de probă, dar ${undeScrie(i)} — e un Time ` +
+      `Control, adică locul unde se ștampilează ora, nu o linie de finiș.`);
   }
 
   // ── 3. FINIȘURI ORFANE ───────────────────────────────────────────────────
@@ -875,7 +991,9 @@ export function propuneCorecturiProbe(boxes) {
   for (let i = 0; i < ord.length; i++) {
     if (areF(i)) {
       if (deschise === 0)
-        pune(i, 'scoate', 'RT_FINISH', `FINISH fără nicio probă deschisă înaintea lui (${cit(i)}).`);
+        pune(i, 'scoate', 'RT_FINISH',
+          `${boxul(i)} a fost citit ca finiș de probă, dar înaintea lui nu începe nicio ` +
+          `probă — n-are ce să încheie. În roadbook acolo scrie ${cit(i)}.`);
       else deschise--;
     }
     if (areS(i)) deschise++;
@@ -904,6 +1022,25 @@ export function aplicaPropuneri(boxes, propuneri) {
     const noi = normFlags({ flags: f });
     return { ...b, flags: noi, flag: noi.length ? noi[0] : null };
   }).sort((a, b) => a.sumKm - b.sumKm);
+}
+
+// ── PROPOZIȚIA DIN LOCUL BUTOANELOR ROȘII (v39) ─────────────────────────────
+// Când probele vin din buletin, corecturile se aplică singure (vezi main.js,
+// curataSemneleCareNuDecid) și pe ecran rămâne ATÂT: o propoziție. Stă aici, nu în
+// main.js, fiindcă e text pur — se poate testa la virgulă, fără browser.
+// `c` = { scoase, adaugate }, numărate pe semnele chiar atinse. Nicio cifră estimată.
+export function frazaSemneCuratate(c) {
+  const scoase = Math.max(0, (c && c.scoase) | 0);
+  const adaugate = Math.max(0, (c && c.adaugate) | 0);
+  const buc = [];
+  if (scoase) buc.push(scoase === 1
+    ? 'Am scos un semn din roadbook care nu se potrivea cu buletinul.'
+    : `Am scos ${scoase} semne din roadbook care nu se potriveau cu buletinul.`);
+  if (adaugate) buc.push(adaugate === 1
+    ? 'Am pus un semn de start acolo unde roadbook-ul îl scrie cu litere.'
+    : `Am pus ${adaugate} semne de start acolo unde roadbook-ul le scrie cu litere.`);
+  buc.push('Probele vin din buletin, deci nu era nimic de decis.');
+  return buc.join(' ');
 }
 
 // Cifrele pentru ecran: ce scrie textul, ce e marcat, ce nu se leagă, și ce s-ar schimba.

@@ -9,13 +9,15 @@ import { buildPlan, detectRts, sanitizeBoxes, groupByLeg, verifyRoadbook,
          reconNormalize, reconPentruLeg, reconPune, reconStatus,
          reconRecupereaza, verificaHarta, hartaPentruLeg, coerentaHarta,
          normFlags, areFlag, esteStart, esteFinish, legKey,
-         rezumatVerificare, normVitezaSalvata, imbinaBuletin } from './route.js';
+         rezumatVerificare, propuneCorecturiProbe, frazaSemneCuratate,
+         normVitezaSalvata, imbinaBuletin } from './route.js';
 import { makeMachine } from './machine.js';
 import { makeDriverModel } from './learn.js';
 import { makeUi, startHeaderClock } from './ui.js';
 import { scanRoadbookPage, scanTimeCard, scanBulletin, faColectorPoze, MAX_POZE } from './scan.js';
 import { makeBleSpeed } from './ble.js';
-import { repereBoxuri, faGeocoder, geocodeazaRepere, verificaAncore } from './repere.js';
+import { repereBoxuri, faGeocoder, geocodeazaRepere, verificaAncore,
+         poartaPlauzibilitate, reperEDoarDrum } from './repere.js';
 import { linkuriTraseu, linkNavigare } from './maps.js';
 import { makeSync } from './sync.js';
 import { efficiencyPoints, efficiencyGap } from './pace.js';
@@ -34,7 +36,7 @@ let hartaIncoerenta = null;
 // Versiunea build-ului — se ține SINCRON cu CACHE din sw.js la fiecare deploy.
 // Vizibilă în antet și scrisă în jurnal la fiecare pornire: „ce versiune rulează
 // telefonul?" se citește, nu se ghicește (02.08, seara — nu se putea ști).
-const BUILD = 'v38';
+const BUILD = 'v40';
 
 async function init() {
   store = await makeStore();
@@ -201,6 +203,11 @@ async function rebuildPlan(fortat) {
       .reduce((n, gr) => n + gr.boxes.filter(b => areFlag(b, 'TC')).length, 0);
     machine.setTcSchedule(tcs.slice(tcOff));
   }
+  // Curățenia semnelor care nu mai decid nimic (v39). Se face DUPĂ ce planul e construit,
+  // fiindcă abia atunci se știe de unde vin probele; dacă a schimbat ceva, planul se
+  // reconstruiește o singură dată, peste boxurile curate. La a doua trecere n-are ce mai
+  // curăța, deci recursia se oprește acolo.
+  if (await curataSemneleCareNuDecid()) return rebuildPlan(fortat);
   renderPrep();
   ui.render(machine.M, plan);
 }
@@ -279,7 +286,11 @@ function renderPrep() {
   if (vf) {
     vf.textContent = '';
     if (boxesRaw.length) {
-      const v = verifyRoadbook(boxesRaw);
+      // Avertismentele despre semnele de probă se sting când probele vin din buletin:
+      // ele descriu tot niște icoane care nu mai cronometrează nimic, iar un avertisment
+      // care nu cere nicio faptă e doar zgomot înainte de start. Restul verificărilor —
+      // kilometraj, numerotare, boxuri mute — rămân aprinse.
+      const v = verifyRoadbook(boxesRaw, { probeleVinDinBuletin: plan.sursaProbe === 'buletin' });
       if (!v.probleme.length) {
         const p = document.createElement('p');
         p.className = 'line'; p.style.color = 'var(--ok)';
@@ -499,29 +510,42 @@ function renderPropuneri() {
   if (!wrap) return;
   wrap.textContent = '';
   if (!plan || !plan.boxes.length) return;
+
+  // ── CAZUL 1: PROBELE VIN DIN BULETIN ──────────────────────────────────────
+  // Semnele din roadbook nu decid nimic, deci nu se cere nicio decizie: nici buton, nici
+  // galben, nici cifre despre probe deduse din icoane. O propoziție, în limbaj de om,
+  // care spune ce s-a curățat singur și de ce n-a fost nimic de hotărât.
+  if (plan.sursaProbe === 'buletin') {
+    const c = _curatate.get(plan.legKey);
+    const p = document.createElement('p');
+    p.className = 'line';
+    p.style.color = 'var(--ok)';
+    p.textContent = c ? frazaSemneCuratate(c)
+      : 'Probele vin din buletin. Semnele de start și de finiș din roadbook nu ' +
+        'cronometrează nimic, deci n-ai ce hotărî aici.';
+    wrap.appendChild(p);
+    return;
+  }
+
+  // ── CAZUL 2: FĂRĂ BULETIN — SEMNELE CHIAR DECID ───────────────────────────
+  // Aici corecturile rămân PROPUNERI cu buton: răspunsul schimbă ce se cronometrează,
+  // deci hotărăște omul, cu roadbook-ul de hârtie în mână.
   const rez = rezumatVerificare(plan.boxes);
 
   const cifre = document.createElement('p');
   cifre.className = 'line';
+  // Aceleași cifre ca înainte, spuse în propoziții (v39). Vechea formă — „3 starturi
+  // scrise, 5 marcate · 8 finișuri fără probă deschisă" — cerea să știi ce înseamnă
+  // „probă deschisă" ca s-o poți citi.
   cifre.textContent =
-    `Verificare: ${rez.declarate} ${rez.declarate === 1 ? 'start scris' : 'starturi scrise'} ` +
-    `în text („Start RT n"), ${rez.marcate} marcate pe boxuri · ${rez.orfane} ` +
-    `${rez.orfane === 1 ? 'finiș' : 'finișuri'} fără probă deschisă · ` +
-    `${rez.probeAcum} ${rez.probeAcum === 1 ? 'probă' : 'probe'} acum` +
-    (rez.propuneri.length ? `, ${rez.probeDupa} după corecturi.` : '.');
+    `Roadbook-ul scrie ${rez.declarate} ${rez.declarate === 1 ? 'start de probă' : 'starturi de probă'} ` +
+    `în text, iar pe boxuri sunt desenate ${rez.marcate}. ` +
+    (rez.orfane ? `${rez.orfane} ${rez.orfane === 1 ? 'semn de finiș nu închide' : 'semne de finiș nu închid'} ` +
+                  `nicio probă. ` : '') +
+    `Așa cum e acum, ies ${rez.probeAcum} ${rez.probeAcum === 1 ? 'probă' : 'probe'}` +
+    (rez.propuneri.length ? `; cu corecturile de mai jos ar ieși ${rez.probeDupa}.` : '.');
   cifre.style.color = rez.propuneri.length ? 'var(--warn)' : 'var(--ok)';
   wrap.appendChild(cifre);
-
-  // Când probele vin din buletin, semnele din roadbook nu mai cronometrează nimic.
-  // Fără rândul ăsta, omul ar corecta icoane în parcare crezând că schimbă probele.
-  if (plan.sursaProbe === 'buletin') {
-    const p = document.createElement('p');
-    p.className = 'line';
-    p.style.color = 'var(--ok)';
-    p.textContent = 'Probele vin din BULETIN. Cifrele de mai sus și corecturile de mai jos ' +
-      'privesc doar semnele din roadbook — ele nu mai decid cronometrarea.';
-    wrap.appendChild(p);
-  }
 
   if (!rez.propuneri.length) return;
 
@@ -694,21 +718,93 @@ function randProba(b) {
 // Comutarea unui semn. Se scrie în boxurile BRUTE (sursa adevărului, cea salvată), se
 // jurnalizează cu starea de dinainte și de după, apoi planul se reconstruiește — deci
 // verificatorul și lista de probe se recalculează singure.
-async function comutaFlag(box, flag) {
+// `opt.motiv` (v39) — curățenia automată de mai jos trece pe AICI, nu pe lângă: scrie în
+// aceleași boxuri, salvează în același depozit și lasă aceeași urmă `flag_manual`, doar
+// cu un motiv care spune că n-a apăsat nimeni. `opt.faraRebuild` există ca cele N semne
+// să se aplice într-o singură reconstruire de plan, nu în N reconstruiri imbricate.
+async function comutaFlag(box, flag, opt = {}) {
   const b = boxesRaw.find(x => x === box) ||
             boxesRaw.find(x => legKey(x) === plan.legKey && x.num === box.num &&
                                Math.abs(x.sumKm - box.sumKm) < 0.005);
   if (!b) return;
   const inainte = normFlags(b);
   const dupa = normFlags({ flags: inainte.includes(flag)
-    ? inainte.filter(f => f !== flag) : [...inainte, flag] });
+    ? inainte.filter(f => f !== flag) : [...inainte, flag], comment: b.comment });
   b.flags = dupa;
   b.flag = dupa.length ? dupa[0] : null;      // terenul derivat, ținut sincron
-  if (b.num != null) _probeExtra.add(b.num);  // rândul rămâne pe ecran și după ce l-ai golit
+  // rândul rămâne pe ecran și după ce l-ai golit — dar numai dacă L-AI GOLIT TU. Semnele
+  // curățate automat nu lasă în urmă un rând de editat: n-au cerut nicio decizie.
+  if (b.num != null && !opt.motiv) _probeExtra.add(b.num);
   await store.put('plan_raw', boxesRaw);
   try { store.log('flag_manual', { ce: 'semn', boxNum: b.num, km: b.sumKm,
-                                   leg: plan.legKey, inainte, dupa }, Date.now()); } catch (e) {}
-  await rebuildPlan();
+                                   leg: plan.legKey, inainte, dupa,
+                                   auto: !!opt.motiv, motiv: opt.motiv || null }, Date.now()); } catch (e) {}
+  if (!opt.faraRebuild) await rebuildPlan();
+}
+
+// ── CURĂȚENIA TĂCUTĂ, CÂND SEMNELE NU MAI DECID NIMIC (v39) ─────────────────
+// 06.08.2026, măsurat pe telefonul lui Andreas, în ziua dinaintea cursei: probele veneau
+// din buletin (`plan.sursaProbe === 'buletin'`), deci semnele de start/finiș citite din
+// roadbook nu mai cronometrau nimic — ecranul chiar scria asta. Și totuși aplicația îi
+// cerea, cu două butoane roșii „Aplică" și un „Aplică toate (2)", să hotărască în parcare
+// soarta unor icoane care nu schimbau NIMIC în cursă.
+//
+// Regula, de-aici încolo: aplicația cere o decizie DOAR când răspunsul chiar schimbă
+// rezultatul. Când nu-l schimbă, curăță singură și spune într-o propoziție ce a făcut.
+//
+// DE CE E PERMIS SĂ SE APLICE SINGUR, deși peste tot altundeva nimic nu se aplică singur:
+// pentru că NU SE ATINGE NIMIC DIN CE DECIDE REZULTATUL CURSEI. Probele — start, medie,
+// schimbări de medie, finiș — vin din buletin și rămân neatinse; aici se șterg doar niște
+// icoane citite greșit dintr-o poză, care nu mai intră în niciun calcul. Regula întreagă
+// sună așa: NU SCHIMB SINGUR CE CRONOMETREAZĂ; CURĂȚ LIBER CE NU CRONOMETREAZĂ.
+const _curatate = new Map();   // legKey → { scoase, adaugate, boxuri }
+let _curatenieInCurs = false;
+// Plasa de siguranță: curățenia cheamă rebuildPlan, iar rebuildPlan cheamă curățenia.
+// În mod normal se oprește din prima — a doua trecere peste boxurile curate nu mai are
+// ce propune (verificat în test-propuneri.mjs, „corectura e stabilă"). Dar un roadbook
+// pe care corecturile ar oscila ar îngheța aplicația în parcare, deci runda a treia
+// oprește lucrul și lasă urmă în jurnal. Pragul se scrie ÎNAINTE, nu după (legea 8).
+const MAX_RUNDE_CURATENIE = 3;
+const _rundeCuratenie = new Map();   // legKey → câte runde s-au consumat
+
+// Roadbook nou = curățenie nouă. Fără linia asta, propoziția „am scos 12 semne" ar
+// rămâne pe ecran peste un roadbook scanat după ea, iar plafonul de runde consumat pe
+// roadbook-ul vechi ar bloca curățenia celui nou. Se cheamă oriunde se schimbă boxesRaw.
+function uitaCuratenia() { _curatate.clear(); _rundeCuratenie.clear(); }
+
+async function curataSemneleCareNuDecid() {
+  if (_curatenieInCurs) return false;
+  if (!plan || plan.sursaProbe !== 'buletin' || !plan.boxes.length) return false;
+  const runde = _rundeCuratenie.get(plan.legKey) || 0;
+  const props = propuneCorecturiProbe(plan.boxes);
+  if (!props.length) return false;
+  if (runde >= MAX_RUNDE_CURATENIE) {
+    // Am curățat de trei ori și tot mai iese ceva de curățat: nu mai insist, altfel se
+    // învârte la nesfârșit. Semnele rămase nu cronometrează nimic oricum. Se scrie o
+    // singură dată în jurnal, nu la fiecare reconstruire de plan.
+    if (runde === MAX_RUNDE_CURATENIE) {
+      _rundeCuratenie.set(plan.legKey, runde + 1);
+      try { store.log('curatenie_oprita', { leg: plan.legKey, runde,
+        ramase: props.map(p => p.box.num) }, Date.now()); } catch (e) {}
+    }
+    return false;
+  }
+  _rundeCuratenie.set(plan.legKey, runde + 1);
+  _curatenieInCurs = true;
+  try {
+    const motiv = 'probele vin din buletin — semnul din roadbook nu cronometrează nimic';
+    for (const p of props) await comutaFlag(p.box, p.flag, { motiv, faraRebuild: true });
+    const scoase = props.filter(p => p.actiune === 'scoate').length;
+    const strans = _curatate.get(plan.legKey) || { scoase: 0, adaugate: 0, boxuri: [] };
+    strans.scoase += scoase;
+    strans.adaugate += props.length - scoase;
+    strans.boxuri = strans.boxuri.concat(props.map(p => p.box.num).filter(n => n != null));
+    _curatate.set(plan.legKey, strans);
+    try { store.log('semne_curatate_automat',
+      { leg: plan.legKey, scoase, adaugate: props.length - scoase,
+        boxuri: props.map(p => p.box.num) }, Date.now()); } catch (e) {}
+  } finally { _curatenieInCurs = false; }
+  return true;
 }
 
 // Rândul de geometrie din panoul de pregătire. Cerut după 04.08.2026: aplicația are
@@ -1146,6 +1242,7 @@ async function scaneazaPozele(fisiere) {
   }
   all.sort((a, b) => a.sumKm - b.sumKm);
   boxesRaw = all;
+  uitaCuratenia();
   await store.put('plan_raw', boxesRaw);
   // ROADBOOK NOU = HARTĂ VECHE, ARUNCATĂ. Coordonatele sunt legate de boxuri prin
   // numărul lor și prin cheia de leg, iar cheia e aproape mereu „1|1": fără linia
@@ -1328,6 +1425,7 @@ function doImport() {
   // (fișier de pe alt telefon = conținut extern) sau dintr-un IndexedDB scris de o
   // versiune veche. Singurul punct prin care trec toate căile. (Audit 02.08.2026, P3.)
   boxesRaw = sanitizeBoxes((await store.get('plan_raw')) || []);
+  uitaCuratenia();
         // preluarea de pe alt telefon ÎNLOCUIEȘTE ziua — asta e chiar ce s-a cerut,
         // iar starea reală se pune imediat după, din jurnal (machine.resume)
         await rebuildPlan(true);
@@ -1345,6 +1443,23 @@ function doImport() {
 // Cererea lui Andreas (04.08.2026): la Sibiu roadbook-ul vine tipărit de la organizator,
 // deci nimeni nu ne dă coordonate. Dar comentariile LUI conțin adrese — „Dreapta pe Str.
 // Avram Imbroane". Butonul ăsta le caută pe hartă, o dată, acasă, și le leagă de boxuri.
+// Poziția de ACUM, o singură dată, pentru poarta de plauzibilitate. Rămâne în telefon:
+// nu pleacă spre niciun serviciu (vezi fluxul de date din repere.js — spre Nominatim
+// pleacă doar șiruri de adresă). Dacă nu vine în 6 secunde, se merge fără ea.
+function pozitiaAcum(timeoutMs = 6000) {
+  return new Promise(res => {
+    if (!(typeof navigator !== 'undefined' && navigator.geolocation)) return res(null);
+    let gata = false;
+    const t = setTimeout(() => { if (!gata) { gata = true; res(null); } }, timeoutMs);
+    try {
+      navigator.geolocation.getCurrentPosition(
+        p => { if (!gata) { gata = true; clearTimeout(t); res({ lat: p.coords.latitude, lng: p.coords.longitude }); } },
+        () => { if (!gata) { gata = true; clearTimeout(t); res(null); } },
+        { enableHighAccuracy: false, maximumAge: 300000, timeout: timeoutMs });
+    } catch (e) { if (!gata) { gata = true; clearTimeout(t); res(null); } }
+  });
+}
+
 async function gasesteTraseulPeHarta() {
   const st = $('prep-harta-st');
   const btn = $('btn-geocod');
@@ -1352,27 +1467,59 @@ async function gasesteTraseulPeHarta() {
   const localitate = ($('set-localitate').value || '').trim();
   if (localitate) localStorage.setItem('r2_localitate', localitate);
   const r = repereBoxuri(plan.boxes.map(b => ({ ...b, comment: b.comment })));
-  // localitatea scrisă de om bate ce s-a dedus din text; fără niciuna, se caută oricum,
-  // dar rata de nimereală scade — și se spune pe ecran, nu se ascunde
+  // localitatea scrisă de om bate ce s-a dedus din text
   const loc = localitate || r.localitate;
+  // FĂRĂ LOCALITATE NU SE CAUTĂ NIMIC (06.08.2026). Până azi se căuta oricum, cu o notă
+  // pe ecran — iar „DJ 691" fără oraș a nimerit în Wisconsin, la 7933 km, pe 11 boxuri
+  // deodată. Nota pe ecran n-a oprit nimic, fiindcă nu era o oprire. Acum e.
+  if (!loc) {
+    st.textContent = 'Scrie întâi localitatea traseului — fără ea caut în toată lumea ' +
+                     'și pot nimeri altă țară. (Ultima dată, fără localitate, am nimerit în SUA.)';
+    st.style.color = 'var(--warn)';
+    try { $('set-localitate').focus(); } catch (e) {}
+    return;
+  }
+  st.style.color = '';
   const repere = r.repere.map(x => ({
-    ...x, reper: x.reper && loc && !x.reper.includes(loc) ? `${x.reper}, ${loc}` : x.reper
+    ...x, reper: x.reper && !x.reper.includes(loc) ? `${x.reper}, ${loc}` : x.reper
   }));
-  const cuReper = repere.filter(x => x.reper).length;
-  if (!cuReper) { st.textContent = 'Niciun box n-are un reper căutabil în comentariu.'; return; }
+  // Reperele care sunt DOAR un număr de drum nu se mai întreabă deloc: „DJ 691" e o linie
+  // de zeci de kilometri, nu un punct, iar răspunsul ar cădea identic pe toate boxurile.
+  const doarDrum = repere.filter(x => x.reper && reperEDoarDrum(x.reper, loc));
+  const deCautat = repere.filter(x => x.reper && !reperEDoarDrum(x.reper, loc));
+  const cuReper = deCautat.length;
+  if (!cuReper) {
+    st.textContent = doarDrum.length
+      ? `Niciun box n-are un reper căutabil: toate cele ${doarDrum.length} sunt doar numere ` +
+        `de drum (${doarDrum[0].reper}), iar un număr de drum e o linie lungă, nu un punct.`
+      : 'Niciun box n-are un reper căutabil în comentariu.';
+    return;
+  }
   btn.disabled = true;
-  st.textContent = `Caut ${cuReper} repere${loc ? ' în ' + loc : ' (fără localitate — poate nimeri altundeva)'}…`;
+  // poziția se cere ÎNAINTE de căutare, ca poarta de plauzibilitate s-o aibă la final.
+  // Se spune pe ecran de ce apare cererea de locație — altfel pare că aplicația vrea
+  // ceva ce n-a cerut niciodată până acum, exact în seara dinaintea cursei.
+  st.textContent = 'Îmi cer poziția o clipă, ca să pot verifica dacă punctele găsite ' +
+                   'sunt în zona ta (rămâne în telefon, nu pleacă nicăieri)…';
+  const fix = await pozitiaAcum();
+  st.textContent = `Caut ${cuReper} repere în ${loc}…`;
   const geo = faGeocoder({});
   let rez;
   try {
-    rez = await geocodeazaRepere(repere.filter(x => x.reper), geo,
+    rez = await geocodeazaRepere(deCautat, geo,
       { onPas: (i, n) => { st.textContent = `Caut… ${i} din ${n}`; } });
   } catch (e) {
     st.textContent = 'Fără internet — căutarea pe hartă merge doar cu semnal.';
     btn.disabled = false; return;
   }
+  // POARTA DE PLAUZIBILITATE, PRIMA. Abia ce trece de ea intră în discuția despre
+  // kilometraj — altfel un punct la 7933 km, însoțit de zece copii ale lui, câștigă
+  // discuția aia și aruncă ancorele corecte (măsurat, 06.08.2026).
+  const kms = plan.boxes.map(b => b.sumKm).filter(Number.isFinite);
+  const legKm = kms.length ? Math.max(...kms) - Math.min(...kms) : null;
+  const p = poartaPlauzibilitate(rez.ancore, { fix, legKm });
   // ancorele care contrazic kilometrajul se aruncă (o „Str. Turda" din alt oraș)
-  const v = verificaAncore(rez.ancore.map(a => ({ ...a, flags: (plan.boxes.find(b => b.num === a.num) || {}).flags })));
+  const v = verificaAncore(p.bune.map(a => ({ ...a, flags: (plan.boxes.find(b => b.num === a.num) || {}).flags })));
   const harta = {};
   // doar boxurile CU numar: sanitizeBoxes lasa num:null pentru randurile pe care
   // scanarea nu le-a putut numerota, iar toate ar ajunge sub aceeasi cheie „null"
@@ -1387,14 +1534,28 @@ async function gasesteTraseulPeHarta() {
   try {
     store.log('geocodare', { leg: plan.legKey, localitate: loc || null,
       cerute: cuReper, gasite: rez.ancore.length, pastrate: v.bune.length,
+      cuFix: !!fix, legKm: legKm != null ? Math.round(legKm * 100) / 100 : null,
+      sarite_drum: doarDrum.map(x => ({ num: x.num, reper: x.reper })).slice(0, 20),
+      neplauzibile: p.aruncate.map(a => ({ num: a.num, motiv: a.motiv })).slice(0, 20),
       aruncate: v.aruncate.map(a => ({ num: a.num, motiv: a.motiv })),
       ratate: rez.ratate.slice(0, 20) }, clock.rally());
   } catch (e) {}
   await rebuildPlan();
   btn.disabled = false;
-  st.textContent = `Ancore la ${v.bune.length} din ${plan.boxes.length} boxuri` +
-    (v.aruncate.length ? ` · ${v.aruncate.length} aruncate (nu se potriveau cu kilometrajul)` : '') +
-    (rez.ratate.length ? ` · ${rez.ratate.length} fără răspuns` : '');
+  // CE VEDE ANDREAS. Ancorele căzute nu se mai rezumă la o cifră: dacă harta a rămas
+  // goală sau subțire, el trebuie să afle DE CE, în cuvinte, ca să poată decide dacă
+  // pleacă fără hartă (stare sigură, deja gestionată) sau mai încearcă o dată.
+  const bucati = [`Ancore la ${v.bune.length} din ${plan.boxes.length} boxuri`];
+  if (doarDrum.length) bucati.push(`${doarDrum.length} sărite (doar număr de drum — o linie lungă, nu un punct)`);
+  if (p.aruncate.length) bucati.push(`${p.aruncate.length} aruncate ca imposibile`);
+  if (v.aruncate.length) bucati.push(`${v.aruncate.length} aruncate (nu se potriveau cu kilometrajul)`);
+  if (rez.ratate.length) bucati.push(`${rez.ratate.length} fără răspuns`);
+  let text = bucati.join(' · ');
+  if (p.aruncate.length) text += '\nDe ce: ' + p.aruncate.slice(0, 2).map(a => `boxul ${a.num} — ${a.motiv}`).join(' · ');
+  if (!v.bune.length) text += '\nHarta a rămas goală. Poți porni și fără ea: cursa merge normal, ' +
+                              'doar că nu-ți pot spune unde e boxul dacă greșești drumul.';
+  st.textContent = text;
+  st.style.color = v.bune.length ? '' : 'var(--warn)';
   renderPrep();
 }
 
@@ -1828,7 +1989,8 @@ function bind() {
     // roadbook. Rămas peste unul nou, ar defini probe pe boxuri cu același număr și cu
     // alt drum sub ele — aceeași clasă de defect ca harta rămasă de la alt eveniment.
     if (!confirm('Ștergi roadbook-ul scanat, buletinul probelor și vitezele?')) return;
-    boxesRaw = []; await store.del('plan_raw'); await store.del('rt_speeds');
+    boxesRaw = []; uitaCuratenia();
+    await store.del('plan_raw'); await store.del('rt_speeds');
     await store.del('buletin');
     const harta = reconNormalize(await store.get('recon'), plan.legKey);
     const legi = Object.keys(harta.legs || {});

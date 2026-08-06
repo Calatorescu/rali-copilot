@@ -143,12 +143,188 @@ export function repereBoxuri(boxes = []) {
   };
 }
 
+// ── REPERE CARE NU POT FI UN PUNCT ──────────────────────────────────────────
+// 06.08.2026, măsurat în jurnal: roadbook-ul de la Dumbrăvița avea reperul „DJ 691" pe
+// 11 boxuri din 18. Un număr de drum nu e o adresă — e o LINIE de zeci de kilometri.
+// Orice serviciu de geocodare întoarce pentru el UN punct, ales arbitrar undeva pe linia
+// aia, iar acel punct ajunge apoi pe toate cele 11 boxuri deodată. În ziua aia punctul a
+// căzut în Juneau, Wisconsin, la 7933 km, dar defectul ar fi rămas la fel de rău dacă ar
+// fi căzut corect pe DJ 691: boxurile 5 și 16 sunt la 7,6 km unul de altul pe drum și
+// n-au voie să primească aceeași coordonată.
+//
+// Deci nu se mai întreabă deloc. Regula: dacă reperul conține un număr de drum și NU
+// conține și un cuvânt de arteră („Str. Petőfi Sándor / DJ691" — ăsta rămâne, strada e
+// cea care identifică punctul), reperul nu pleacă la geocodare.
+// Câștig secundar, măsurat pe roadbook-ul zilei: 13 cereri din 18 nu se mai fac deloc.
+const reArteraCuvant = new RegExp(`(?:^|\\W)(?:${ARTERE.join('|')}|Inelul)(?:\\W|$)`, 'u');
+
+export function reperEDoarDrum(reper, localitate = null) {
+  let s = curata(reper);
+  if (!s) return false;
+  // localitatea lipită la coadă („DJ 691, Dumbrăvița") nu face reperul mai identificabil
+  if (localitate) s = curata(s.replace(new RegExp(`,\\s*${localitate}\\s*$`, 'iu'), ''));
+  if (!DRUMURI.test(s)) return false;        // niciun număr de drum → nu e cazul
+  return !reArteraCuvant.test(s);            // are drum, dar n-are stradă → doar o linie
+}
+
+// ── COORDONATELE IDENTICE NU VOTEAZĂ ────────────────────────────────────────
+// Când N boxuri primesc exact aceeași coordonată, ăla e UN singur răspuns repetat, nu N
+// confirmări independente. Serviciul a fost întrebat de N ori (sau o dată, din cache) și
+// a răspuns o dată. Orice judecată de majoritate care le numără pe toate N e coruptă din
+// construcție — ăsta e defectul care a trimis mașina spre Wisconsin cu 11 „voturi" contra 5.
+//
+// PRAGUL: 50 m. Sub atât, două ancore geocodate sunt același răspuns — nicio geocodare de
+// străzi diferite nu cade la 50 m una de alta întâmplător, iar cache-ul din `faGeocoder`
+// întoarce oricum bit-identic același punct pentru același text.
+export const GRUP_IDENTIC_M = 50;
+// Când un grup de coordonate identice devine SUSPECT PRIN CONSTRUCȚIE: mai mult de 2
+// boxuri, întinse pe mai mult de 3 km de roadbook. Motivul e fizic, nu statistic —
+// boxurile 5 și 16 sunt la 7,6 km unul de altul pe drum, deci nu pot fi în același punct.
+//  • până la 2 boxuri în același punct e NORMAL: giratoriul luat de două ori, strada
+//    făcută dus-întors, intrarea și ieșirea de pe același reper. Nu se atinge.
+//  • 3 sau mai multe, întinse pe peste 3 km, înseamnă un răspuns de geocodare împrăștiat
+//    peste boxuri care n-au ce căuta împreună. Se aruncă TOT grupul, nu o parte: n-avem
+//    cum ști care box e cel adevărat, iar a păstra unul la întâmplare e tot o minciună.
+export const GRUP_MAX_BOXURI = 2, GRUP_SPAN_KM = 3;
+
+// Grupează ancorele care stau practic în același punct. Întoarce liste de ancore.
+export function grupeazaIdentice(ancore = [], pragM = GRUP_IDENTIC_M) {
+  const grupuri = [];
+  for (const a of ancore) {
+    const g = grupuri.find(x => haversineM(x[0].lat, x[0].lng, a.lat, a.lng) <= pragM);
+    if (g) g.push(a); else grupuri.push([a]);
+  }
+  return grupuri;
+}
+
+// Câte PUNCTE distincte sunt într-o listă — adică de câte voturi independente dispune.
+export function nrPuncteDistincte(ancore = [], pragM = GRUP_IDENTIC_M) {
+  return grupeazaIdentice(ancore, pragM).length;
+}
+
+// ── POARTA DE PLAUZIBILITATE ────────────────────────────────────────────────
+// Rulează ÎNAINTE de orice discuție despre kilometraj. Întrebarea ei nu e „se potrivesc
+// ancorele între ele?", ci „poate exista punctul ăsta pe traseul de mâine?". Un punct la
+// 7933 km nu trebuie să ajungă niciodată în discuția despre kilometraj — acolo el câștigă,
+// fiindcă e însoțit de alte zece copii ale lui.
+//
+// PRAGURILE, scrise dinainte, cu motivul lângă fiecare:
+//  • 300 km față de poziția GPS — un raliu de o zi nu are boxuri la 300 km de mașină.
+//    Cifra e generoasă intenționat (Timișoara–Sibiu sunt ~275 km în linie dreaptă, iar
+//    geocodarea se face ACASĂ, cu o zi înainte).
+//  • 300 km față de mediana celorlalte candidate — aceeași logică, dar fără GPS.
+//  • lungimea legului + 5 km — ăsta e pragul care taie fin. Argumentul e geometric:
+//    două puncte de pe același leg sunt legate de un drum de cel mult `legKm`, iar linia
+//    dreaptă e întotdeauna mai scurtă decât drumul. Marja de 5 km acoperă trei lucruri
+//    măsurabile: centrul de stradă întors de geocodare (până la 800 m, vezi INC_MAX_M),
+//    un roadbook scanat doar parțial (legKm iese mai mic decât e), și mediana care nu
+//    cade fix pe traseu. Plafonul de jos, 10 km, ține pragul rezonabil pe leg-urile
+//    scurte. Pe ziua de 06.08 (leg de 10,06 km) pragul a ieșit 15,06 km, iar ancorele
+//    greșite erau la 52 și 54 km — prinse cu marjă de 3×.
+export const PLAUZ_GPS_KM = 300, PLAUZ_MEDIANA_KM = 300;
+export const PLAUZ_MARJA_LEG_KM = 5, PLAUZ_MIN_LEG_KM = 10;
+
+// mediana pe fiecare coordonată — rezistentă la un punct dus în altă emisferă, spre
+// deosebire de medie, pe care un singur Wisconsin o trage cu sute de kilometri
+function median(v) {
+  const s = [...v].sort((a, b) => a - b), n = s.length;
+  return n % 2 ? s[(n - 1) / 2] : (s[n / 2 - 1] + s[n / 2]) / 2;
+}
+function medianaPct(pts) {
+  return { lat: median(pts.map(p => p.lat)), lng: median(pts.map(p => p.lng)) };
+}
+
+export function poartaPlauzibilitate(ancore = [], { fix = null, legKm = null } = {}) {
+  const lista = [...ancore].filter(a => a && Number.isFinite(a.lat) && Number.isFinite(a.lng));
+  const aruncate = [];
+  const scoate = (a, motiv) => aruncate.push({ ...a, motiv });
+  if (!lista.length) return { bune: [], aruncate };
+
+  // 1. GRUPURILE IDENTICE SUSPECTE, primele — ele sunt cele care corup majoritatea,
+  //    deci trebuie scoase înainte ca cineva să numere voturi.
+  let raman = [];
+  for (const g of grupeazaIdentice(lista)) {
+    const kms = g.map(a => a.sumKm).filter(Number.isFinite);
+    const span = kms.length ? Math.max(...kms) - Math.min(...kms) : 0;
+    if (g.length > GRUP_MAX_BOXURI && span > GRUP_SPAN_KM) {
+      const nums = g.map(a => a.num).join(', ');
+      for (const a of g) scoate(a, `${g.length} boxuri (${nums}) au primit exact același punct, ` +
+        `deși roadbook-ul are ${span.toFixed(1)} km între ele — un singur răspuns copiat, nu ${g.length} confirmări`);
+    } else raman.push(...g);
+  }
+
+  // 2. FAȚĂ DE POZIȚIA GPS — dar numai dacă mașina e la raliul ăsta.
+  //    Precizarea nu e o slăbire, e condiția ca regula să fie adevărată: geocodarea se
+  //    face acasă, cu o zi înainte, iar pentru un raliu la 450 km de casă TOATE ancorele
+  //    bune ar fi peste prag. Deci fixul contează ca reper doar dacă mediana ancorelor e
+  //    ea însăși în zona lui; altfel mașina pur și simplu nu e pe traseu încă, iar
+  //    poziția ei nu spune nimic despre ancore.
+  if (fix && Number.isFinite(fix.lat) && Number.isFinite(fix.lng) && raman.length) {
+    const repr = grupeazaIdentice(raman).map(g => g[0]);
+    const med = medianaPct(repr);
+    const fixEPeTraseu = haversineM(fix.lat, fix.lng, med.lat, med.lng) <= PLAUZ_GPS_KM * 1000;
+    if (fixEPeTraseu) {
+      const trec = [];
+      for (const a of raman) {
+        const d = haversineM(fix.lat, fix.lng, a.lat, a.lng);
+        if (d > PLAUZ_GPS_KM * 1000)
+          scoate(a, `la ${Math.round(d / 1000)} km de unde ești acum — traseul de azi nu ajunge acolo`);
+        else trec.push(a);
+      }
+      raman = trec;
+    }
+  }
+
+  // 3. DOUĂ ANCORE ALE ACELUIAȘI LEG NU POT FI MAI DEPĂRTATE DECÂT LEGUL. Criteriul e
+  //    perechea cea mai depărtată, nu distanța până la mediană — pe un leg de 80 km,
+  //    „toate la cel mult 85 km de mediană" încă permite două ancore la 170 km una de
+  //    alta, ceea ce e imposibil pe un drum de 80 km. (Găsit reconstruind ziua de la
+  //    Reșița: rămâneau patru grupuri întinse pe 91 km, fiecare la ~45 km de mediană.)
+  //    Cine pleacă din pereche se decide după mediană — cea mai depărtată de centru —
+  //    iar mediana se recalculează după fiecare scoatere, altfel un intrus o trage după
+  //    el și duce cu el ancore bune. Fiecare grup identic contribuie cu UN reprezentant:
+  //    ăsta e locul unde „coordonatele identice nu votează" chiar decide ceva.
+  const limitaM = legKm != null && Number.isFinite(legKm)
+    ? Math.min(PLAUZ_MEDIANA_KM * 1000, Math.max(PLAUZ_MIN_LEG_KM, legKm + PLAUZ_MARJA_LEG_KM) * 1000)
+    : PLAUZ_MEDIANA_KM * 1000;
+  for (;;) {
+    if (raman.length < 2) break;
+    const repr = grupeazaIdentice(raman).map(g => g[0]);
+    if (repr.length < 2) break;              // un singur punct distinct: n-are cu ce se compara
+    // cea mai depărtată pereche dintre punctele distincte
+    let maxM = 0;
+    for (let i = 0; i < repr.length; i++)
+      for (let j = i + 1; j < repr.length; j++)
+        maxM = Math.max(maxM, haversineM(repr[i].lat, repr[i].lng, repr[j].lat, repr[j].lng));
+    if (maxM <= limitaM) break;
+    const med = medianaPct(repr);
+    let rau = null, dRau = -1;
+    for (const a of raman) {
+      const d = haversineM(med.lat, med.lng, a.lat, a.lng);
+      if (d > dRau) { dRau = d; rau = a; }
+    }
+    if (!rau) break;
+    raman = raman.filter(a => a !== rau);
+    scoate(rau, `la ${Math.round(dRau / 1000)} km de restul traseului, dar tot legul are ` +
+                `${legKm != null ? legKm.toFixed(1) + ' km' : 'mult mai puțin'}`);
+  }
+
+  return { bune: raman.sort((a, b) => a.sumKm - b.sumKm), aruncate };
+}
+
 // ── ANCORELE: reper geocodat + kilometrul lui de roadbook ───────────────────
 // O geocodare greșită e mai periculoasă decât una lipsă: „Str. Turda" există și în
 // Cluj, iar o ancoră căzută acolo strică toată harta. Verificarea e cea din roadbook:
 // distanța în linie dreaptă dintre două ancore nu poate fi mult mai mare decât drumul
 // dintre boxurile lor. Peste 2× drumul (+300 m pentru drumuri scurte și zgomot),
 // ancora e de pe alt traseu și se aruncă.
+//
+// ATENȚIE (06.08.2026): verificarea asta NU e suficientă singură și n-a fost niciodată.
+// Ea compară ancorele ÎNTRE ELE, deci confundă ACORDUL cu ADEVĂRUL: 11 ancore căzute în
+// exact același punct greșit se potrivesc perfect una cu alta, formează lanțul cel mai
+// lung și le aruncă pe cele 5 corecte. Exact asta s-a întâmplat. De-aia rulează întâi
+// `poartaPlauzibilitate` (mai jos), care judecă fiecare ancoră față de LUME, nu față de
+// celelalte; abia ce trece de ea ajunge aici.
 export function verificaAncore(ancore = []) {
   const lista = [...ancore].filter(a => a && Number.isFinite(a.lat) && Number.isFinite(a.lng))
                            .sort((a, b) => a.sumKm - b.sumKm);
@@ -169,7 +345,11 @@ export function verificaAncore(ancore = []) {
     return { pastrate, scoase };
   };
   const a = lant(false), b = lant(true);
-  const c = a.pastrate.length >= b.pastrate.length ? a : b;
+  // Care lanț e „mai lung" se măsoară în PUNCTE DISTINCTE, nu în boxuri: un lanț de 11
+  // boxuri căzute toate în același punct e o singură informație, iar unul de 5 boxuri în
+  // 5 locuri diferite sunt cinci. Numărate pe boxuri, cele 11 copii ale aceleiași greșeli
+  // băteau cele 5 ancore corecte — și exact așa s-a ales lanțul greșit pe 06.08.2026.
+  const c = nrPuncteDistincte(a.pastrate) >= nrPuncteDistincte(b.pastrate) ? a : b;
   return { bune: [...c.pastrate].sort((x, y) => x.sumKm - y.sumKm), aruncate: c.scoase };
 }
 

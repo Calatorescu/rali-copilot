@@ -581,8 +581,12 @@ console.log('\n═══ Promptul buletinului și cablajul din ecran ═══')
   const scan = readFileSync(join(aici, '..', 'js', 'scan.js'), 'utf8');
   const html = readFileSync(join(aici, '..', 'index.html'), 'utf8');
   const main = readFileSync(join(aici, '..', 'js', 'main.js'), 'utf8');
-  ok('promptul roadbook-ului NU s-a atins', /const ROADBOOK_PROMPT = /.test(scan) &&
-     /CAUTĂ EXPLICIT LINIILE DE FINISH/.test(scan));
+  // v39: promptul roadbook-ului S-A reparat (icoana de finiș era descrisă greșit), dar
+  // cele două documente rămân două căi paralele — buletinul nu s-a atins deloc.
+  ok('promptul roadbook-ului e separat și își vede de roadbook',
+     /const ROADBOOK_PROMPT = /.test(scan) &&
+     /CAUTĂ EXPLICIT TABELELE DE FINISH/.test(scan) &&
+     !/ROADBOOK_PROMPT[\s\S]*?`;/.exec(scan)[0].includes('BULETINUL DIRECTORULUI'));
   ok('există un prompt separat pentru buletin', /const BULLETIN_PROMPT = /.test(scan));
   ok('care spune că documentul e bilingv și cere fiecare probă o singură dată',
      /BILINGV/.test(scan) && /O SINGURĂ DATĂ/.test(scan));

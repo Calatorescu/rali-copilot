@@ -219,10 +219,10 @@ console.log('\n═══ Editorul manual: contractul lui cu pagina și cu jurnal
   ok('comentariul boxului se pune cu textContent — vine dintr-un document extern',
      /com\.textContent = b\.comment/.test(main), 'comentariul ar putea fi randat ca HTML');
   ok('promptul de scanare cere acum o LISTĂ de semne', /"flags" \(LISTĂ\)/.test(scan));
-  ok('și insistă pe liniile de finish, cele ratate la Reșița',
-     /CAUTĂ EXPLICIT LINIILE DE FINISH/.test(scan));
+  ok('și insistă pe tabelele de finish, cele ratate la Reșița',
+     /CAUTĂ EXPLICIT TABELELE DE FINISH/.test(scan));
   ok('cu exemplul boxului care are două icoane, chiar în formatul cerut',
-     /"flags":\["RT_FINISH","RT_START_AUTO"\]/.test(scan));
+     /"flags":\["RT_FINISH","TIMING"\]/.test(scan));
 }
 
 console.log(`\n──────── ${pass} trecute, ${fail} căzute ────────`);

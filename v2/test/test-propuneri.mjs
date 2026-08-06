@@ -106,7 +106,7 @@ console.log('\n═══ Propunerile pe datele reale, box cu box ═══');
   ok('boxul 111 pierde FINISH-ul: e Time Control, nu probă',
      tc && tc.actiune === 'scoate' && tc.flag === 'RT_FINISH' && /Time Control/.test(tc.motiv),
      tc ? tc.motiv : 'lipsește');
-  const orfane = p.filter(x => /fără nicio probă deschisă/.test(x.motiv));
+  const orfane = p.filter(x => /nu începe nicio probă/.test(x.motiv));
   ok('nouă finișuri orfane se scot: 44, 45, 49, 51, 53, 55, 73, 75, 108',
      nums(orfane.map(x => x.box)) === '44,45,49,51,53,55,73,75,108',
      nums(orfane.map(x => x.box)));
@@ -335,9 +335,15 @@ console.log('\n═══ Ecranul: ce vede și ce apasă omul în parcare ══�
      /confirm\(`Aplic toate cele \$\{n\} corecturi/.test(main));
   ok('și tot prin comutaFlag aplică, una câte una',
      /for \(const p of rez\.propuneri\) await comutaFlag\(p\.box, p\.flag\)/.test(main));
-  ok('NIMIC nu se aplică singur: nicio chemare de comutaFlag în afara unui click',
+  // v39: regula nu mai e „nimic nu se aplică singur", ci una mai exactă — NIMIC DIN CE
+  // CRONOMETREAZĂ nu se aplică singur. Când probele vin din buletin, semnele roadbook-ului
+  // nu mai intră în niciun calcul, deci se curăță tăcut (vezi test-citire.mjs). Când NU
+  // există buletin, ele chiar decid, și atunci nimic nu se mișcă fără o apăsare.
+  ok('desenarea propunerilor nu aplică nimic — corecturile intră doar pe click',
      !/renderPropuneri[\s\S]{0,2000}?\n\}/.exec(main)[0]
         .split('addEventListener').shift().includes('comutaFlag'));
+  ok('iar curățenia automată e închisă strict pe cazul „probele vin din buletin"',
+     /if \(!plan \|\| plan\.sursaProbe !== 'buletin' \|\| !plan\.boxes\.length\) return false/.test(main));
   ok('textul de deasupra spune limpede că propunerile sunt DEDUSE, nu citite de pe hârtie',
      /DEDUSE din comentariile scanate/.test(main) && /buletinul de la organizator/.test(main));
   ok('și că finișurile nu se propun niciodată, fiindcă nu scriu în roadbook',
