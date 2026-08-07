@@ -275,8 +275,15 @@ console.log('\n═══ În probă, pe secțiune deasă, ritmul tace ═══'
   // timpii de rostire ar fi fragilă (coadă, TTL, granularitatea fixurilor); cifra
   // logată la momentul deciziei e exactă.
   const vorbe = w.store.journal.filter(e => e.type === 'ritm_vorba');
+  // PRAGUL ĂSTA S-A SCHIMBAT LA v43 (07.08.2026), de la „> 5". Nu fiindcă s-a stricat
+  // ceva, ci fiindcă asta e chiar schimbarea cerută: pe proba asta, condusă la viteză
+  // constantă, devierea se mișcă foarte încet, iar poarta de rărire (RITM_MIN_MS +
+  // RITM_SALT_S) taie repetițiile. Măsurat pe ACELAȘI scenariu: 90 de fraze de ritm cu
+  // codul v42, 4 cu v43 — și cele 4 sunt exact momentele în care devierea chiar s-a
+  // mișcat (3 → 4,9 → 6,5 → 8 secunde). Aserțiunea rămâne o plasă împotriva tăcerii
+  // totale: dacă ajunge la zero, testele de mai jos n-ar mai demonstra nimic.
   ok('s-a vorbit despre ritm în probă (altfel testul n-ar demonstra nimic)',
-     vorbe.length > 5, `${vorbe.length} fraze de ritm`);
+     vorbe.length >= 3, `${vorbe.length} fraze de ritm`);
   ok('NICIUNA n-a plecat cu virajul următor la mai puțin de 12 secunde',
      vorbe.every(e => e.secPanaLaViraj == null || e.secPanaLaViraj >= 12),
      JSON.stringify(vorbe.filter(e => e.secPanaLaViraj != null && e.secPanaLaViraj < 12)));

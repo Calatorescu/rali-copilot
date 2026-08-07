@@ -514,7 +514,7 @@ console.log('\n═══ Cablajul din ecran: cine curăță, cine întreabă ═
      /verifyRoadbook\(boxesRaw, \{ probeleVinDinBuletin: plan.sursaProbe === 'buletin' \}\)/.test(main));
   ok('semnele curățate automat NU lasă rânduri de editat în urmă',
      /if \(b\.num != null && !opt\.motiv\) _probeExtra\.add\(b\.num\)/.test(main));
-  ok('BUILD-ul e v42', /const BUILD = 'v42'/.test(main));
+  ok('BUILD-ul e v43', /const BUILD = 'v43'/.test(main));
   // CACHE din sw.js trebuie să urce ODATĂ cu BUILD, altfel telefonul servește versiunea
   // veche din cache și „am pus v42" e o afirmație nemăsurată. Verificarea se face pe
   // fișier, nu pe memorie: se citește versiunea din main.js și se cere aceeași în sw.js.

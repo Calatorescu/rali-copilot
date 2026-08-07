@@ -36,7 +36,7 @@ let hartaIncoerenta = null;
 // Versiunea build-ului — se ține SINCRON cu CACHE din sw.js la fiecare deploy.
 // Vizibilă în antet și scrisă în jurnal la fiecare pornire: „ce versiune rulează
 // telefonul?" se citește, nu se ghicește (02.08, seara — nu se putea ști).
-const BUILD = 'v42';
+const BUILD = 'v43';
 
 async function init() {
   store = await makeStore();

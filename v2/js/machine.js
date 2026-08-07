@@ -154,6 +154,59 @@ const OFF_REPER_MAX = 40;
 const IMPOSIBIL_DIST_M = 500000, IMPOSIBIL_KMH = 200;
 const HARTA_STRICATA_TXT = 'Nu știu unde e boxul — harta traseului pare greșită. Mergi după roadbook.';
 
+// ── CÂT DE DES SE VORBEȘTE DESPRE RITM, ÎN PROBĂ (v43) ──────────────────────
+// Cererea lui Andreas, 07.08.2026, dimineața cursei. Măsurat în jurnalul City Demo Sibiu
+// (06.08.2026, 11:21:03 → 11:21:21): „4 în avans, ține 45" · „6 virgulă 1 în urmă, ține
+// 49" · „7 virgulă 6 în urmă, ține 49" · „8 virgulă 2 în urmă, ține 50" — PATRU rostiri
+// în 18 secunde, la un pilot care conduce singur. Trei dintre ele spuneau, în fond,
+// același lucru: „ești cam cu atâta în urmă".
+//
+// Două praguri, amândouă cu motivul lângă ele:
+//  • RITM_MIN_MS — intervalul minim între două rostiri de ritm. Până azi NU exista un
+//    prag propriu: ritmul se rostea în ritmul TONURILOR, adică o dată la 4 s (gardul
+//    `clock.mono() - M._lastToneT > 4000` din rtTick), iar în jurnal se văd exact
+//    intervale de 4,0-4,1 s. Deci valoarea de azi e 4000 ms și se dublează: 8000 ms.
+//    Tonurile rămân la 4 s — ele nu ocupă difuzorul cu cuvinte și sunt singurul canal
+//    care rămâne continuu după rărirea asta.
+//  • RITM_SALT_S — cât trebuie să se miște devierea ca să merite o frază nouă. Sub 1,5 s
+//    diferență față de ULTIMA rostire, cifra nouă nu schimbă nicio decizie de volan: la
+//    45 km/h, 1,5 s înseamnă 19 m, adică sub lungimea unei intersecții. Peste prag se
+//    vorbește chiar dacă saltul e brusc — regula rărește repetiția, nu ascunde noutatea.
+const RITM_MIN_MS = 8000;
+const RITM_SALT_S = 1.5;
+//  • RITM_MAX_TACERE_MS — plasa de siguranță peste regula de stagnare (07.08, dimineața
+//    cursei). Fără ea, o probă condusă CONSTANT ajungea la 4 fraze în 14 minute (măsurat
+//    pe RT4 simulată): devierea îngheța, deci poarta tăcea la nesfârșit — iar „ține X"
+//    nu se mai actualiza deloc. Andreas a cerut „la jumătate", nu „mai nimic". La 45 s
+//    fără nicio rostire, se vorbește oricum o dată, chiar dacă devierea stagnează.
+//  • …ȘI SE STRÂNGE SPRE FINISH (cerut de Andreas în aceeași dimineață): pe ultimele
+//    minute ale probei, fiecare secundă de deviere devine tot mai greu de recuperat,
+//    deci confirmarea trebuie să vină mai des chiar dacă cifra stagnează. Sub 3 minute
+//    rămase → 30 s; sub 1 minut → 15 s. Pragurile pe timp IDEAL rămas, nu pe distanță:
+//    la 20 km/h și la 50 km/h „un minut până la linie" înseamnă același lucru.
+const RITM_MAX_TACERE_MS = 45000;
+const RITM_TACERE_FINAL = [[60, 15000], [180, 30000]];   // [sub câte secunde rămase, plafonul]
+
+function ritmPlafonTacere(ramasS) {
+  if (ramasS != null) {
+    for (const [prag, plafon] of RITM_TACERE_FINAL)
+      if (ramasS < prag) return plafon;
+  }
+  return RITM_MAX_TACERE_MS;
+}
+
+// Poarta ritmului, scoasă ca funcție PURĂ ca să poată fi rulată direct pe secvențele din
+// jurnalele reale (vezi test-ritm.mjs, care o hrănește cu momentele măsurate pe teren).
+// `ultimaMs`/`ultimaA` = momentul și devierea absolută de la ULTIMA rostire de ritm din
+// proba curentă; null/undefined la prima. `ramasS` = secundele IDEALE rămase din probă
+// (optional; fără el, plafonul e cel de croazieră).
+export function ritmPoateVorbi(acumMs, a, ultimaMs, ultimaA, ramasS) {
+  if (ultimaMs != null && acumMs - ultimaMs < RITM_MIN_MS) return false;
+  if (ultimaMs != null && acumMs - ultimaMs >= ritmPlafonTacere(ramasS)) return true;
+  if (ultimaA != null && Math.abs(a - ultimaA) < RITM_SALT_S) return false;
+  return true;
+}
+
 export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }) {
   const M = {
     state: 'PREP',
@@ -859,7 +912,7 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
       // NOU în v37: fraza completă se rostește DOAR dacă încape până la momentul „acum"
       // al manevrei următoare. Dacă nu, se scurtează — întâi metrii, apoi legătura.
       const capManevra = TURN_DIRS.has(b.dir || ''), capFinish = esteFinish(b);
-      let txt = baza;
+      let txt = baza, coadaPusa = false;
       if ((isNow || ultimaCuCifra) && (capManevra || capFinish)) {
         const coada = coadaManevra(i);
         const limita = capFinish ? COADA_FINISH_M : (M.rt ? COADA_IMEDIAT_M : COADA_MAX_M);
@@ -875,10 +928,43 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
             baza                                           // doar manevra de acum
           ];
           txt = alegeFraza(variante, secundePanaLaUrmatorulCritic(i));
+          coadaPusa = txt !== baza;
           // ce s-a spus aici nu se mai repetă după linie, la închiderea probei
           if (capFinish && txt !== baza) M._coadaFinish = coada.box.num;
         }
       }
+      // ── PRIMA AVERTIZARE SPUNE ȘI CE BOX E (v43) ─────────────────────────
+      // Cererea lui Andreas, 07.08.2026: „să aud și numărul boxului și ce zice
+      // roadbook-ul despre el, ca să mă pot lega de caiet și de hartă dintr-o ureche."
+      //   „500 de metri — giratoriu, ieșirea 2 — boxul 10, Str. Constituției"
+      // O SINGURĂ DATĂ per box, la prima treaptă care se rostește (de obicei 500 m).
+      // De ce nu la toate treptele: pe secțiunile dese (lanțurile v37), frazele lungi
+      // la trepte succesive se calcă una pe alta și vocea aruncă anunțuri — în jurnalele
+      // reale asta apare ca `voce_aruncata`, adică fix manevra pe care pilotul n-o aude.
+      // Trei excepții, din același motiv:
+      //  • „acum" nu primește niciodată sufixul — acolo fiecare cuvânt în plus întârzie
+      //    decizia de volan cu ~90 ms și e singura frază care nu are voie să întârzie;
+      //  • dacă fraza are deja coadă („…, apoi în 300 de metri stânga"), ce urmează bate
+      //    orientarea: secvența de manevre e informația care se pierde dacă lipsește;
+      //  • în lanțuri (v37, „Trei la rând: …") nu se adaugă nimic — sunt deja comprimate
+      //    intenționat, iar ecourile ies pe altă ramură, care nici nu ajunge aici.
+      // Reperul trece prin ACEEAȘI sită ca ghidajul offroute din v42 (extrageReper →
+      // scurtReper): un singur loc care știe cât din comentariu încape într-o frază.
+      if (!isNow && !coadaPusa && capManevra && !M._ann[key + '_box'] && !lantDeLa(i)) {
+        const sufix = sufixBox(b);
+        if (sufix) {
+          // încape? Fereastra e până la momentul „acum" al boxului ĂSTA (nowM e chiar
+          // pragul lui) sau până la „acum"-ul manevrei următoare, ce vine mai devreme.
+          const vNow = Math.max(2.5, (M.speedKmh || 20) / 3.6);
+          const fereastraS = Math.min((dM - nowM) / vNow, secundePanaLaUrmatorulCritic(i));
+          txt = alegeFraza([txt + sufix, txt], fereastraS);
+          if (txt !== baza) log('box_descris', { boxNum: b.num, dM: Math.round(dM),
+                                                 txt, fereastraS: Math.round(fereastraS * 10) / 10 });
+        }
+      }
+      // s-a consumat singura ocazie, indiferent dacă sufixul a încăput sau nu: la treapta
+      // următoare fraza trebuie să fie scurtă, nu „mai încerc o dată, poate acum intră"
+      M._ann[key + '_box'] = true;
       // Clasa 'manevra' lipsea tocmai de la anunțurile de viraj — adică fix de la ce
       // descrie regula. Comitul „paznic de directie" (03.08) a pus clasele pe alarme și
       // pe ritm, dar anunțul principal („150 de metri — dreapta") rămăsese neclasificat,
@@ -1075,7 +1161,23 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
       const potVorbi = linisteInainteaVirajului ? false
         : deasa ? (!M._lant && clock.mono() - (M._ritmVorbaT || 0) >= RITM_DEASA_MS)
         : true;
-      if (a > (def.voiceThr || 3) && potVorbi) {
+      // POARTA DE RĂRIRE (v43): intervalul minim dublat (4 → 8 s) și tăcere pe stagnare.
+      // Vezi RITM_MIN_MS / RITM_SALT_S. Se aplică DOAR cifrei de deviere — banca de timp
+      // de mai jos are pragul ei de 15 s și spune altceva („ia avans, urmează zonă lentă"),
+      // iar tonurile rămân la 4 s. Starea se ține pe PROBĂ, nu pe zi: la startul următor
+      // obiectul `rt` e nou, deci prima cifră din fiecare probă se rostește imediat.
+      const areCeSpune = a > (def.voiceThr || 3);
+      // secundele ideale rămase din probă — ele strâng plafonul de tăcere spre finish
+      const ramasS = idealTimeS(def.distKm, segs) - idealTimeS(parcursKm, segs);
+      const poarta = ritmPoateVorbi(clock.mono(), a, rt._ritmT, rt._ritmA, ramasS);
+      if (areCeSpune && potVorbi && !poarta) {
+        // două numărătoare: una de la ultima rostire (intră în jurnal, lângă fraza care
+        // urmează) și una pe toată proba — asta e cifra care spune, la debrief, cât a
+        // tăiat rărirea. Fără ea, „s-a rărit" ar rămâne o impresie.
+        rt._ritmTacute = (rt._ritmTacute || 0) + 1;
+        rt._ritmTacuteTotal = (rt._ritmTacuteTotal || 0) + 1;
+      }
+      if (areCeSpune && potVorbi && poarta) {
         // Viteza REALĂ care anulează devierea până la finish, FĂRĂ plafon (cerut de
         // Andreas, 02.08, după tura 4): „ține 52" plafonat la +30% suna identic la 20
         // și la 40 de secunde întârziere. Acum cifra e cea adevărată — 58, 65, cât
@@ -1102,11 +1204,15 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
         say(deasa || linisteInainteaVirajului
           ? `${secRo(a)} ${dev >= 0 ? 'în urmă' : 'în avans'}` : fraza, 3, 'pace', 'ritm');
         M._ritmVorbaT = clock.mono();
+        const tacute = rt._ritmTacute || 0;
+        rt._ritmT = clock.mono(); rt._ritmA = a; rt._ritmTacute = 0;
         // cât drum liber era în față când s-a vorbit despre secunde — ca la debrief
-        // („de ce mi-a zis de cifre fix în viraj?") răspunsul să fie o măsurătoare
+        // („de ce mi-a zis de cifre fix în viraj?") răspunsul să fie o măsurătoare.
+        // `tacute` = câte cifre au fost înghițite de poarta de rărire de la ultima
+        // rostire încoace; fără el, rărirea n-ar putea fi verificată decât prin lipsă.
         log('ritm_vorba', { secPanaLaViraj: secPanaLaViraj === Infinity ? null
                               : Math.round(secPanaLaViraj * 10) / 10,
-                            deasa, scurt: deasa || linisteInainteaVirajului });
+                            deasa, scurt: deasa || linisteInainteaVirajului, tacute });
       }
       // banca de timp: zonele lente din față cer avans acum
       if (potVorbi && rt.zonesAdvised !== false && def.zones && def.zones.length && clock.mono() - M._lastBank > 15000) {
@@ -1849,6 +1955,16 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
     const rep = scurtReper(extrageReper(b.comment) || b.comment);
     if (rep) bucati.push(rep);
     return bucati.length ? bucati.join(', ') : null;
+  }
+
+  // CE SE LIPEȘTE la prima avertizare a unei manevre (v43): numărul boxului și reperul.
+  // Nu folosește `descriereBox` fiindcă aia începe cu FELUL boxului („giratoriu, ieșirea
+  // 2"), iar aici felul e deja rostit în fraza de manevră — s-ar auzi de două ori.
+  // Fără număr de box nu se spune nimic: „boxul necunoscut" nu ajută pe nimeni.
+  function sufixBox(b) {
+    if (!b || b.num == null) return null;
+    const rep = scurtReper(extrageReper(b.comment) || b.comment);
+    return ` — boxul ${b.num}` + (rep ? `, ${rep}` : '');
   }
 
   function offRouteGhidaj(fix) {
