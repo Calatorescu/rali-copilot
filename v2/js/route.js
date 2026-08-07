@@ -808,6 +808,36 @@ function schimbariPeBox(boxes, schimbari, startKm, distKm) {
   return { bune, afara };
 }
 
+// ── SCHIMBĂRILE OFICIALE + CELE PUSE DE OM: SE ADUNĂ, NU SE ÎNLOCUIESC (v46) ─
+// DEFECTUL, măsurat pe teren la TR 5 Sibiu (07.08.2026) și dovedit în jurnalul zilei:
+// buletinul dădea medie 15 km/h cu schimbare oficială la boxul 136 (km 1,15 de probă)
+// spre 48,5. Pilotul a adăugat apoi patru zone de viteză de mână (boxurile 142, 143,
+// 146, 147). Codul de atunci scria `folosite = s2.bune`, adică lista omului ÎNLOCUIA
+// tot ce spunea buletinul — schimbarea de la boxul 136 a dispărut din plan, aplicația
+// a ținut 15 km/h pe primii 5 km de probă și proba s-a penalizat cu 150 de puncte.
+//
+// REGULA, de-acum: schimbările din buletin intră ÎNTOTDEAUNA în segmente, iar lista
+// omului se adaugă peste ele. Pe ACELAȘI box omul are ultimul cuvânt — el corectează
+// organizatorul, nu invers — și de-aici iese gratis și cazul în care el rescrie de mână
+// exact schimbarea oficială (TR 6, boxul 17 → 39,5, în aceeași zi): un singur punct,
+// deci un singur segment, nu o dublură.
+//
+// Amândouă listele vin deja trecute prin `schimbariPeBox`, deci poartă `fromKm` de
+// probă și un `box` real; funcția nu validează nimic în plus și nu inventează nimic.
+function imbinaSchimbari(dinBuletin, aleOmului) {
+  const out = (Array.isArray(dinBuletin) ? dinBuletin : []).map(s => ({ ...s }));
+  for (const m of (Array.isArray(aleOmului) ? aleOmului : [])) {
+    if (!m) continue;
+    const i = m.box != null ? out.findIndex(s => s.box === m.box) : -1;
+    if (i >= 0) out[i] = { ...m };                 // conflict pe același box: omul câștigă
+    else out.push({ ...m });
+  }
+  // ordinea de pe drum; sortarea e stabilă, deci la kilometri egali rămâne ordinea de
+  // mai sus (buletin, apoi om) — iar `faSegmente` păstrează ultimul, adică tot pe-al omului
+  out.sort((a, b) => a.fromKm - b.fromKm);
+  return out;
+}
+
 export function detectRts(boxes, savedSpeeds = {}) {
   const rts = [];
   const deschise = [];
@@ -1087,10 +1117,12 @@ export function probeDinBuletin(boxes, buletin, legPage, savedSpeeds = {}) {
     const kmh = sv.kmh != null ? sv.kmh : p.kmh;
     if (kmh == null)
       nota('de_mana', `${nume}: buletinul n-a dat media — pune-o de mână, altfel proba se sare.`);
+    // Schimbările omului se ADAUGĂ peste cele din buletin (v46). Până azi lista lui le
+    // înlocuia pe toate — vezi `imbinaSchimbari` pentru proba care a plătit greșeala.
     let folosite = puncte;
     if (sv.schimbari.length) {
       const s2 = schimbariPeBox(bx, sv.schimbari, startKm, distKm);
-      folosite = s2.bune;
+      folosite = imbinaSchimbari(puncte, s2.bune);
       for (const a of s2.afara)
         nota('de_mana', `${nume}: schimbarea pusă de tine pe boxul ${a.box} ` +
           `${a.exista ? 'nu e între startul și finișul probei' : 'nu există în roadbook'} — n-am aplicat-o.`);

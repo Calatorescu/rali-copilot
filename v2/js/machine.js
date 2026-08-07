@@ -236,6 +236,8 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
     _offVorbaMono: 0, _offSector: null, _hdg: null, _hartaIst: {}, _hartaStricata: false,
     // auto-calibrarea odometrului (vezi calibreaza + makeCalibrator din geo.js)
     calFactor: 1, _rawSinceAnchor: 0, _calAnchorKm: 0, _calN: 0,
+    // segmentul de calibrare curent e POLUAT? (null = curat; altfel motivul, pentru jurnal)
+    _calPoluat: null,
     _anchorKm: 0,
     // poziția absolută: ancora geografică + cât s-a curbat drumul de la ea
     _anchorPos: null, _lastPos: null, _curveDeg: 0, _curveHdg: null
@@ -1386,6 +1388,11 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
       log('sync_refuzat', { boxNum: num, deltaM: p.deltaM, rupeRt: p.rupeRt || null });
       return p;                      // interfața primește datele și întreabă
     }
+    // Un salt CONFIRMAT peste pragul „mare" (același 400 m care cere confirmarea, vezi
+    // previzualizeazaBox) spune că poziția crezută nu mai corespundea drumului oficial —
+    // deci nici distanța brută adunată până aici nu descrie segmentul din roadbook.
+    // 07.08, 13:13:41: „box 45, −1249 m", în plină rătăcire. Segmentul se aruncă.
+    if (p.mare) poluCal('salt_pozitie');
     snapToBox(p.idx, 'manual');
     say(`Setat box ${num}.`, 2);
     return true;
@@ -1492,16 +1499,50 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
     M._curveDeg = 0; M._curveHdg = null;
   }
 
+  // ── SEGMENTUL POLUAT: kilometrii de pe drumul greșit nu sunt kilometri de roadbook ──
+  // Sibiu, 07.08.2026, 13:13:41, măsurat în jurnal. Între boxul 39 și boxul 45,
+  // roadbook-ul scrie 7,47 km. Mașina a măsurat 8,719 km — pentru că la 13:10:44
+  // pilotul ieșise de pe traseu (`offroute_intrare`, routeKm 13,47) și cei 1,25 km în
+  // plus sunt RĂTĂCIREA, nu eroarea odometrului. Raportul 0,857 a intrat în calibrator
+  // cu greutatea lui de 8,7 km, a tras ținta la 0,906 și a împins factorul la 0,985 →
+  // 0,965 → 0,940, ca să se oprească la 0,957 pe restul zilei. Pe segmentele CURATE
+  // din aceeași zi, media raporturilor e 0,998 — adică odometrul era bun, iar cei −4,3%
+  // au fost inventați. Că măsurătorile se băteau cap în cap se vedea în jurnal: 20 din
+  // cele 23 de `cal_asteapta` ale leg-ului spun „segmentele se contrazic".
+  // (Cifre măsurate în jurnal + replay-ul din test-calibrare.mjs, secțiunea ZIUA_07_08.)
+  //
+  // Statistica din `makeCalibrator` nu putea salva nimic aici: ea apără de ZGOMOT
+  // (împrăștiere în jurul adevărului), iar asta e o măsurătoare cu totul altceva —
+  // drum condus care nu există în roadbook. Un rând fals nu se mediază, se aruncă.
+  //
+  // Deci: orice fereastră în care s-a putut conduce în afara traseului marchează
+  // segmentul de calibrare curent, iar segmentul marcat NU ajunge la calibrator.
+  function poluCal(motiv) {
+    if (!M._calPoluat) M._calPoluat = motiv;   // primul motiv e cel care descrie fereastra
+  }
+
   function calibreaza(targetKm) {
     const masurat = M._rawSinceAnchor;
     const oficial = targetKm - M._calAnchorKm;
+    const poluat = M._calPoluat;
     M._rawSinceAnchor = 0;
     M._calAnchorKm = targetKm;
+    // Segmentul următor pornește curat — dar dacă mașina e ÎNCĂ în afara traseului,
+    // pornește la fel de poluat: și ce urmează se măsoară tot pe drum din afara riglei.
+    M._calPoluat = M.offRoute ? 'offroute' : null;
     ancoreazaGeo(targetKm);                   // boxul confirmat e și ancoră geografică
+    if (poluat) {
+      // Aruncat, nu mediat. Contorul brut e deja pus pe zero și ancora mutată mai sus,
+      // deci segmentul următor pleacă curat de la boxul ăsta.
+      log('cal_refuzat', { motiv: poluat, masurat: r3(masurat), oficial: r3(oficial),
+                           raport: masurat > 0 ? r3(oficial / masurat) : null });
+      return;
+    }
     const r = cal.adauga(oficial, masurat);
     if (r.stare === 'scurt') return;          // segment prea scurt = zgomot, nu semnal
     if (r.stare === 'refuzat') {              // în afara plajei = snap greșit, nu odometru
-      log('cal_refuzat', { raport: r3(r.raport), masurat: r3(masurat), oficial: r3(oficial) });
+      log('cal_refuzat', { motiv: 'plaja', raport: r3(r.raport),
+                           masurat: r3(masurat), oficial: r3(oficial) });
       return;
     }
     M._calN = cal.segmente;
@@ -1973,6 +2014,9 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
           de: clock.rally(), cum, kmLaIesire: M.routeKm, orb: true,
           descriere: null, _descrisIdx: null, _parasite: {} };
     M._offSector = null; M._offVorbaMono = 0;
+    // Din clipa asta, kilometrii nu mai sunt kilometri de roadbook: segmentul de
+    // calibrare în curs e compromis, oricum s-ar fi declarat ieșirea (automat sau buton).
+    poluCal('offroute');
     log('offroute_intrare', { cum, boxNum: t ? t.box.num : null, orb: !t,
                               distM: t ? Math.round(t.distM) : null, inFata: t ? t.inFata : null,
                               motivIntoarcere: t ? (t.motivIntoarcere || null) : null,
@@ -2123,6 +2167,11 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
   function iesiOffRoute(cum) {
     const o = M.offRoute;
     if (!o) return;
+    // Reintrarea închide fereastra murdară: `snapToBox` de mai jos cheamă `calibreaza`,
+    // iar segmentul care se termină AICI conține rătăcirea, deci se aruncă. Steagul se
+    // ridică explicit, nu se bazează pe cel de la intrare: între timp putea fi coborât
+    // de o confirmare de box făcută chiar în timpul rătăcirii (07.08, 13:13:41).
+    poluCal('offroute');
     M.offRoute = null; M._offSemne = []; M._desyncSaid = null;
     log('offroute_iesire', { cum, boxNum: o.boxNum, ratacitM: Math.round((M.routeKm - o.kmLaIesire) * 1000) });
     M._lastSnapT = clock.mono();
@@ -2316,7 +2365,7 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
       // zi/leg nou = riglă nouă: măsurătorile de calibrare NU se moștenesc între leg-uri
       cal = makeCalibrator();
       M.calFactor = 1; M._rawSinceAnchor = 0; M._calAnchorKm = 0; M._anchorKm = 0;
-      M._calN = 0;
+      M._calN = 0; M._calPoluat = null;       // riglă nouă, segment curat
       // linia de start e prima ancoră geografică: de aici încolo poziția absolută lucrează
       M._anchorPos = M._lastPos ? { ...M._lastPos } : null;
       M._curveDeg = 0; M._curveHdg = null;
