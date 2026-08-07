@@ -10,7 +10,10 @@ import { buildPlan, detectRts, sanitizeBoxes, groupByLeg, verifyRoadbook,
          reconRecupereaza, verificaHarta, hartaPentruLeg, coerentaHarta,
          normFlags, areFlag, esteStart, esteFinish, legKey,
          rezumatVerificare, propuneCorecturiProbe, frazaSemneCuratate,
-         normVitezaSalvata, imbinaBuletin } from './route.js';
+         normVitezaSalvata, imbinaBuletin,
+         DIRECTII_EDITOR, aplicaDirectie, normVirajeProprii, puneVirajPropriu,
+         scoateVirajPropriu, aplicaVirajeProprii, instantaneuDirectii,
+         restaureazaDirectii, normDirScanat } from './route.js';
 import { makeMachine } from './machine.js';
 import { makeDriverModel } from './learn.js';
 import { makeUi, startHeaderClock } from './ui.js';
@@ -26,6 +29,10 @@ import { makeHartaEcran, testeazaDale } from './harta-ecran.js';
 const $ = id => document.getElementById(id);
 let store, clock, voice, ui, driver, machine = null, gps = null, plan = null, sync = null;
 let boxesRaw = [], reconRec = null;
+// „Virajele mele" (v45): lista de direcții DECLARATE de om, pe leg — { legKey: [{num,dir}] }.
+// Și fotografia direcțiilor citite de scanare, făcută o singură dată, la prima aplicare,
+// ca revenirea să fie posibilă — { legKey: { num: dir|null } }.
+let virajeProprii = {}, dirScanat = {};
 // starea recunoașterii pentru leg-ul activ, calculată în rebuildPlan și afișată în
 // panoul de pregătire — pilotul trebuie s-o vadă ÎNAINTE de START, nu s-o deducă din
 // comportament (04.08.2026: două zile de test fără geometrie, fără ca nimic s-o spună)
@@ -36,7 +43,7 @@ let hartaIncoerenta = null;
 // Versiunea build-ului — se ține SINCRON cu CACHE din sw.js la fiecare deploy.
 // Vizibilă în antet și scrisă în jurnal la fiecare pornire: „ce versiune rulează
 // telefonul?" se citește, nu se ghicește (02.08, seara — nu se putea ști).
-const BUILD = 'v44';
+const BUILD = 'v45';
 
 async function init() {
   store = await makeStore();
@@ -68,6 +75,10 @@ async function init() {
   // (fișier de pe alt telefon = conținut extern) sau dintr-un IndexedDB scris de o
   // versiune veche. Singurul punct prin care trec toate căile. (Audit 02.08.2026, P3.)
   boxesRaw = sanitizeBoxes((await store.get('plan_raw')) || []);
+  // „Virajele mele" trec prin aceeași sită ca planul, din același motiv: lista poate veni
+  // dintr-un fișier de import, deci e conținut extern până se dovedește altfel.
+  virajeProprii = normVirajeProprii(await store.get('viraje_proprii'));
+  dirScanat = normDirScanat(await store.get('dir_scanat'));
   await recupereazaDraftRecon();      // o înregistrare întreruptă nu se mai pierde
   await rebuildPlan();
   sync = makeSync({
@@ -332,6 +343,7 @@ function renderPrep() {
     }
   }
   renderBuletin();
+  renderViraje();
   renderProbe();
   renderStart();
   renderRecon();
@@ -387,6 +399,15 @@ function renderBuletin() {
 }
 
 const km2 = v => v.toFixed(2).replace('.', ',');
+
+// Distanța cu semn, pentru selectorul de box: „+120 m", „−1,33 km". Un singur loc care
+// știe formatul, fiindcă de la v45 cifra asta e scrisă pe DOUĂ butoane (lista și butonul
+// de mănușă) și e singura informație pe baza căreia se apasă — alegerea aplică direct,
+// fără al doilea pas de confirmare.
+function semnDist(deltaM) {
+  const a = Math.abs(deltaM);
+  return (deltaM >= 0 ? '+' : '−') + (a >= 1000 ? km2(a / 1000) + ' km' : a + ' m');
+}
 
 function randBuletinProba(rt) {
   const rand = document.createElement('div');
@@ -598,6 +619,167 @@ async function scoateLimita(key, deLaBox, panaLaBox) {
   await rebuildPlan();
 }
 
+// ── „VIRAJELE MELE" — unealta de masă (v45) ─────────────────────────────────
+// Editorul de direcție de pe cardul boxului e unealta de FINEȚE: repari un box, acum, în
+// intersecție. Cardul ăsta e unealta de MASĂ: seara, cu roadbook-ul de hârtie deschis, se
+// introduc în lanț cele câteva zeci de boxuri unde chiar se virează, iar restul se
+// amuțește dintr-o apăsare. Pe 152 de boxuri, viteza de introducere e tot ce contează —
+// de-aia fluxul e „scrie numărul, apasă direcția", fără niciun buton de confirmare între
+// ele, iar câmpul se golește și își ia focusul singur.
+const virajeLeg = () => (plan && plan.legKey && virajeProprii[plan.legKey]) || [];
+
+function renderViraje() {
+  const wrap = $('vp-lista');
+  if (!wrap) return;
+  // butoanele de direcție: aceleași zece, din aceeași sursă ca editorul per-box
+  const bt = $('vp-butoane');
+  if (bt && !bt.childElementCount) {
+    for (const d of DIRECTII_EDITOR) {
+      const b = document.createElement('button');
+      b.className = 'btn sm sec';
+      b.textContent = d.txt;
+      b.addEventListener('click', () => adaugaViraj(d.v));
+      bt.appendChild(b);
+    }
+  }
+  const lista = virajeLeg();
+  const rez = $('vp-rezumat');
+  if (rez) {
+    const n = plan ? plan.boxes.length : 0;
+    rez.textContent = lista.length
+      ? `${lista.length} ${lista.length === 1 ? 'viraj declarat' : 'viraje declarate'}` +
+        (n ? ` · restul de ${n - lista.length} boxuri vor tăcea` : '')
+      : 'Niciun viraj declarat încă' + (n ? ` (leg-ul are ${n} boxuri)` : '');
+    rez.style.color = lista.length ? 'var(--ok)' : 'var(--dim)';
+  }
+  wrap.textContent = '';
+  for (const v of lista) {
+    const b = plan.boxes.find(x => x.num === v.num);
+    const r = document.createElement('div');
+    r.className = 'row';
+    const t = document.createElement('span');
+    t.className = 'line grow';
+    // Boxul care nu există în leg-ul activ se vede ROȘU în listă, nu la finalul aplicării:
+    // o cifră tastată greșit trebuie prinsă când se uită la listă, nu după.
+    t.textContent = `box ${v.num}` + (b ? ` · ${km2(b.sumKm)} km` : ' · NU EXISTĂ în leg') +
+                    ` · ${v.dir}`;
+    t.style.color = b ? '' : 'var(--bad)';
+    const x = document.createElement('button');
+    x.className = 'btn danger sm';
+    x.textContent = '✕';
+    x.addEventListener('click', () => stergeViraj(v.num));
+    r.append(t, x);
+    wrap.appendChild(r);
+  }
+}
+
+async function salveazaViraje() {
+  await store.put('viraje_proprii', virajeProprii);
+}
+
+// O intrare în lanț. Fără dialog, fără buton de confirmare: numărul + direcția SUNT
+// decizia. Singurul lucru care oprește fluxul e un box care nu există — și atunci câmpul
+// NU se golește, ca omul să corecteze cifra, nu s-o retasteze.
+async function adaugaViraj(dir) {
+  const inp = $('vp-num'), st = $('vp-st');
+  const spune = (txt, rau) => { if (st) { st.textContent = txt;
+                                          st.style.color = rau ? 'var(--bad)' : 'var(--ok)'; } };
+  const n = parseInt(inp ? inp.value : '', 10);
+  if (!isFinite(n)) { spune('Scrie întâi numărul boxului.', true); if (inp) inp.focus(); return; }
+  if (!plan || !plan.legKey) { spune('Scanează întâi roadbook-ul.', true); return; }
+  if (!plan.boxes.some(x => x.num === n)) {
+    spune(`Boxul ${n} nu există în ${plan.legLabel || 'leg-ul activ'}.`, true);
+    if (inp) inp.select();
+    return;
+  }
+  const noua = puneVirajPropriu(virajeLeg(), n, dir);
+  if (!noua) { spune('Direcție necunoscută.', true); return; }
+  virajeProprii[plan.legKey] = noua;
+  await salveazaViraje();
+  try { store.log('viraj_propriu', { leg: plan.legKey, boxNum: n, dir }, Date.now()); } catch (e) {}
+  spune(`box ${n} → ${dir}`, false);
+  if (inp) { inp.value = ''; inp.focus(); }
+  renderViraje();
+}
+
+async function stergeViraj(num) {
+  if (!plan || !plan.legKey) return;
+  virajeProprii[plan.legKey] = scoateVirajPropriu(virajeLeg(), num);
+  await salveazaViraje();
+  try { store.log('viraj_propriu_sters', { leg: plan.legKey, boxNum: num }, Date.now()); } catch (e) {}
+  renderViraje();
+}
+
+// APLICAREA. Singurul pas cu confirmare din cardul ăsta, fiindcă e singurul care schimbă
+// dintr-o dată toate direcțiile leg-ului — iar cifrele trebuie citite înainte, nu după.
+async function aplicaVirajele() {
+  if (!plan || !plan.boxes.length) { alert('Scanează întâi roadbook-ul.'); return; }
+  const lista = virajeLeg();
+  if (!lista.length) { alert('Lista e goală: n-ai declarat niciun viraj.\n\nScrie numărul unui box și apasă direcția lui.'); return; }
+  const total = plan.boxes.length;
+  const exista = lista.filter(v => plan.boxes.some(x => x.num === v.num)).length;
+  const inexistente = lista.length - exista;
+  if (!confirm(`Pun direcțiile tale pe ${exista} ${exista === 1 ? 'box' : 'boxuri'} și ` +
+               `ÎNAINTE pe restul de ${total - exista}.\n\n` +
+               (inexistente ? `${inexistente} din lista ta nu există în ${plan.legLabel || 'leg-ul activ'} și se ignoră.\n\n` : '') +
+               `Scanarea rămâne pentru kilometraje și probe. Semnele de probă și TC-urile ` +
+               `nu se ating.\n\nAplic?`)) return;
+  // FOTOGRAFIA DIRECȚIILOR SCANATE se face O SINGURĂ DATĂ pe leg, la prima aplicare.
+  // A doua aplicare n-are voie s-o rescrie: atunci direcțiile curente sunt deja ALE LUI,
+  // iar „înapoi la direcțiile scanate" ar deveni „înapoi la ce am pus tot eu".
+  if (!dirScanat[plan.legKey] || typeof dirScanat[plan.legKey] !== 'object' || Array.isArray(dirScanat[plan.legKey])) {
+    dirScanat[plan.legKey] = instantaneuDirectii(plan.boxes);
+    await store.put('dir_scanat', dirScanat);
+  }
+  const r = aplicaVirajeProprii(plan.boxes, lista);
+  for (const s of r.schimbate) {
+    try { store.log('flag_manual', { ce: 'dir', boxNum: s.num, km: s.km, leg: plan.legKey,
+                                     inainte: s.inainte, dupa: s.dupa,
+                                     sursa: 'viraje_proprii' }, Date.now()); } catch (e) {}
+  }
+  try { store.log('viraje_proprii', { leg: plan.legKey, declarate: r.declarate,
+                                      amutite: r.amutite, schimbate: r.schimbate.length,
+                                      lipsa: r.lipsa }, Date.now()); } catch (e) {}
+  await store.put('plan_raw', boxesRaw);
+  await rebuildPlan();
+  // Cu cursa PORNITĂ, rebuildPlan scrie „planul se schimbă abia la următorul START" —
+  // adevărat pentru structură (probe, kilometraje), dar direcțiile tocmai au intrat:
+  // boxurile planului sunt chiar obiectele modificate, deci vocea le folosește imediat.
+  // Fără corectura de mai jos, ecranul arăta două mesaje care se contrazic (audit, 07.08).
+  if (machine && $('prep-scan-st'))
+    $('prep-scan-st').textContent = 'Direcțiile tale au intrat IMEDIAT, și cu cursa pornită. ' +
+      'Doar structura (probe, kilometraje) așteaptă următorul START.';
+  renderViraje();
+  const st = $('vp-st');
+  if (st) {
+    st.textContent = `Aplicat: ${r.declarate} viraje, ${r.amutite} boxuri mute` +
+      (r.schimbate.length ? ` (${r.schimbate.length} direcții schimbate)` : ' — nimic nou de schimbat') +
+      (r.lipsa.length ? ` · IGNORATE, nu există: ${r.lipsa.join(', ')}` : '');
+    st.style.color = r.lipsa.length ? 'var(--warn)' : 'var(--ok)';
+  }
+}
+
+async function restaureazaScanate() {
+  if (!plan || !plan.legKey) return;
+  const foto = dirScanat[plan.legKey];
+  if (!foto) { alert('Nu există o fotografie a direcțiilor scanate pentru leg-ul ăsta — n-ai aplicat încă nimic.'); return; }
+  if (!confirm('Pun la loc direcțiile citite de scanare pe leg-ul ăsta.\n\n' +
+               'Lista ta de viraje NU se șterge — poți aplica din nou oricând.\n\nContinui?')) return;
+  const schimbate = restaureazaDirectii(plan.boxes, foto);
+  for (const s of schimbate) {
+    try { store.log('flag_manual', { ce: 'dir', boxNum: s.num, leg: plan.legKey,
+                                     inainte: s.inainte, dupa: s.dupa,
+                                     sursa: 'restaurare_scanate' }, Date.now()); } catch (e) {}
+  }
+  try { store.log('directii_restaurate', { leg: plan.legKey, schimbate: schimbate.length }, Date.now()); } catch (e) {}
+  await store.put('plan_raw', boxesRaw);
+  await rebuildPlan();
+  renderViraje();
+  const st = $('vp-st');
+  if (st) { st.textContent = `Restaurat: ${schimbate.length} direcții puse înapoi cum le-a citit scanarea.`;
+            st.style.color = 'var(--ok)'; }
+}
+
 function renderProbe() {
   const wrap = $('prep-probe');
   if (!wrap) return;
@@ -778,6 +960,29 @@ function randProba(b) {
   }
   rand.appendChild(butoane);
 
+  // ── DIRECȚIA BOXULUI, CORECTATĂ DE MÂNĂ (v45) ─────────────────────────────
+  // De ce stă aici, sub semnele de probă, și nu într-un ecran al lui: e ACELAȘI gest, în
+  // aceeași parcare, cu roadbook-ul de hârtie în mână — „boxul 63 e stânga, nu dreapta"
+  // se repară lângă „boxul 64 e finiș". Butonul apăsat arată direcția de ACUM, exact ca
+  // bifa de la semne, ca omul să vadă dintr-o privire ce crede aplicația despre box.
+  const dirCap = document.createElement('p');
+  dirCap.className = 'line dim';
+  dirCap.textContent = 'direcția din tulipă' +
+    (b.dir ? '' : ' — boxul n-are nicio direcție citită') + ':';
+  rand.appendChild(dirCap);
+  const dirRand = document.createElement('div');
+  dirRand.className = 'dirrow';
+  for (const d of DIRECTII_EDITOR) {
+    const activ = b.dir === d.v;
+    const btn = document.createElement('button');
+    // ÎNAINTE activ e verde ca restul: direcția pusă e direcția pusă, oricare ar fi.
+    btn.className = 'btn sm ' + (activ ? 'ok' : 'sec');
+    btn.textContent = (activ ? '✓ ' : '') + d.txt;
+    btn.addEventListener('click', () => puneDirectie(b, d.v));
+    dirRand.appendChild(btn);
+  }
+  rand.appendChild(dirRand);
+
   // Viteza se cere pe boxurile de START: cele marcate cu icoană ȘI cele pe care
   // buletinul le declară start, chiar dacă în roadbook n-au niciun semn.
   const rt = plan.rts.find(r => plan.boxes[r.startIdx] === b);
@@ -955,6 +1160,37 @@ async function comutaFlag(box, flag, opt = {}) {
                                    leg: plan.legKey, inainte, dupa,
                                    auto: !!opt.motiv, motiv: opt.motiv || null }, Date.now()); } catch (e) {}
   if (!opt.faraRebuild) await rebuildPlan();
+}
+
+// Corectura de DIRECȚIE, pe exact același tipar ca semnele: se caută boxul BRUT (sursa
+// adevărului, cea salvată în depozit), se scrie în el, se jurnalizează starea de dinainte
+// și de după, apoi planul se reconstruiește. Nu există al doilea mecanism de salvare —
+// `plan.boxes` sunt CHIAR obiectele din `boxesRaw` (buildPlan nu copiază), deci după
+// rebuildPlan mașina de stări citește direcția nouă din același obiect, iar toate
+// anunțurile vocale pleacă de la ea.
+async function puneDirectie(box, dir) {
+  const b = boxesRaw.find(x => x === box) ||
+            boxesRaw.find(x => legKey(x) === plan.legKey && x.num === box.num &&
+                               Math.abs(x.sumKm - box.sumKm) < 0.005);
+  if (!b) return;
+  const schimbare = aplicaDirectie(b, dir);
+  if (!schimbare) return;                     // aceeași direcție, sau una necunoscută
+  // rândul rămâne pe ecran după corectură, ca la semne: dacă boxul n-avea semn de probă,
+  // el a intrat în listă doar fiindcă a fost căutat după număr, iar renderProbe l-ar
+  // arunca afară exact în clipa în care omul vrea să verifice ce tocmai a apăsat
+  if (b.num != null) _probeExtra.add(b.num);
+  await store.put('plan_raw', boxesRaw);
+  try { store.log('flag_manual', { ce: 'dir', boxNum: b.num, km: b.sumKm,
+                                   leg: plan.legKey, inainte: schimbare.inainte,
+                                   dupa: schimbare.dupa }, Date.now()); } catch (e) {}
+  await rebuildPlan();
+  // CU CURSA PORNITĂ, rebuildPlan se amână (planul nu se schimbă sub mașină) și nu mai
+  // ajunge la renderPrep — deci bifa de pe buton ar rămâne pe direcția veche, iar omul
+  // ar apăsa a doua oară crezând că n-a mers. Direcția însă S-A schimbat deja, și încă
+  // pe planul VIU: `plan.boxes` sunt CHIAR obiectele din `boxesRaw` (buildPlan nu
+  // copiază), deci anunțurile de după corectură o folosesc imediat, fără repornire.
+  // Măsurat în test-tulipe.mjs, „corectura din mers". De-aia se redesenează aici.
+  renderProbe();
 }
 
 // ── CURĂȚENIA TĂCUTĂ, CÂND SEMNELE NU MAI DECID NIMIC (v39) ─────────────────
@@ -1640,6 +1876,10 @@ function doImport() {
   // (fișier de pe alt telefon = conținut extern) sau dintr-un IndexedDB scris de o
   // versiune veche. Singurul punct prin care trec toate căile. (Audit 02.08.2026, P3.)
   boxesRaw = sanitizeBoxes((await store.get('plan_raw')) || []);
+  // …și „virajele mele" pe aceeași cale, prin aceeași sită. Fără linia asta, importul ar
+  // scrie lista în depozit, dar cardul ar arăta mai departe lista telefonului vechi.
+  virajeProprii = normVirajeProprii(await store.get('viraje_proprii'));
+  dirScanat = normDirScanat(await store.get('dir_scanat'));
   uitaCuratenia();
         // preluarea de pe alt telefon ÎNLOCUIEȘTE ziua — asta e chiar ce s-a cerut,
         // iar starea reală se pune imediat după, din jurnal (machine.resume)
@@ -1972,8 +2212,20 @@ function bind() {
         const c = alege;
         const mare = document.createElement('button');
         mare.className = 'btn ok bp-mare';
-        mare.textContent = `✓ SUNT LA BOX ${c.box.num}`;
-        mare.addEventListener('click', () => bpAlege(c.box.num));
+        // Ce se întâmplă dacă apeși, SCRIS PE BUTON (v45). Până acum butonul spunea doar
+        // numărul boxului, iar cifra apărea abia în bannerul de confirmare de după —
+        // adică pilotul afla ce face DUPĂ ce hotărâse. Acum informația vine înainte, iar
+        // apăsarea aplică direct: un pas în loc de două, cu aceeași informație pe ecran.
+        const pm = machine.previzualizeazaBox(c.box.num);
+        const cap = document.createElement('b');
+        cap.textContent = `✓ SUNT LA BOX ${c.box.num}`;
+        const sub = document.createElement('span');
+        sub.className = 'bp-sub';
+        sub.textContent = `te mută ${semnDist(c.deltaM)}` +
+                          (pm && pm.rupeRt ? ` · ⚠ ${pm.rupeRt}` : '');
+        if (pm && pm.rupeRt) sub.style.color = 'var(--warn)';
+        mare.append(cap, sub);
+        mare.addEventListener('click', () => bpAlege(c.box.num, true));
         const alt = document.createElement('button');
         alt.className = 'btn sec';
         alt.textContent = 'LISTA COMPLETĂ…';
@@ -1995,9 +2247,6 @@ function bind() {
     }
     $('bp-num').value = '';
     for (const c of apropiate) {
-      const semn = c.deltaM >= 0 ? '+' : '−';
-      const dist = Math.abs(c.deltaM) >= 1000
-        ? (Math.abs(c.deltaM) / 1000).toFixed(2) + ' km' : Math.abs(c.deltaM) + ' m';
       // textContent, nu innerHTML: `comment` vine din scanarea Vision a unui roadbook —
       // document EXTERN. Un comentariu cu HTML (ajung 44 de caractere pentru un overlay
       // fullscreen pe style inline, pe care CSP-ul îl permite) s-ar randa fix în modalul
@@ -2012,8 +2261,28 @@ function bind() {
       const com = document.createElement('span');
       com.className = 'bp-com';
       com.textContent = (c.box.comment || '').split('/')[0].trim().slice(0, 44);
-      btn.append(nume, document.createTextNode(` · ${semn}${dist}`), com);
-      btn.addEventListener('click', () => bpAlege(c.box.num));
+      btn.append(nume, document.createTextNode(` · ${semnDist(c.deltaM)}`), com);
+      // CE STRICĂ SALTUL, pe buton (v45). Distanța era deja scrisă aici; ce lipsea era
+      // singura informație pe care bannerul de confirmare o adăuga cu adevărat — că
+      // saltul închide sau anulează o probă în curs. Mutată pe buton, confirmarea de
+      // după nu mai are ce spune, deci dispare.
+      const pv = machine.previzualizeazaBox(c.box.num);
+      if (pv && pv.rupeRt) {
+        const av = document.createElement('span');
+        av.className = 'bp-av';
+        av.textContent = '⚠ ' + pv.rupeRt;
+        btn.appendChild(av);
+      }
+      // ALEGEREA DIN LISTĂ E DECIZIA (v45, cerut de Andreas din cursă, 07.08.2026). Până
+      // acum urma un al doilea pas — bannerul „Te mută ÎNAPOI 1330 m · DA, corectează" —
+      // care repeta cifra scrisă pe butonul tocmai apăsat. Doi pași pentru o singură
+      // decizie, la volan. Nu s-a pierdut nimic: tot ce spunea bannerul e acum pe buton,
+      // adică se citește ÎNAINTE de apăsare, nu după.
+      //
+      // Poarta din motor (machine.atBox, care refuză saltul fără `confirmat`) NU s-a
+      // atins și rămâne activă pentru celelalte două căi, unde omul nu vede nicio cifră
+      // înainte: numărul TASTAT în câmpul de jos și comanda VOCALĂ.
+      btn.addEventListener('click', () => bpAlege(c.box.num, true));
       lista.appendChild(btn);
     }
     bp.classList.remove('hidden');
@@ -2027,7 +2296,13 @@ function bind() {
       $('bp-ctx').textContent = `boxul ${num} nu există în leg-ul ăsta`;
       return;
     }
-    // corecție mare sau probă în joc — se cere confirmarea, cu cifra pe ecran
+    // AICI AJUNG DOAR CELE DOUĂ CĂI FĂRĂ PREVIZUALIZARE (v45): numărul TASTAT în câmpul
+    // de jos și comanda VOCALĂ. Butoanele din listă și butonul de mănușă cheamă
+    // `bpAlege(num, true)` — acolo cifra și avertismentul de probă sunt scrise pe buton,
+    // deci alegerea E decizia și se aplică din prima apăsare.
+    // Pentru un număr tastat, bannerul ăsta e PRIMA oară când omul vede ce va face
+    // apăsarea: o cifră greșită la tastatură (78 în loc de 7) mută poziția cu kilometri.
+    // La fel pe voce, unde recunoașterea greșește un număr mai ușor decât un deget.
     const semn = r.deltaM >= 0 ? 'ÎNAINTE' : 'ÎNAPOI';
     $('bp-warn').textContent =
       `Te mută ${semn} ${Math.abs(r.deltaM)} m` + (r.rupeRt ? ` și ${r.rupeRt}` : '') + '.';
@@ -2068,6 +2343,11 @@ function bind() {
     renderProbe();
   };
   $('btn-probe-cauta')?.addEventListener('click', cautaProba);
+  // „Virajele mele": Enter în câmp NU adaugă nimic (nu se știe ce direcție), dar mută
+  // focusul mai departe fără să închidă tastatura — direcția se apasă cu degetul.
+  $('vp-aplica')?.addEventListener('click', aplicaVirajele);
+  $('vp-restaureaza')?.addEventListener('click', restaureazaScanate);
+  $('vp-num')?.addEventListener('keydown', e => { if (e.key === 'Enter') e.preventDefault(); });
   // ȘTAMPILA TC: același handler pe amândouă butoanele (pregătire + cockpit)
   $('btn-stampila')?.addEventListener('click', apasaStampila);
   $('btn-stampila-prep')?.addEventListener('click', apasaStampila);
@@ -2209,10 +2489,19 @@ function bind() {
     // Buletinul pleacă odată cu roadbook-ul: el definește probele PE BOXURILE acestui
     // roadbook. Rămas peste unul nou, ar defini probe pe boxuri cu același număr și cu
     // alt drum sub ele — aceeași clasă de defect ca harta rămasă de la alt eveniment.
-    if (!confirm('Ștergi roadbook-ul scanat, buletinul probelor și vitezele?')) return;
+    //
+    // ȘI „VIRAJELE MELE" (v45), din exact același motiv: „boxul 6 = dreapta" e adevărat
+    // despre ACEST roadbook. Peste altul, ar declara viraje pe boxuri cu același număr și
+    // alt drum sub ele. E muncă de mână, deci confirmarea o spune pe cifre, nu la general.
+    const cateViraje = Object.values(virajeProprii).reduce((n, l) => n + l.length, 0);
+    if (!confirm('Ștergi roadbook-ul scanat, buletinul probelor și vitezele?' +
+                 (cateViraje ? `\n\nȘi cele ${cateViraje} viraje declarate de tine — ` +
+                               'sunt legate de boxurile roadbook-ului ăstuia.' : ''))) return;
     boxesRaw = []; uitaCuratenia();
     await store.del('plan_raw'); await store.del('rt_speeds');
     await store.del('buletin');
+    virajeProprii = {}; dirScanat = {};
+    await store.del('viraje_proprii'); await store.del('dir_scanat');
     const harta = reconNormalize(await store.get('recon'), plan.legKey);
     const legi = Object.keys(harta.legs || {});
     if (legi.length) {

@@ -35,6 +35,15 @@ html, body { height: 100%; background: var(--bg); color: var(--text);
 .btn.big { padding: 17px; font-size: 17px; } .btn.sm { width: auto; padding: 13px 16px; }
 .row .btn { width: auto; flex: 1; } .row .btn.sm { flex: 0; }
 
+/* Editorul de direcție (v45): zece butoane care trebuie să încapă pe un telefon și să
+   rămână destul de mari pentru un deget. `.row` e flex fără wrap — pe un rând, zece
+   butoane s-ar strivi până la ilizibil, deci direcțiile primesc rândul lor, care se rupe.
+   Se apasă cu mașina OPRITĂ, în parcare, deci contează claritatea, nu compactarea.
+   Butonul rămâne peste 40 px înălțime (12 px sus/jos + text): sub atât, degetul greșește.
+   Se strâng doar pe lățime, ca să intre trei pe rând pe un telefon de 360 px. */
+.dirrow { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 8px; }
+.dirrow .btn { width: auto; flex: 0 0 auto; padding: 12px 11px; font-size: 13px; }
+
 input { background: var(--bg); border: 1px solid var(--border); border-radius: 10px;
   color: var(--text); font-size: 16px; font-weight: 600; padding: 11px 12px; width: 100%; margin: 4px 0; }
 .row input { flex: 1; width: auto; }
@@ -111,6 +120,11 @@ input { background: var(--bg); border: 1px solid var(--border); border-radius: 1
   padding: 26px 14px; margin-bottom: 10px; }
 .bp-item .bp-com { display: block; font-size: 12px; font-weight: 500; color: var(--dim);
   margin-top: 3px; }
+/* Ce strică saltul, scris pe butonul de ales (v45). De când alegerea aplică direct, tot
+   ce spunea bannerul de confirmare trebuie să se citească ÎNAINTE de apăsare. */
+.bp-item .bp-av { display: block; font-size: 12px; font-weight: 700; color: var(--warn);
+  margin-top: 3px; }
+.bp-mare .bp-sub { display: block; font-size: 14px; font-weight: 600; margin-top: 6px; }
 #bp-list .btn.pri { outline: 2px solid #fff6; }
 
 /* corecția de poziție — informație, nu alarmă: se citește dintr-o privire, nu strigă */

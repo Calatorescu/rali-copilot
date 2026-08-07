@@ -31,11 +31,40 @@ const MODEL_VISION = 'claude-sonnet-4-6';
 // De-aia modelul raportează acum percepția curată („TIMING"), iar judecata TC-vs-start
 // s-a mutat în cod determinist, în route.js → rezolvaTiming, unde se poate testa fără
 // cheie de API.
+//
+// ── PARAGRAFUL TULIP, ÎNTĂRIT 07.08.2026 ────────────────────────────────────
+// Raportat de pilot DE PE TRASEU, la Sibiu, între etape, după ce l-a rătăcit de mai multe
+// ori într-o singură zi. Două tipare, amândouă de citire a desenului, nu de OCR:
+//  1. BIFURCAȚIE V/Y cu vârful de săgeată pe ramura din STÂNGA → citită „DREAPTA";
+//  2. SĂGEATĂ DREAPTĂ CU LINIUȚE LATERALE (drumuri care se văd din intersecție, dar pe
+//     care nu se merge) → citită ca viraj, când direcția reală e ÎNAINTE.
+// Până acum paragraful era o singură linie: lista de valori acceptate, fără o vorbă
+// despre CUM se citește desenul. Modelului i se cerea o clasificare și nu i se dădea
+// niciun criteriu — deci și-l inventa, iar la V/Y îl inventa greșit.
+//
+// Regula de aur pusă acum e regula prudenței, și e scrisă în prompt cu motivul ei,
+// fiindcă motivul e ce o face să se aplice: COSTUL E ASIMETRIC. Un ÎNAINTE greșit e MUT
+// (machine.js: box fără semn și cu dir „ÎNAINTE" nu produce niciun anunț de manevră),
+// deci pilotul își urmează hârtia. Un viraj inventat STRIGĂ „dreapta acum" într-o
+// intersecție unde trebuia mers drept — în probă cronometrată, asta e mașina scoasă de
+// pe traseu. La îndoială se scrie ÎNAINTE, mereu.
+//
+// Promptul rămâne o rugăminte, nu o garanție: garanția e editorul de direcție din
+// pregătire (route.js → DIRECTII_EDITOR, main.js → puneDirectie), care repară în două
+// apăsări orice a citit greșit modelul. NIMIC ALTCEVA din prompt nu s-a atins — REPER,
+// icoanele, TIMING și finișurile sunt calibrate pe teren și verificate pe pagini reale.
 const ROADBOOK_PROMPT = `Ești copilot de raliu. Extrage TOATE boxurile vizibile pe această pagină de roadbook în format JSON array.
 Pagina poate fi fotografiată rotit — rotește-o mental înainte de a citi.
 ANTETUL PAGINII (citește-l ÎNTÂI, repetă-l pe fiecare box): ex. „Day 2 - Leg 3" și „Page: 39" → "day":2,"leg":3,"page":39. Numerotarea boxurilor și km REPORNESC la fiecare leg. Antet ilizibil → null, NU ghici.
 COLOANE: Număr box | Sum km (bold) | Sum mile (ignoră) | Section km (bold) | Section mile (ignoră) | Diagrama tulip | Dist to target (ignoră) | Comment.
-TULIP: "ÎNAINTE","STÂNGA","DREAPTA","STÂNGA-T","DREAPTA-T","GIRATORIU-1".."GIRATORIU-4","STOP-CFR".
+TULIP (câmpul "dir") — direcția pe care O IEI din box. Valori permise, exact acestea: "ÎNAINTE","STÂNGA","DREAPTA","STÂNGA-T","DREAPTA-T","GIRATORIU-1".."GIRATORIU-4","STOP-CFR".
+CUM SE CITEȘTE DIAGRAMA, în ordinea asta. PUNCTUL PLIN E DE UNDE VII. VÂRFUL DE SĂGEATĂ DECIDE DIRECȚIA. Urmărește cu ochiul linia care pleacă din punctul plin și se termină în vârf de săgeată: ea, și numai ea, spune încotro mergi.
+RAMURILE FĂRĂ VÂRF SUNT DRUMURI PE CARE NU SE MERGE. Sunt desenate ca pilotul să recunoască intersecția, și NU SCHIMBĂ DIRECȚIA — oricâte ar fi, oricât de lungi, în orice parte ar ieși.
+SĂGEATĂ DREAPTĂ CU LINIUȚE SAU RAMURI LATERALE = "ÎNAINTE". Dacă săgeata merge din punct drept în sus, iar din ea ies liniuțe sau ramuri în stânga ori în dreapta care NU au vârf, direcția e "ÎNAINTE" — indiferent câte liniuțe sunt și în ce parte ies. Liniuțele alea NU fac din box un viraj.
+BIFURCAȚIE ÎN V SAU Y: două ramuri pleacă din același loc, dar UNA SINGURĂ are vârf de săgeată. Uită-te unde stă vârful și spune în ce parte se îndoaie linia lui LA CAPĂT: se îndoaie spre stânga → "STÂNGA"; spre dreapta → "DREAPTA". Ramura fără vârf se ignoră complet, chiar dacă e mai lungă sau mai groasă. VÂRFUL PE RAMURA DIN STÂNGA NU ÎNSEAMNĂ NICIODATĂ "DREAPTA", iar vârful pe ramura din dreapta nu înseamnă niciodată "STÂNGA".
+"STÂNGA-T"/"DREAPTA-T" DOAR la intersecție în T: drumul pe care vii se termină și ești obligat să alegi stânga sau dreapta. Dacă din desen se poate merge și drept, NU e T — e "STÂNGA" sau "DREAPTA" simplu.
+"GIRATORIU-n": cerc, iar n = a câta ieșire o ia săgeata, numărată în sensul de mers. Dacă nu se poate număra ieșirea, scrie "GIRATORIU-1". "STOP-CFR" doar la cale ferată cu oprire.
+REGULA PRUDENȚEI, CARE BATE TOATE CELELALTE: dacă nu vezi CLAR încotro se îndoaie săgeata, scrie "ÎNAINTE". Motivul: un viraj inventat scoate pilotul de pe traseu în plină probă cronometrată, pe când un "ÎNAINTE" pus greșit e mut și îl lasă să conducă după roadbook-ul de hârtie. Când eziți între un viraj și "ÎNAINTE", alegi "ÎNAINTE". NU ghici direcția.
 ICOANE → "flags" (LISTĂ). Descrii FORMA desenată, nu înțelesul ei. NUMAI formele de mai jos produc un flag; toate celelalte, oricâte ar fi pe box, se ignoră:
 1. DOUĂ CERCURI ALĂTURATE, de aceeași mărime: în primul o formă neregulată (un steguleț pe băț), în al doilea un CEAS (cadran rotund cu ace) → "TIMING". Perechea asta de cercuri e SINGURUL semn de cronometrare din roadbook.
 2. aceeași pereche de cercuri, iar imediat lângă ea un FULG DE NEA (linii scurte care se încrucișează într-un punct, ca o steluță) → "TIMING_STANDING".

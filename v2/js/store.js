@@ -88,16 +88,21 @@ export async function exportDay(store) {
   // `recon_draft` intră și el în export: o recunoaștere întreruptă (telefon închis în
   // plin drum) e o măsurătoare făcută, iar exportul e singurul loc din care se poate
   // afla de pe birou că a existat. Vezi main.js, recupereazaDraftRecon.
-  const [journal, plan, speeds, recon, tcs, draft, harta, buletin] = await Promise.all([
+  const [journal, plan, speeds, recon, tcs, draft, harta, buletin, viraje, dirsc] = await Promise.all([
     store.journalAll(), store.get('plan_raw'), store.get('rt_speeds'),
     store.get('recon'), store.get('tc_schedule'), store.get('recon_draft'),
-    store.get('harta'), store.get('buletin')
+    store.get('harta'), store.get('buletin'),
+    // „Virajele mele" (v45): lista de direcții declarate de om e o muncă de seară pe
+    // hârtie, nu o citire automată — dacă nu pleacă în export, al doilea telefon ar
+    // conduce cu direcțiile scanate, adică exact cu cele care l-au rătăcit.
+    store.get('viraje_proprii'), store.get('dir_scanat')
   ]);
   // `buletin` intră și el: el DEFINEȘTE probele (start, medie, schimbări, finiș). Fără
   // el în export, al doilea telefon ar prelua cursa cu alte probe decât primul.
   return { _app: 'RALI2', _ver: 1, at: Date.now(), journal, plan_raw: plan || null,
            rt_speeds: speeds || null, recon: recon || null, tc_schedule: tcs || null,
-           recon_draft: draft || null, harta: harta || null, buletin: buletin || null };
+           recon_draft: draft || null, harta: harta || null, buletin: buletin || null,
+           viraje_proprii: viraje || null, dir_scanat: dirsc || null };
 }
 
 // Importul ȘTERGE jurnalul local. Până acum ștergea ÎNAINTE de orice verificare — aceeași
@@ -123,6 +128,12 @@ export async function importDay(store, dump, { confirmat = false } = {}) {
   }
   if (dump.plan_raw) await store.put('plan_raw', dump.plan_raw);   // sanitizat la încărcare
   if (dump.rt_speeds) await store.put('rt_speeds', dump.rt_speeds);
+  // „Virajele mele" și fotografia direcțiilor scanate: se scriu ca atare, iar sita
+  // (normVirajeProprii) se aplică la ÎNCĂRCARE, în main.js — același contract ca la
+  // `plan_raw`, care se sanitizează tot acolo. Un singur loc care curăță, nu două.
+  const eObj = (x) => x && typeof x === 'object' && !Array.isArray(x);
+  if (eObj(dump.viraje_proprii)) await store.put('viraje_proprii', dump.viraje_proprii);
+  if (eObj(dump.dir_scanat)) await store.put('dir_scanat', dump.dir_scanat);
   if (dump.tc_schedule) await store.put('tc_schedule', dump.tc_schedule);
   // Buletinul vine dintr-un FIȘIER, deci trece prin aceeași sită ca la scanare.
   if (dump.buletin) {

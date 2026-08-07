@@ -5,12 +5,16 @@
 // plină probă. RT1 s-a închis retroactiv cu un rezultat fără nicio legătură cu cursa,
 // iar restul turei a fost două încercări de a repara din mers. Interfața era un
 // prompt() gol care nu spunea nici unde crede aplicația că ești, nici ce urma să strice.
+import { readFileSync } from 'fs';
+import { fileURLToPath } from 'url';
+import { dirname, join } from 'path';
 import { buildPlan, sanitizeBoxes } from '../js/route.js';
 import { makeMachine } from '../js/machine.js';
 import { makeMemStore } from '../js/store.js';
 import { makeClock } from '../js/time.js';
 import { makeDriverModel } from '../js/learn.js';
 
+const aici = dirname(fileURLToPath(import.meta.url));
 let pass = 0, fail = 0;
 const ok = (n, c, d) => c ? (pass++, console.log(`  ✓ ${n}`))
                           : (fail++, console.log(`  ✗ ${n}${d ? '\n      → ' + d : ''}`));
@@ -116,6 +120,60 @@ console.log('\n═══ Jurnalul reține unde era mașina, nu doar cât a mers 
      Math.abs(poz[poz.length - 1].lat - poz[0].lat) > 0.001,
      `${poz[0].lat} → ${poz[poz.length - 1].lat}`);
   ok('și precizia fixului', poz.every(e => e.accM === 8), JSON.stringify(poz[0]));
+}
+
+// ── ALEGEREA DIN LISTĂ E DECIZIA (v45) ──────────────────────────────────────
+// Cerut de Andreas din cursă, 07.08.2026: apeși „SUNT LA BOX", alegi boxul din listă, și
+// DUPĂ alegere mai apare un banner „Te mută ÎNAPOI 1330 m · DA, corectează". Al doilea pas
+// repeta cifra scrisă pe butonul tocmai apăsat — doi pași pentru o decizie, la volan.
+//
+// Ce s-a schimbat: nu poarta din motor (atBox, testată mai sus, e neatinsă), ci CINE îi
+// spune „confirmat". Butoanele care afișează consecința o aplică direct; căile pe care
+// omul nu vede nicio cifră înainte — numărul TASTAT și comanda VOCALĂ — trec mai departe
+// prin banner. De-aia testele de aici sunt pe cablaj: motorul nu s-a mișcat.
+console.log('\n═══ Selectorul de box: alegerea din listă aplică direct ═══');
+{
+  const main = readFileSync(join(aici, '..', 'js', 'main.js'), 'utf8');
+  const desch = /function bpDeschide\(\)[\s\S]*?\n  }\n/.exec(main)[0];
+  ok('butonul din listă aplică direct, fără al doilea pas',
+     /btn\.addEventListener\('click', \(\) => bpAlege\(c\.box\.num, true\)\)/.test(desch));
+  ok('și butonul de mănușă, la fel',
+     /mare\.addEventListener\('click', \(\) => bpAlege\(c\.box\.num, true\)\)/.test(desch));
+  // Ce spunea bannerul în plus față de buton era UN singur lucru: că saltul închide sau
+  // anulează o probă în curs. Dacă bannerul dispare fără ca asta să se mute pe buton,
+  // informația s-a pierdut — și e fix informația care a costat RT1 pe 02.08.
+  ok('consecința asupra probei e scrisă PE buton, nu doar în bannerul dispărut',
+     /previzualizeazaBox\(c\.box\.num\)/.test(desch) && /pv\.rupeRt/.test(desch) &&
+     /pm && pm\.rupeRt/.test(desch));
+  ok('și butonul de mănușă spune acum și cât te mută — înainte arăta doar numărul',
+     /te mută \$\{semnDist\(c\.deltaM\)\}/.test(desch));
+
+  // CELE DOUĂ CĂI FĂRĂ PREVIZUALIZARE rămân cu poartă. Un număr tastat greșit (78 în loc
+  // de 7) sau auzit greșit de recunoașterea vocală n-are nicio cifră pe ecran înainte.
+  ok('numărul TASTAT trece mai departe prin confirmare',
+     /\$\('bp-go'\)\?\.addEventListener\('click', \(\) => \{\s*const n = parseInt\(\$\('bp-num'\)\.value, 10\);\s*if \(isFinite\(n\)\) bpAlege\(n\);/.test(main));
+  ok('comanda VOCALĂ trece mai departe prin confirmare',
+     /const r = machine\.atBox\(c\.num\);/.test(main));
+  ok('bannerul de confirmare există în continuare, pentru ele',
+     /\$\('bp-confirm'\)\.classList\.remove\('hidden'\)/.test(main) &&
+     /\$\('bp-yes'\)\.onclick = \(\) => bpAlege\(num, true\)/.test(main));
+
+  // DISTRUCTIVELE NU S-AU ATINS. Lista e explicită ca o ștergere să nu poată aluneca
+  // afară din ea printr-o curățenie viitoare de dialoguri.
+  const distructive = [
+    [/Ștergi roadbook-ul scanat, buletinul probelor și vitezele\?/, 'ștergerea roadbook-ului'],
+    [/Ștergi harta traseului\?/, 'ștergerea hărții'],
+    [/Ștergi ȘI recunoașterea\?/, 'ștergerea recunoașterii'],
+    [/Ștergi buletinul citit\?/, 'ștergerea buletinului'],
+    [/Aplic toate cele \$\{n\} corecturi\?/, '„Aplică toate" corecturile'],
+    [/Jurnal nou \(zi nouă\)\?/, 'jurnal nou'],
+    [/Import \+ PRELUARE cursă\?/, 'importul care înlocuiește ziua']
+  ];
+  for (const [re, nume] of distructive)
+    ok(`${nume} cere în continuare confirmare`, re.test(main));
+  // ștampila TC: confirmarea ei e la mutare, nu la prima apăsare
+  ok('mutarea ștampilei TC cere în continuare confirmare',
+     /if \(veche && !confirm\(/.test(main));
 }
 
 console.log(`\n──────── ${pass} trecute, ${fail} căzute ────────`);

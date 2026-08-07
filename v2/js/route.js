@@ -68,7 +68,7 @@ export function groupByLeg(boxes) {
 
 // Sanitizarea ieșirii din scanare — granița de încredere (răspunsul AI = conținut
 // extern derivat dintr-o poză a unui document tipărit de altcineva).
-const DIR_OK = new Set([...TURN_DIRS, 'ÎNAINTE', 'STOP-CFR']);
+export const DIR_OK = new Set([...TURN_DIRS, 'ÎNAINTE', 'STOP-CFR']);
 const FLAG_OK = new Set(['TC', 'RT_START_AUTO', 'RT_START_STANDING', 'RT_FINISH', 'PARKING', 'EV']);
 
 // ── CE SCRIE ÎN COMENTARIU ──────────────────────────────────────────────────
@@ -225,6 +225,185 @@ export function sanitizeBoxes(raw) {
   }).filter(b => b.sumKm !== null);
   out.sort((a, b) => a.sumKm - b.sumKm);
   return out;
+}
+
+// ── DIRECȚIA, PUSĂ DE MÂNĂ (v45) ────────────────────────────────────────────
+// 07.08.2026, raportat de pe traseu, la Sibiu, ÎN CURSĂ: scanarea citește greșit tulipele
+// în două tipare, iar amândouă l-au rătăcit pe pilot de mai multe ori într-o singură zi.
+//  • BIFURCAȚIE V/Y: vârful de săgeată e desenat pe ramura din STÂNGA, iar aplicația a
+//    anunțat „dreapta";
+//  • SĂGEATĂ DREAPTĂ CU LINIUȚE LATERALE (drumuri care se văd din intersecție, dar pe
+//    care nu se merge): citită ca viraj, când direcția reală e ÎNAINTE.
+// Promptul s-a întărit pe amândouă (vezi scan.js), dar un prompt e o rugăminte, nu o
+// garanție. Garanția e aici: omul apasă un buton și direcția devine ce scrie pe hârtie.
+//
+// COSTUL E ASIMETRIC, și de-aia editorul ăsta contează mai mult decât pare: un ÎNAINTE
+// greșit e MUT (vezi machine.announceBoxes — box fără semn și cu dir „ÎNAINTE" nu produce
+// niciun cue), deci pilotul își urmează hârtia netulburat. Un viraj greșit STRIGĂ
+// „dreapta acum" într-o intersecție unde trebuia mers drept — adică într-o probă
+// cronometrată, la 40 km/h, cu mașina scoasă de pe traseu.
+//
+// Lista e ordonată pentru DEGET, nu pentru alfabet: ÎNAINTE primul (e răspunsul corect
+// cel mai des și cel mai ieftin dacă greșești), apoi virajele simple, apoi cele în T,
+// apoi cele patru ieșiri de giratoriu ca butoane separate — un giratoriu se corectează
+// dintr-o singură apăsare, nu din două (buton + selector), fiindcă se apasă cu mașina
+// oprită, în intersecție, cu cineva în spate.
+export const DIRECTII_EDITOR = [
+  { v: 'ÎNAINTE',     txt: '↑ ÎNAINTE' },
+  { v: 'STÂNGA',      txt: '← STÂNGA' },
+  { v: 'DREAPTA',     txt: '→ DREAPTA' },
+  { v: 'STÂNGA-T',    txt: '↰ STÂNGA la T' },
+  { v: 'DREAPTA-T',   txt: '↱ DREAPTA la T' },
+  { v: 'GIRATORIU-1', txt: '① gir. ieș. 1' },
+  { v: 'GIRATORIU-2', txt: '② gir. ieș. 2' },
+  { v: 'GIRATORIU-3', txt: '③ gir. ieș. 3' },
+  { v: 'GIRATORIU-4', txt: '④ gir. ieș. 4' },
+  { v: 'STOP-CFR',    txt: '⛔ STOP cale ferată' }
+];
+
+// Scrierea direcției pe box, ca DECIZIE pură — fără DOM, fără depozit, deci testabilă.
+// Ecranul (main.js → puneDirectie) o cheamă, apoi salvează și jurnalizează ce s-a
+// întors. Întoarce `null` când nu s-a schimbat nimic: direcție necunoscută (nu se scrie
+// gunoi în plan) sau aceeași direcție (nu se umple jurnalul cu apăsări fără efect).
+export function aplicaDirectie(box, dir) {
+  if (!box || !DIR_OK.has(dir)) return null;
+  const inainte = box.dir || null;
+  if (inainte === dir) return null;
+  box.dir = dir;
+  return { inainte, dupa: dir };
+}
+
+// ── „VIRAJELE MELE" (v45) ───────────────────────────────────────────────────
+// Cererea lui Andreas, textual, de pe traseu (07.08.2026): „aplicația să vadă roadbook-ul
+// tot, să citească cum vrea, dar EU să-i precizez boxurile unde chiar se schimbă direcția:
+// la boxul 6 faci dreapta, la boxul 18 ieși din sens a treia".
+//
+// E o RĂSTURNARE a contractului, nu o unealtă în plus. Până acum scanarea propunea o
+// direcție pentru fiecare box, iar omul corecta ce prindea — deci fiecare tulipă necitită
+// corect rămânea o capcană. De-aici încolo: omul DECLARĂ cele câteva zeci de boxuri unde
+// chiar se virează, iar TOT restul devine „ÎNAINTE", adică mut. Scanarea rămâne stăpână
+// pe ce știe să facă bine — kilometraje, numere de box, comentarii, semne de probă — și
+// pierde autoritatea exact acolo unde s-a dovedit slabă: forma desenului.
+//
+// De ce e sigur ca „restul" să fie ÎNAINTE și nu „necunoscut": ÎNAINTE e tăcere. Un box
+// mut nu produce niciun anunț de manevră, nicio alarmă de viraj ratat, nicio lipire pe
+// viraj. Cea mai proastă consecință a unei omisiuni din lista lui e că aplicația tace
+// într-o intersecție unde el are oricum roadbook-ul de hârtie în mână. Cea mai proastă
+// consecință a variantei vechi era „dreapta acum" pe un drum drept, în probă.
+//
+// TOTUL E PE LEG. Numerele de box repornesc la fiecare leg (vezi groupByLeg), deci o listă
+// globală ar pune „boxul 6 = dreapta" în toate leg-urile zilei. Lista se ține sub cheia
+// leg-ului, iar aplicarea atinge NUMAI boxurile leg-ului activ.
+
+// Sita listei. Poate veni dintr-un fișier de import, adică din conținut extern: intră
+// doar numere întregi de box și direcții pe care planul le înțelege. Ultima scriere pe
+// același box câștigă — omul care se răzgândește nu trebuie să șteargă întâi.
+// Fotografia directiilor scanate, venita eventual dintr-un fisier de import (continut
+// extern): fara gardul asta, un `dir_scanat: {"1|1": "text"}` bloca pentru totdeauna
+// fotografierea pe legul ala, iar "inapoi la directiile scanate" raporta linistit
+// "Restaurat: 0" (audit, 07.08.2026, seara). Forma buna: { legKey: { num: dir|null } }.
+export function normDirScanat(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
+  const out = {};
+  for (const [leg, harta] of Object.entries(raw)) {
+    if (typeof leg !== 'string' || leg.length > 24) continue;
+    if (!harta || typeof harta !== 'object' || Array.isArray(harta)) continue;
+    const h = {};
+    for (const [num, dir] of Object.entries(harta)) {
+      const n = Number(num);
+      if (!Number.isInteger(n) || n < 1 || n > 9999) continue;
+      if (dir !== null && !DIR_OK.has(dir)) continue;
+      h[n] = dir;
+    }
+    out[leg] = h;
+  }
+  return out;
+}
+
+export function normVirajeProprii(raw) {
+  const out = {};
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return out;
+  for (const [cheie, lista] of Object.entries(raw)) {
+    if (typeof cheie !== 'string' || cheie.length > 24 || !Array.isArray(lista)) continue;
+    const peNumar = new Map();
+    for (const v of lista.slice(0, 2000)) {
+      if (!v || typeof v !== 'object') continue;
+      const n = typeof v.num === 'string' ? parseInt(v.num, 10) : v.num;
+      if (!Number.isInteger(n) || n < 1 || n > 9999) continue;
+      if (!DIR_OK.has(v.dir)) continue;
+      peNumar.set(n, v.dir);
+    }
+    if (peNumar.size)
+      out[cheie] = [...peNumar.entries()].map(([num, dir]) => ({ num, dir }))
+                                         .sort((a, b) => a.num - b.num);
+  }
+  return out;
+}
+
+// O intrare nouă în listă, ca DECIZIE pură. Întoarce lista nouă sau `null` dacă intrarea
+// nu e bună — ecranul deosebește cele două cazuri și spune de ce, în loc să înghită tăcut.
+export function puneVirajPropriu(lista, num, dir) {
+  const n = typeof num === 'string' ? parseInt(num, 10) : num;
+  if (!Number.isInteger(n) || n < 1 || n > 9999) return null;
+  if (!DIR_OK.has(dir)) return null;
+  return [...(Array.isArray(lista) ? lista : []).filter(v => v && v.num !== n), { num: n, dir }]
+    .sort((a, b) => a.num - b.num);
+}
+
+export function scoateVirajPropriu(lista, num) {
+  return (Array.isArray(lista) ? lista : []).filter(v => v && v.num !== num);
+}
+
+// Fotografia direcțiilor de ACUM, ca să se poată reveni la ele. `null` e o valoare
+// legitimă aici: un box pe care scanarea nu i-a citit direcția era MUT, iar „înapoi la
+// direcțiile scanate" trebuie să-l facă mut la loc, nu să-i inventeze un ÎNAINTE.
+export function instantaneuDirectii(boxes) {
+  const o = {};
+  for (const b of (Array.isArray(boxes) ? boxes : []))
+    if (b && b.num != null) o[String(b.num)] = b.dir || null;
+  return o;
+}
+
+// APLICAREA. Direcțiile declarate pe boxurile lor, ÎNAINTE pe toate celelalte — pe
+// boxurile primite, care sunt ale UNUI leg. Trece prin aplicaDirectie, deci sita DIR_OK
+// rămâne singura poartă prin care se scrie o direcție, iar `schimbate` conține exact
+// boxurile care chiar s-au mișcat: a doua apăsare pe aceeași listă întoarce lista goală.
+export function aplicaVirajeProprii(boxes, lista) {
+  const dorit = new Map();
+  for (const v of (Array.isArray(lista) ? lista : []))
+    if (v && Number.isInteger(v.num) && DIR_OK.has(v.dir)) dorit.set(v.num, v.dir);
+  const schimbate = [], gasite = new Set();
+  for (const b of (Array.isArray(boxes) ? boxes : [])) {
+    if (!b) continue;
+    const declarat = b.num != null && dorit.has(b.num);
+    if (declarat) gasite.add(b.num);
+    const s = aplicaDirectie(b, declarat ? dorit.get(b.num) : 'ÎNAINTE');
+    if (s) schimbate.push({ num: b.num, km: b.sumKm, inainte: s.inainte, dupa: s.dupa });
+  }
+  // Boxurile declarate care NU există în leg-ul ăsta: se SPUN, nu se înghit. O cifră
+  // tastată greșit („boxul 118" în loc de „18") ar rămâne altfel o intersecție despre
+  // care pilotul crede că e acoperită, iar aplicația tace acolo.
+  const lipsa = [...dorit.keys()].filter(n => !gasite.has(n)).sort((a, z) => a - z);
+  const total = (Array.isArray(boxes) ? boxes : []).length;
+  return { schimbate, declarate: gasite.size, amutite: total - gasite.size, lipsa, total };
+}
+
+// Revenirea la ce citise scanarea. Aceleași reguli, în sens invers.
+export function restaureazaDirectii(boxes, instantaneu) {
+  const schimbate = [];
+  if (!instantaneu || typeof instantaneu !== 'object') return schimbate;
+  for (const b of (Array.isArray(boxes) ? boxes : [])) {
+    if (!b || b.num == null) continue;
+    const d = instantaneu[String(b.num)];
+    if (d === undefined) continue;                    // box apărut după fotografie
+    if (d === null) {                                 // era mut la scanare: mut rămâne
+      if (b.dir !== null) { schimbate.push({ num: b.num, inainte: b.dir, dupa: null }); b.dir = null; }
+      continue;
+    }
+    const s = aplicaDirectie(b, d);
+    if (s) schimbate.push({ num: b.num, inainte: s.inainte, dupa: s.dupa });
+  }
+  return schimbate;
 }
 
 // ── Verificatorul de roadbook (propunerea 1 din audit, 02.08.2026) ──────────
