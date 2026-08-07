@@ -1,6 +1,6 @@
 // RALI 2 · main.js — cablajul: leagă modulele, ține meniul parcat, pornește cursa.
 
-import { makeClock } from './time.js';
+import { makeClock, textStart, fmtHMS } from './time.js';
 import { buildTrace } from './geo.js';
 import { makeStore, makeMemStore, exportDay, importDay, resumeStateFromJournal } from './store.js';
 import { makeVoice, makeEars, secRo } from './voice.js';
@@ -36,7 +36,7 @@ let hartaIncoerenta = null;
 // Versiunea build-ului — se ține SINCRON cu CACHE din sw.js la fiecare deploy.
 // Vizibilă în antet și scrisă în jurnal la fiecare pornire: „ce versiune rulează
 // telefonul?" se citește, nu se ghicește (02.08, seara — nu se putea ști).
-const BUILD = 'v43';
+const BUILD = 'v44';
 
 async function init() {
   store = await makeStore();
@@ -77,6 +77,20 @@ async function init() {
     onStatus: s => { const e = $('sync-st'); if (e) e.textContent = s; }
   });
   sync.startAuto();
+  // BĂTAIA NUMĂRĂTORII SPRE STARTURI (v44). Rulează TOT TIMPUL, nu doar în cursă:
+  // ștampila se poate apăsa din panoul de pregătire (TC-ul de dimineață), iar de acolo
+  // secundele curg indiferent ce ecran e deschis.
+  // Condiția e `tickId` (bucla zilei), NU starea mașinii: cât timp bucla merge,
+  // numărătoarea o bate deja `machine.tick()`, iar aici s-ar număra a doua oară. Invers,
+  // repetiția și redarea jurnalului pun mașina în LEGĂTURĂ fără buclă proprie — cu o
+  // condiție pe stare, acolo numărătoarea ar fi înghețat tăcut.
+  setInterval(() => {
+    try {
+      if (!machine) return;
+      if (tickId == null) machine.stampilaTick();
+      if (!$('scr-prep').classList.contains('hidden')) renderStart();
+    } catch (e) {}
+  }, 1000);
   bind();
   try { navigator.wakeLock && await navigator.wakeLock.request('screen'); } catch (e) { $('cp-wake').classList.remove('hidden'); }
   // gestul utilizatorului deblochează des cererea refuzată — reîncercăm la primul tap
@@ -190,6 +204,11 @@ async function rebuildPlan(fortat) {
     stare: reconStatus(reconPentruLeg(harta, gr.key)) }));
   machine = makeMachine({ plan, clock, voice, store, ui, driver,
                           opts: { offRoute: offRoutePornit() } });
+  // ȘTAMPILA TC supraviețuiește unei reporniri a aplicației (v44): fără asta, un telefon
+  // care moare între TC și startul probei ar pierde singura informație pe care nimeni
+  // n-o mai poate reconstitui — secunda în care a început controlul orar.
+  // Re-armarea marchează ca „rostite" pragurile deja trecute, deci nu strigă retroactiv.
+  await reiaStampila();
   // programul TC scanat ieri nu se pierde la repornire — se reîncarcă din stocare
   // Time card-ul e al ZILEI (TC1..TCn în ordine), dar planul e al LEG-ului: fiecare
   // leg consumă din listă atâtea TC-uri câte boxuri TC are. Offset-ul se DERIVĂ din
@@ -314,6 +333,7 @@ function renderPrep() {
   }
   renderBuletin();
   renderProbe();
+  renderStart();
   renderRecon();
 }
 
@@ -398,7 +418,98 @@ function randBuletinProba(rt) {
                 `(${km2(s.fromKm)} km de la start)`).join(' · ');
     rand.appendChild(seg);
   }
+
+  // ZONELE DE LIMITĂ LEGALĂ: se văd lângă probă, nu doar în editor — cine citește
+  // rezumatul înainte de START trebuie să vadă tot ce se va cronometra altfel.
+  if (rt.limite && rt.limite.length) {
+    const lz = document.createElement('p');
+    lz.className = 'line';
+    lz.style.color = 'var(--warn)';
+    lz.textContent = 'limite legale: ' + rt.limite
+      .map(z => `${String(z.kmh).replace('.', ',')} km/h de la boxul ${z.deLaBox} la ${z.panaLaBox} ` +
+                `(${km2(z.deLaKmProba)} → ${km2(z.panaLaKmProba)} km de la start)`).join(' · ');
+    rand.appendChild(lz);
+  }
   return rand;
+}
+
+// ── ȘTAMPILA TC ȘI ORELE DE START (v44) ─────────────────────────────────────
+// REGULA DE CONCURS (buletinul de azi, 07.08.2026): TR 1 pornește la 24 de minute după
+// începerea TC 1, TR 2 la 80, TR 3 la 131 — toate self-start, de pe loc. Cronometrul
+// probei curge de la TC+decalaj INDIFERENT dacă mașina e la linie: întârzierea acolo e
+// penalizare directă, nu timp care se recuperează pe probă.
+//
+// Aplicația nu poate ști singură când a început TC-ul — nu e la ea în telefon, e mâna
+// arbitrului pe ștampilă. Deci omul apasă un buton exact atunci. Butonul e ACELAȘI în
+// pregătire și în cockpit: o singură funcție, două locuri de apăsat.
+const STAMPILA_MAX_MS = 12 * 3600 * 1000;   // o ștampilă de ieri nu e ștampila de azi
+
+async function reiaStampila() {
+  try {
+    const s = await store.get('tc_stamp');
+    if (!s || typeof s.rallyMs !== 'number' || !isFinite(s.rallyMs)) return;
+    // O ȘTAMPILĂ VECHE E MAI RĂU DECÂT NICIUNA: ar produce ore de start plauzibile ca
+    // formă și complet false ca oră. Peste 12 ore, se ignoră.
+    if (Math.abs(clock.rally() - s.rallyMs) > STAMPILA_MAX_MS) return;
+    machine.reiaStampila(s.rallyMs);
+  } catch (e) {}
+  renderStart();
+}
+
+function apasaStampila() {
+  if (!machine) return;
+  const veche = machine.M.stampila;
+  // A doua apăsare MUTĂ ștampila (TC 3 de la Orlat, după-amiaza). Fiindcă mutarea
+  // recalculează toate orele de start, se cere confirmare — o atingere greșită în mers
+  // ar rescrie tăcut ora la care pleacă proba următoare.
+  if (veche && !confirm(
+      `Ștampila de acum e la ${fmtHMS(veche.rallyMs)}.\n\n` +
+      `Dacă apeși, o MUT în secunda asta și toate orele de start se recalculează ` +
+      `de aici.\n\nAsta vrei?`)) return;
+  const s = machine.stampeazaTc();
+  const l0 = (machine.M.startLinii || [])[0];
+  voice.say(l0
+    ? `Ștampilă pusă. ${l0.name} în ${Math.max(0, Math.round(l0.ramasS / 60))} minute.`
+    : 'Ștampilă pusă. Nicio probă cu decalaj.', 3, 'stampila', 'ritm');
+  renderStart();
+  return s;
+}
+
+function renderStart() {
+  if (!machine) return;
+  const M = machine.M;
+  const st = $('prep-stampila-st');
+  if (st) {
+    st.textContent = M.stampila
+      ? `Ștampilă pusă la ${fmtHMS(M.stampila.rallyMs)} (ceasul raliului).`
+      : 'Fără ștampilă — probele cu decalaj n-au încă oră de start.';
+    st.style.color = M.stampila ? 'var(--ok)' : '';
+  }
+  const wrap = $('prep-start');
+  if (!wrap) return;
+  wrap.textContent = '';
+  const cuDecalaj = plan ? plan.rts.filter(r => r.startDupaTc) : [];
+  if (!M.stampila) {
+    const p = document.createElement('p');
+    p.className = 'line dim';
+    p.textContent = cuDecalaj.length
+      ? `${cuDecalaj.length} ${cuDecalaj.length === 1 ? 'probă are' : 'probe au'} decalaj în plan: ` +
+        cuDecalaj.map(r => `${r.name} la +${r.startDupaTc.minutes} min după ${r.startDupaTc.tc}`).join(' · ')
+      : 'Nicio probă cu decalaj față de un TC în planul de acum.';
+    wrap.appendChild(p);
+    return;
+  }
+  for (const l of M.startLinii) {
+    const d = document.createElement('div');
+    d.className = 'startline ' + l.stare;
+    d.textContent = textStart(l, { ora: true });
+    wrap.appendChild(d);
+    const sub = document.createElement('p');
+    sub.className = 'line dim';
+    // textContent: numele TC-ului vine din poza buletinului, adică din conținut extern
+    sub.textContent = `+${l.minutes} min după ${l.tc || 'TC'}`;
+    wrap.appendChild(sub);
+  }
 }
 
 // ── EDITAREA MANUALĂ A PROBELOR ─────────────────────────────────────────────
@@ -428,13 +539,20 @@ function cheieViteza(b) { return `${b.num}_${Math.round(b.sumKm * 100)}`; }
 // Scrierile trec toate pe aici dintr-un motiv: până acum fiecare loc scria direct
 // `speeds[key] = v`, ceea ce ar fi ȘTERS tăcut schimbarea de medie la prima corectare a
 // vitezei de bază.
-async function salveazaViteza(key, kmh, schimbari) {
+//
+// De la v44 mai încape un câmp: `limite` — zonele de limită legală din interiorul probei.
+// Regula de compatibilitate rămâne aceeași și pentru el: cât timp nu există nici schimbări
+// de medie, nici zone, sub cheie se scrie tot un NUMĂR SIMPLU, exact ca înainte.
+async function salveazaViteza(key, kmh, schimbari, limite) {
   const speeds = (await store.get('rt_speeds')) || {};
   const cur = normVitezaSalvata(speeds[key]);
   const k = kmh === undefined ? cur.kmh : kmh;
   const s = schimbari === undefined ? cur.schimbari : schimbari;
-  if (k == null && !s.length) delete speeds[key];
-  else speeds[key] = s.length ? { kmh: k, schimbari: s } : k;
+  const z = limite === undefined ? cur.limite : limite;
+  if (k == null && !s.length && !z.length) delete speeds[key];
+  else if (!s.length && !z.length) speeds[key] = k;
+  else if (!z.length) speeds[key] = { kmh: k, schimbari: s };
+  else speeds[key] = { kmh: k, schimbari: s, limite: z };
   await store.put('rt_speeds', speeds);
   return speeds[key];
 }
@@ -457,6 +575,26 @@ async function scoateSchimbare(key, box) {
   const cur = await vitezaSalvata(key);
   await salveazaViteza(key, undefined, cur.schimbari.filter(x => x.box !== box));
   try { store.log('flag_manual', { ce: 'schimbare_stearsa', cheie: key, box }, Date.now()); } catch (e) {}
+  await rebuildPlan();
+}
+
+const aceeasiZona = (a, b) => a.deLaBox === b.deLaBox && a.panaLaBox === b.panaLaBox;
+
+async function puneLimita(key, deLaBox, panaLaBox, kmh) {
+  const cur = await vitezaSalvata(key);
+  const z = cur.limite.filter(x => !aceeasiZona(x, { deLaBox, panaLaBox }))
+                      .concat([{ deLaBox, panaLaBox, kmh }])
+                      .sort((a, b) => a.deLaBox - b.deLaBox);
+  await salveazaViteza(key, undefined, undefined, z);
+  try { store.log('flag_manual', { ce: 'limita_legala', cheie: key, deLaBox, panaLaBox, kmh }, Date.now()); } catch (e) {}
+  await rebuildPlan();
+}
+
+async function scoateLimita(key, deLaBox, panaLaBox) {
+  const cur = await vitezaSalvata(key);
+  await salveazaViteza(key, undefined, undefined,
+    cur.limite.filter(x => !aceeasiZona(x, { deLaBox, panaLaBox })));
+  try { store.log('flag_manual', { ce: 'limita_stearsa', cheie: key, deLaBox, panaLaBox }, Date.now()); } catch (e) {}
   await rebuildPlan();
 }
 
@@ -711,6 +849,83 @@ function randProba(b) {
     });
     r3.append(et3, inBox, et4, inKmh, pune);
     rand.appendChild(r3);
+
+    // ── ZONA DE LIMITĂ LEGALĂ ÎN INTERIORUL PROBEI (v44) ──────────────────
+    // REGULA DE CONCURS, spusă de Andreas (07.08.2026): în probă, limitele legale de pe
+    // plăcuțe (30 prin sate) TREBUIE respectate. Organizatorul NU calculează porțiunea
+    // aia la media probei — o scade — și NU ai voie să recuperezi timpul după ea.
+    // Zona se scrie pe BOXURI, ca tot restul: boxul pe care intri în sat și cel pe care
+    // ieși. Restul (kilometraj, revenirea la media corectă) e treaba lui aplicaLimite.
+    const puseLim = (rt && rt.limite) ? rt.limite : [];
+    for (const z of puseLim) {
+      const r = document.createElement('div');
+      r.className = 'row';
+      const t = document.createElement('span');
+      t.className = 'line';
+      t.style.color = 'var(--warn)';
+      t.textContent = `limită ${String(z.kmh).replace('.', ',')} km/h: boxul ${z.deLaBox} → ` +
+                      `boxul ${z.panaLaBox} (${km2(z.deLaKmProba)} → ${km2(z.panaLaKmProba)} km de la start)`;
+      const x = document.createElement('button');
+      x.className = 'btn danger sm';
+      x.textContent = '✕';
+      x.addEventListener('click', () => scoateLimita(cheie, z.deLaBox, z.panaLaBox));
+      r.append(t, x);
+      rand.appendChild(r);
+    }
+    const r4 = document.createElement('div');
+    r4.className = 'row';
+    const et5 = document.createElement('span');
+    et5.className = 'line dim'; et5.textContent = 'limită legală:';
+    const inLim = document.createElement('input');
+    inLim.type = 'number'; inLim.placeholder = 'km/h'; inLim.min = 5; inLim.max = 120; inLim.step = 0.1;
+    inLim.style.maxWidth = '80px';
+    const et6 = document.createElement('span');
+    et6.className = 'line dim'; et6.textContent = 'de la boxul';
+    const inDe = document.createElement('input');
+    inDe.type = 'number'; inDe.placeholder = 'box'; inDe.min = 1; inDe.max = 999;
+    inDe.inputMode = 'numeric'; inDe.style.maxWidth = '80px';
+    const et7 = document.createElement('span');
+    et7.className = 'line dim'; et7.textContent = 'până la boxul';
+    const inPana = document.createElement('input');
+    inPana.type = 'number'; inPana.placeholder = 'box'; inPana.min = 1; inPana.max = 999;
+    inPana.inputMode = 'numeric'; inPana.style.maxWidth = '80px';
+    const puneL = document.createElement('button');
+    puneL.className = 'btn sm sec';
+    puneL.textContent = 'PUNE';
+    puneL.addEventListener('click', async () => {
+      // Fiecare refuz spune EXACT ce nu e în regulă și că nu s-a salvat nimic. O zonă
+      // pusă pe un box inexistent ar dispărea tăcut la construirea planului, iar omul
+      // ar pleca în cursă convins că a scăzut satul din calcul.
+      const nv = parseFloat(String(inLim.value).replace(',', '.'));
+      const nb1 = parseInt(String(inDe.value), 10), nb2 = parseInt(String(inPana.value), 10);
+      if (!(isFinite(nv) && nv >= 5 && nv <= 120)) {
+        alert('Scrie limita în km/h (între 5 și 120). N-am salvat nimic.'); return;
+      }
+      if (!(isFinite(nb1) && nb1 >= 1) || !(isFinite(nb2) && nb2 >= 1)) {
+        alert('Scrie boxul pe care INTRI în zonă și boxul pe care IEȘI din ea. N-am salvat nimic.'); return;
+      }
+      const b1 = plan.boxes.find(x => x.num === nb1), b2 = plan.boxes.find(x => x.num === nb2);
+      if (!b1 || !b2) {
+        alert(`Boxul ${!b1 ? nb1 : nb2} nu există în roadbook-ul scanat. N-am salvat nimic.`); return;
+      }
+      if (!(b2.sumKm > b1.sumKm)) {
+        alert(`Boxul ${nb2} (${km2(b2.sumKm)} km) nu e DUPĂ boxul ${nb1} (${km2(b1.sumKm)} km) ` +
+              `pe traseu. N-am salvat nimic.`); return;
+      }
+      if (rt && (b2.sumKm <= rt.startKm || b1.sumKm >= rt.finishKm)) {
+        alert(`Zona boxurilor ${nb1}→${nb2} nu se suprapune deloc cu proba ` +
+              `(${km2(rt.startKm)} → ${km2(rt.finishKm)} km). N-am salvat nimic.`); return;
+      }
+      inLim.value = ''; inDe.value = ''; inPana.value = '';
+      await puneLimita(cheie, nb1, nb2, nv);
+    });
+    r4.append(et5, inLim, et6, inDe, et7, inPana, puneL);
+    rand.appendChild(r4);
+    const ajutor = document.createElement('p');
+    ajutor.className = 'line dim';
+    ajutor.textContent = 'Zona intră în timpul ideal la viteza limită: cât ții limita, ' +
+      'devierea nu crește, iar după zonă ținta revine la media probei — fără recuperare.';
+    rand.appendChild(ajutor);
   }
   return rand;
 }
@@ -1853,6 +2068,9 @@ function bind() {
     renderProbe();
   };
   $('btn-probe-cauta')?.addEventListener('click', cautaProba);
+  // ȘTAMPILA TC: același handler pe amândouă butoanele (pregătire + cockpit)
+  $('btn-stampila')?.addEventListener('click', apasaStampila);
+  $('btn-stampila-prep')?.addEventListener('click', apasaStampila);
   $('probe-cauta')?.addEventListener('keydown', e => { if (e.key === 'Enter') cautaProba(); });
   $('btn-geocod')?.addEventListener('click', gasesteTraseulPeHarta);
   $('btn-harta')?.addEventListener('click', incarcaHarta);

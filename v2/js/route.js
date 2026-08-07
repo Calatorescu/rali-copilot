@@ -7,7 +7,7 @@
 // fiecare marcaj devine o ancoră (kmOficial ↔ metriPeUrmă). Între ancore, maparea e
 // liniară. Cu 3-4 ancore pe leg, kilometrul oficial se citește direct din poziție.
 
-import { slowZones } from './pace.js';
+import { slowZones, speedAt } from './pace.js';
 import { buildTrace, haversineM } from './geo.js';
 
 export const TURN_DIRS = new Set(['STÂNGA', 'DREAPTA', 'STÂNGA-T', 'DREAPTA-T',
@@ -499,19 +499,30 @@ function intregIntre(v, min, max) {
 
 // Viteza salvată de om în `rt_speeds`, sub cheia probei. Forma VECHE e un număr simplu
 // (și rămâne valabilă, e ce scriu telefoanele de până azi); forma nouă e
-// { kmh, schimbari: [{ box, kmh }] } — schimbarea se scrie pe BOX, nu pe kilometru,
-// fiindcă boxul e ce citește omul din buletin și de pe roadbook.
+// { kmh, schimbari: [{ box, kmh }], limite: [{ deLaBox, panaLaBox, kmh }] } —
+// și schimbarea, și zona de limită se scriu pe BOX, nu pe kilometru, fiindcă boxul e
+// ce citește omul din buletin și de pe roadbook.
+export const LIMITE_MAX = 8;
 export function normVitezaSalvata(v) {
-  if (v == null) return { kmh: null, schimbari: [] };
+  if (v == null) return { kmh: null, schimbari: [], limite: [] };
   if (typeof v === 'number' || typeof v === 'string')
-    return { kmh: numarIntre(v, VITEZA_MIN, VITEZA_MAX), schimbari: [] };
-  if (typeof v !== 'object' || Array.isArray(v)) return { kmh: null, schimbari: [] };
+    return { kmh: numarIntre(v, VITEZA_MIN, VITEZA_MAX), schimbari: [], limite: [] };
+  if (typeof v !== 'object' || Array.isArray(v)) return { kmh: null, schimbari: [], limite: [] };
   const schimbari = (Array.isArray(v.schimbari) ? v.schimbari : [])
     .map(s => ({ box: intregIntre(s && s.box, 1, 999),
                  kmh: numarIntre(s && s.kmh, VITEZA_MIN, VITEZA_MAX) }))
     .filter(s => s.box != null && s.kmh != null)
     .slice(0, 6);
-  return { kmh: numarIntre(v.kmh, VITEZA_MIN, VITEZA_MAX), schimbari };
+  // Zonele de limită legală. O zonă cu boxurile inversate sau egale nu descrie nicio
+  // bucată de drum, deci nu intră — la fel ca o schimbare fără viteză.
+  const limite = (Array.isArray(v.limite) ? v.limite : [])
+    .map(z => ({ deLaBox: intregIntre(z && z.deLaBox, 1, 999),
+                 panaLaBox: intregIntre(z && z.panaLaBox, 1, 999),
+                 kmh: numarIntre(z && z.kmh, VITEZA_MIN, VITEZA_MAX) }))
+    .filter(z => z.deLaBox != null && z.panaLaBox != null && z.kmh != null &&
+                 z.panaLaBox > z.deLaBox)
+    .slice(0, LIMITE_MAX);
+  return { kmh: numarIntre(v.kmh, VITEZA_MIN, VITEZA_MAX), schimbari, limite };
 }
 
 // Segmentele, din viteza de bază + punctele de schimbare (în km DE PROBĂ).
@@ -532,6 +543,77 @@ export function faSegmente(kmh, extra = []) {
     else out.push(s);
   }
   return out;
+}
+
+// ── ZONELE DE LIMITĂ LEGALĂ ÎN INTERIORUL PROBEI (v44) ──────────────────────
+// REGULA DE CONCURS, spusă de Andreas (07.08.2026): în probă, limitele legale de pe
+// plăcuțe (30 km/h prin sate) TREBUIE respectate. Organizatorul NU calculează porțiunea
+// aceea la media probei — o scade — și NU ai voie să recuperezi timpul după ea.
+//
+// Modelarea corectă cu ce EXISTĂ deja: o zonă de limită e pur și simplu O PERECHE DE
+// SCHIMBĂRI DE SEGMENT. La kilometrul de intrare viteza devine limita; la cel de ieșire
+// revine la viteza care AR FI FOST activă acolo — media de bază, sau media de după o
+// schimbare oficială, dacă zona cade după ea. Consecințele, exact regula de concurs:
+//  • timpul ideal include zona la limită, deci devierea NU crește cât ții limita;
+//  • după zonă ținta redevine media probei, deci nu se recuperează nimic.
+//
+// Ce NU face funcția asta: nu inventează, nu ghicește și nu extinde nimic. Zonele vin de
+// la om, de pe plăcuțele pe care le-a văzut la recunoaștere sau în roadbook.
+//
+// `limite` = [{ deLaKm, panaLaKm, kmh }] în km ABSOLUȚI de traseu (așa cum îi scrie
+// roadbook-ul); `startKm` e kilometrul liniei de start, `distKm` lungimea probei —
+// zonele se taie la capetele ei, fiindcă în afara probei nu se cronometrează nimic.
+export function aplicaLimite(segments, limite, startKm, distKm = Infinity) {
+  const baza = Array.isArray(segments) ? segments : [];
+  if (!baza.length || !Array.isArray(limite) || !limite.length) return baza.slice();
+  const r2 = x => Math.round(x * 100) / 100;
+  const puncte = [];
+  for (const z of limite) {
+    if (!z || z.kmh == null) continue;
+    const a = r2(z.deLaKm - startKm), b = r2(z.panaLaKm - startKm);
+    if (!(b > a)) continue;                       // zonă goală sau cu capetele inversate
+    if (b <= 0 || a >= distKm) continue;          // integral în afara probei
+    // VITEZA DE IEȘIRE se citește din segmentele DE DINAINTE de inserare: dacă zona
+    // se termină după o schimbare oficială, se revine la media schimbării, nu la cea
+    // de bază. (Aici stătea singurul mod real de a greși regula.)
+    const vIesire = speedAt(b, baza);
+    puncte.push({ fromKm: Math.max(0, a), kmh: z.kmh, limita: true });
+    // fără ieșire când zona ajunge la finiș: limita ține până la linie
+    if (b < distKm) puncte.push({ fromKm: b, kmh: vIesire, iesireLimita: true });
+  }
+  if (!puncte.length) return baza.slice();
+  const toate = baza.map(s => ({ ...s })).concat(puncte);
+  toate.sort((x, y) => x.fromKm - y.fromKm);
+  const out = [];
+  for (const s of toate) {
+    // două schimbări în același punct: rămâne ULTIMA pusă, adică cea a zonei de limită
+    // (sortarea e stabilă în JS, iar zonele vin după segmentele de bază). Cazul real:
+    // o zonă care se termină exact la o schimbare oficială — acolo cele două valori
+    // sunt oricum egale, fiindcă viteza de ieșire s-a citit chiar din schimbarea aia.
+    if (out.length && Math.abs(out[out.length - 1].fromKm - s.fromKm) < 0.005) out[out.length - 1] = s;
+    else out.push(s);
+  }
+  return out;
+}
+
+// Zonele salvate pe boxuri → kilometri absoluți, verificate față de proba reală.
+// Ce nu se poate lega NU se aplică și nu se pierde tăcut: apelantul primește lista.
+function limitePeBox(boxes, limite, startKm, distKm) {
+  const bune = [], afara = [];
+  for (const z of (limite || [])) {
+    const b1 = boxes.find(x => x && x.num === z.deLaBox);
+    const b2 = boxes.find(x => x && x.num === z.panaLaBox);
+    if (!b1 || !b2) { afara.push({ ...z, motiv: 'nu există în roadbook' }); continue; }
+    if (!(b2.sumKm > b1.sumKm)) { afara.push({ ...z, motiv: 'boxurile sunt în ordine inversă' }); continue; }
+    if (b2.sumKm <= startKm || b1.sumKm >= startKm + distKm) {
+      afara.push({ ...z, motiv: 'nu e între startul și finișul probei' }); continue;
+    }
+    bune.push({ deLaKm: b1.sumKm, panaLaKm: b2.sumKm, kmh: z.kmh,
+                deLaBox: z.deLaBox, panaLaBox: z.panaLaBox,
+                deLaKmProba: Math.max(0, Math.round((b1.sumKm - startKm) * 100) / 100),
+                panaLaKmProba: Math.min(distKm, Math.round((b2.sumKm - startKm) * 100) / 100) });
+  }
+  return { bune, afara };
 }
 
 // Schimbările salvate pe boxuri → puncte în km de probă, verificate față de proba reală.
@@ -564,7 +646,8 @@ export function detectRts(boxes, savedSpeeds = {}) {
                   : (m ? parseFloat(m[1].replace(',', '.')) : null);
         const distKm = Math.round(dist * 100) / 100;
         const sch = schimbariPeBox(boxes, sv.schimbari, boxes[s].sumKm, distKm);
-        const segments = faSegmente(kmh, sch.bune);
+        const lim = limitePeBox(boxes, sv.limite, boxes[s].sumKm, distKm);
+        const segments = aplicaLimite(faSegmente(kmh, sch.bune), lim.bune, boxes[s].sumKm, distKm);
         rts.push({
           key, startIdx: s, finishIdx: i,
           startKm: boxes[s].sumKm, finishKm: boxes[i].sumKm,
@@ -574,6 +657,8 @@ export function detectRts(boxes, savedSpeeds = {}) {
           segments,
           schimbari: sch.bune,          // pentru ecran: „de la boxul 97, 20,5"
           schimbariNepuse: sch.afara,   // ce a scris omul și nu se leagă de probă
+          limite: lim.bune,             // zonele de limită legală, pentru ecran
+          limiteNepuse: lim.afara,
           sursa: 'roadbook'
         });
       }
@@ -831,7 +916,14 @@ export function probeDinBuletin(boxes, buletin, legPage, savedSpeeds = {}) {
         nota('de_mana', `${nume}: schimbarea pusă de tine pe boxul ${a.box} ` +
           `${a.exista ? 'nu e între startul și finișul probei' : 'nu există în roadbook'} — n-am aplicat-o.`);
     }
-    const segments = faSegmente(kmh, folosite);
+    // ── 5b. zonele de limită legală, puse de om (v44) ───────────────────────
+    // Buletinul nu le conține niciodată: sunt plăcuțele de pe marginea drumului.
+    // Omul le scrie pe boxuri, aici se transformă în perechi de schimbări de segment.
+    const lim = limitePeBox(bx, sv.limite, startKm, distKm);
+    for (const a of lim.afara)
+      nota('de_mana', `${nume}: limita de ${a.kmh} km/h de la boxul ${a.deLaBox} la ${a.panaLaBox} ` +
+        `— ${a.motiv}, n-am aplicat-o.`);
+    const segments = aplicaLimite(faSegmente(kmh, folosite), lim.bune, startKm, distKm);
 
     // ── 6. condițiile de start: informație pentru pilot, nu decizie de cod ──
     if (p.startAfterTc)
@@ -846,6 +938,8 @@ export function probeDinBuletin(boxes, buletin, legPage, savedSpeeds = {}) {
       segments,
       schimbari: folosite,
       schimbariNepuse: [],
+      limite: lim.bune,
+      limiteNepuse: lim.afara,
       sursa: 'buletin',
       name: p.name || null,
       finishRel: rel,

@@ -128,6 +128,25 @@
       </div>
     </div>
 
+    <!-- ══ ȘTAMPILA TC ȘI ORELE DE START ══ -->
+    <!-- Regula de concurs (buletinul de azi): probele cu self-start pornesc la un decalaj
+         fix după începerea TC-ului — TR 1 la 24 de minute după TC 1, TR 2 la 80, TR 3 la
+         131. Cronometrul lor curge de la TC+decalaj INDIFERENT dacă mașina e la linie:
+         întârzierea la start e penalizare directă. Aplicația nu poate ști singură când a
+         început TC-ul, așa că omul apasă butonul exact atunci, o dată. -->
+    <div class="card">
+      <p class="lbl">ȘTAMPILA TC — ORELE DE START ALE PROBELOR</p>
+      <button class="btn pri big" id="btn-stampila-prep">🕐 ȘTAMPILA TC</button>
+      <p id="prep-stampila-st" class="line dim"></p>
+      <div id="prep-start"></div>
+      <p class="line dim">Se apasă în secunda în care începe Time Control-ul. De acolo
+        încolo, fiecare probă cu decalaj primește ora ei de start, numărătoarea de pe
+        ecran și patru anunțuri: la 5 minute, la 1 minut, la 15 secunde și la zero.
+        La următorul TC apeși din nou — ștampila se mută.</p>
+      <p class="line dim">Probele care pornesc DIN MERS nu au decalaj, deci nu au
+        numărătoare: la ele linia de start e acolo unde e, pe traseu.</p>
+    </div>
+
     <div class="card">
       <p class="lbl">PROGRAMUL ZILEI (time card)</p>
       <!-- o singură poză, deci fără buclă: după fotografie se scanează direct -->
@@ -253,6 +272,11 @@
 
   <!-- ══ CURSĂ (un singur ecran, se transformă singur) ══ -->
   <section id="scr-run" class="hidden">
+    <!-- NUMĂRĂTOAREA SPRE STARTURILE PROBELOR (v44). Probele cu self-start pornesc la
+         un decalaj fix după începerea unui TC (azi: +24, +80, +131 min după TC 1), iar
+         cronometrul curge de acolo chiar dacă mașina nu e la linie. Ștampila de mai jos
+         e singurul lucru pe care aplicația nu-l poate ști singură. -->
+    <div id="cp-startband" class="startband hidden"></div>
     <!-- controlul orar, vizibil permanent — vocea se poate pierde, cifra nu -->
     <p id="cp-tcband" class="tcband hidden"></p>
     <!-- paznicul de direcție: la Leg 2 (03.08.2026) mașina a plecat în direcția opusă
@@ -329,6 +353,10 @@
       </div>
       <button class="btn sec big" id="btn-talk">🎤</button>
     </div>
+    <!-- ȘTAMPILA TC: se apasă în secunda în care începe Time Control-ul. Același buton
+         (și aceeași funcție) există și în panoul de pregătire — TC-ul de dimineață se
+         prinde acolo, cel de după-amiază de la Orlat aici, în mers. -->
+    <button class="btn sec big" id="btn-stampila">🕐 ȘTAMPILA TC</button>
     <!-- HARTA și „UNDE SUNT": cele două întrebări la care săgeata singură nu răspunde.
          (Andreas, 05.08.2026: „am o problemă destul de mare de orientare în spațiu".) -->
     <div class="row">

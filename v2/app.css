@@ -84,6 +84,16 @@ input { background: var(--bg); border: 1px solid var(--border); border-radius: 1
 #cp-nav.offroute .nx-com { color: var(--bad); font-weight: 800; letter-spacing: .5px; }
 #cp-nav.offroute .nx-dir { color: var(--bad); }
 
+/* NUMĂRĂTOAREA SPRE STARTURILE PROBELOR — o linie per probă cu decalaj.
+   Cifrele sunt tabulare ca să nu joace pe ecran la fiecare secundă. */
+.startband { margin-bottom: 8px; display: flex; flex-direction: column; gap: 4px; }
+.startline { text-align: center; font-size: 15px; font-weight: 800; padding: 6px;
+  border-radius: 10px; font-variant-numeric: tabular-nums;
+  background: #30d15822; color: var(--ok); }
+.startline.galben { background: #ffd60a22; color: var(--warn); }
+.startline.rosu { background: var(--bad); color: #fff; animation: blink 1s infinite; }
+.startline.trecut { background: var(--surf); color: var(--dim); font-weight: 700; }
+
 /* banda TC — permanentă, verde/roșu dintr-o privire */
 .tcband { text-align: center; font-size: 15px; font-weight: 800; padding: 7px;
   border-radius: 10px; margin-bottom: 8px; font-variant-numeric: tabular-nums; }
@@ -160,6 +170,10 @@ input { background: var(--bg); border: 1px solid var(--border); border-radius: 1
   .posrow #cp-km, .posrow #cp-spd { font-size: 19px; }
   .warnband, .tcband { padding: 5px; font-size: 12px; margin-bottom: 5px; }
   .corrline { padding: 4px 8px; font-size: 12px; margin-bottom: 5px; }
+  /* numărătoarea spre start NU dispare pe ecran mic (spre deosebire de .nx-com): e o
+     oră de start, iar ea nu se poate deduce din nimic altceva de pe ecran */
+  .startband { gap: 3px; margin-bottom: 5px; }
+  .startline { padding: 4px; font-size: 13px; }
 
   /* CARDUL DE NAVIGAȚIE, pe orizontală: distanța la stânga, săgeata la dreapta.
      Săgeata rămâne elementul dominant, dar proporțional cu cât ecran există. */

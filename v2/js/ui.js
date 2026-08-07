@@ -3,7 +3,7 @@
 // Randarea e o funcție pură de (stare, plan) → DOM. Nicio logică de cursă aici —
 // mașina de stări decide, ecranul doar arată. În teste, ui e un obiect nul.
 
-import { fmtHMS } from './time.js';
+import { fmtHMS, textStart } from './time.js';
 import { linkNavigare as linkMaps } from './maps.js';
 import { normFlags } from './route.js';
 import { speedAt } from './pace.js';
@@ -29,6 +29,28 @@ export function makeUi() {
       if (un) {
         if (M.unde) { un.textContent = M.unde.text; un.className = 'undeline'; }
         else un.className = 'undeline hidden';
+      }
+
+      // ── NUMĂRĂTOAREA SPRE STARTURILE PROBELOR (v44) ──────────────────────
+      // Tot ÎNAINTE de ramurile cu `return` ale ieșirii de pe traseu, și din același
+      // motiv, dus mai departe: când ești pe alt drum, ceasul startului tău curge la
+      // fel — regula de concurs spune că proba pornește la TC+decalaj indiferent unde
+      // e mașina. Ăsta e exact momentul în care trebuie să vezi cât mai ai.
+      // Cifra există și VIZUAL, nu doar în cele patru anunțuri: în probă vocea tace
+      // despre alte probe, iar un anunț pierdut în coadă nu se mai repetă.
+      const sb = $('cp-startband');
+      if (sb) {
+        const linii = M.startLinii || [];
+        sb.textContent = '';
+        if (linii.length) {
+          for (const l of linii) {
+            const d = document.createElement('div');
+            d.className = 'startline ' + l.stare;
+            d.textContent = textStart(l);
+            sb.appendChild(d);
+          }
+          sb.className = 'startband';
+        } else sb.className = 'startband hidden';
       }
 
       const rtEl = $('cp-rt'), navEl = $('cp-nav');

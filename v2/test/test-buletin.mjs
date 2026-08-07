@@ -367,12 +367,16 @@ console.log('\n═══ NE-REGRESIE: proba cu medie constantă e neschimbată �
 
 console.log('\n═══ Vitezele puse de mână: număr simplu SAU cu schimbări ═══');
 {
+  // De la v44 forma normalizată mai are un câmp — `limite`, zonele de limită legală.
+  // Câmpul e mereu prezent (listă goală când nu s-a pus nimic), ca apelanții să nu
+  // aibă de verificat existența lui; forma SALVATĂ rămâne un număr simplu.
   ok('forma veche — un număr — se citește la fel',
-     JSON.stringify(normVitezaSalvata(40)) === JSON.stringify({ kmh: 40, schimbari: [] }));
+     JSON.stringify(normVitezaSalvata(40)) ===
+     JSON.stringify({ kmh: 40, schimbari: [], limite: [] }));
   ok('un șir cu virgulă tot număr e', normVitezaSalvata('24,3').kmh === 24.3);
   ok('forma nouă poartă și schimbările',
      JSON.stringify(normVitezaSalvata({ kmh: 24.3, schimbari: [{ box: 97, kmh: 20.5 }] })) ===
-     JSON.stringify({ kmh: 24.3, schimbari: [{ box: 97, kmh: 20.5 }] }));
+     JSON.stringify({ kmh: 24.3, schimbari: [{ box: 97, kmh: 20.5 }], limite: [] }));
   ok('valorile absurde se aruncă și de-aici',
      normVitezaSalvata({ kmh: 900, schimbari: [{ box: -1, kmh: 20 }, { box: 5, kmh: 900 }] }).kmh === null &&
      normVitezaSalvata({ kmh: 900, schimbari: [{ box: -1, kmh: 20 }, { box: 5, kmh: 900 }] }).schimbari.length === 0);

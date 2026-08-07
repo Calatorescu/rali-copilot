@@ -20,7 +20,7 @@ import { secRo, distRo, vitezaRo } from './voice.js';
 // un singur loc care stie ce e nume de artera si ce e cuvant de roadbook (vezi repere.js)
 import { extrageReper } from './repere.js';
 import { makeDebrief } from './debrief.js';
-import { parseRallyTime } from './time.js';
+import { parseRallyTime, starturiDinStampila, frazaPragStart, PRAGURI_START_S } from './time.js';
 
 // TREPTELE DE AVERTIZARE, de la v35: 500 / 300 / 150 / „acum" (era doar 300 / 150 / acum).
 // Cererea lui Andreas (05.08.2026), din aceeași rădăcină ca harta: pe un tronson lung,
@@ -220,12 +220,17 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
     tcs: [],               // [{name, time, rallyMs, km|null, warned:{}}]
     shadow: !!opts.shadow, // modul umbră: totul rulează, vocea tace, jurnalul ține minte
     ghost: !!opts.ghost,
-    _ann: {}, _staged: false, _warnedRt: {}, _lastBank: 0, _coadaFinish: null,
+    _ann: {}, _staged: false, _warnedRt: {}, _nuOpriSpus: {}, _lastBank: 0, _coadaFinish: null,
     _turnAcc: 0, _lastHdg: null, _lastHdgT: 0, _quietMs: 0, _lastSnapT: 0, _virajRefuzat: null,
     _dirEtapa: 0, _dirStart: null, dirAlerta: null,
     _lastToneT: 0, _extSpeedKmh: null, _extSpeedT: 0,
     corectie: null,        // ultima corecție de poziție, pentru ECRAN (vezi anuntaCorectia)
     unde: null,            // ultimul raspuns la „unde sunt", tinut 20 s pe ecran
+    // ȘTAMPILA TC (v44): momentul apăsat de om la începerea Time Control-ului, din care
+    // se calculează orele de start ale probelor cu self-start decalat. Vezi time.js.
+    stampila: null,        // { rallyMs, monoMs }
+    startLinii: [],        // liniile de numărătoare, pentru ecran
+    _stampPraguri: {},     // { 'TR 1': { 300: true, … } } — fiecare prag se rostește o dată
     // ieșirea de pe traseu: starea, semnele strânse și firimiturile de drum
     offRoute: null, offRouteOn: opts.offRoute !== false, _offSemne: [], _urme: [],
     _offVorbaMono: 0, _offSector: null, _hdg: null, _hartaIst: {}, _hartaStricata: false,
@@ -285,6 +290,66 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
       const v = Math.max(15, M.speedKmh || 25);
       M.tcBand = { name: urmator.name, minLeft, kmLeft, ok: (kmLeft / v) * 60 <= minLeft - 0.3 };
     } else M.tcBand = null;
+  }
+
+  // ── ȘTAMPILA TC ȘI NUMĂRĂTOAREA SPRE STARTURI (v44) ───────────────────────
+  // Ce face butonul: înregistrează SECUNDA în care a început Time Control-ul. Atât.
+  // Din ea ies orele de start ale probelor cu decalaj (TR 1 la +24 min, TR 2 la +80,
+  // TR 3 la +131 — buletinul de azi), numărătoarea de pe ecran și cele patru anunțuri.
+  // Cronometrul probei NU se pornește de aici: el rămâne unde era, pe linia de start.
+
+  // NIMIC RETROACTIV. Un prag al cărui moment a trecut deja în clipa ștampilei se
+  // marchează ca rostit — deci tace. Asta acoperă și cazul „aplicația a repornit la
+  // douăzeci de minute după TC": la reluare nu se strigă un start care e demult trecut.
+  function armeazaPraguri(stampilaMs) {
+    M._stampPraguri = {};
+    for (const l of starturiDinStampila(plan.rts, stampilaMs, clock.rally())) {
+      const p = {};
+      for (const s of PRAGURI_START_S) p[s] = l.ramasS <= s;
+      M._stampPraguri[l.name] = p;
+    }
+  }
+
+  // `nou` = apăsare adevărată (se scrie în jurnal și în depozit); la reluarea de după
+  // o repornire se re-armează doar starea, fără să se inventeze o a doua ștampilă.
+  function pornesteStampila(rallyMs, { nou = true } = {}) {
+    M.stampila = { rallyMs, monoMs: clock.mono() };
+    armeazaPraguri(rallyMs);
+    stampilaTick();
+    if (nou) {
+      log('tc_stampila', { la: rallyMs, probe: M.startLinii.map(l =>
+        ({ name: l.name, tc: l.tc, minute: l.minutes, oraStart: l.oraMs })) });
+      try {
+        const p = store.put('tc_stamp', { rallyMs });
+        if (p && p.catch) p.catch(() => {});
+      } catch (e) {}
+    }
+    ui.render(M, plan);
+    return M.stampila;
+  }
+
+  function stampilaTick() {
+    if (!M.stampila) { M.startLinii = []; return; }
+    const linii = starturiDinStampila(plan.rts, M.stampila.rallyMs, clock.rally());
+    M.startLinii = linii;
+    for (const l of linii) {
+      const p = M._stampPraguri[l.name] || (M._stampPraguri[l.name] = {});
+      for (const prag of PRAGURI_START_S) {
+        if (p[prag] || l.ramasS > prag) continue;
+        p[prag] = true;
+        // ÎNTR-O PROBĂ ACTIVĂ nu se rostește numărătoarea altei probe: acolo urechea
+        // pilotului e a devierii. Pragul se CONSUMĂ totuși — altfel ar sări pe difuzor
+        // la finish, vechi de minute întregi, exact peste anunțul de rezultat.
+        if (!M.rt) {
+          // prioritate mare (4), dar clasa 'ritm': nu taie niciodată o manevră „acum"
+          // și așteaptă după ea în coadă. Categoria e pe PROBĂ, ca numărătoarea unei
+          // probe să nu arunce din coadă anunțul alteia.
+          say(frazaPragStart(l.name, prag), 4, 'start_' + l.name, 'ritm');
+          tone(prag === 0 ? 'alarm' : 'ok');
+        }
+        log('start_prag', { name: l.name, pragS: prag, oraStart: l.oraMs, inProba: !!M.rt });
+      }
+    }
   }
 
   // ── poziția ───────────────────────────────────────────────────────────────
@@ -614,11 +679,27 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
       M._warnedRt[rt.name] = true;
       // schimbarea de medie se anunță ÎNAINTE de start, nu doar la punctul ei: pe TR4
       // de la Reșița media scade de la 24,3 la 20,5 în plină probă, iar un pilot care
-      // află abia acolo pierde secundele de reacție exact unde se dau punctele
-      const alta = rt.segments && rt.segments.length > 1 ? rt.segments[1].kmh : null;
+      // află abia acolo pierde secundele de reacție exact unde se dau punctele.
+      // ZONELE DE LIMITĂ (v44) nu sunt „schimbări de medie": ele se numără separat, iar
+      // schimbarea anunțată e prima OFICIALĂ, nu prima din listă — altfel, pe o probă
+      // cu o zonă de 30 la început, pilotul ar auzi „apoi schimbare la 30" și ar crede
+      // că aia e media probei.
+      const urm = (rt.segments || []).slice(1);
+      const alta = urm.find(s => !s.limita && !s.iesireLimita);
+      const nLim = urm.filter(s => s.limita).length;
+      // START DIN MERS (v44, buletinul de azi): „Start din mers, fără oprire. Atenție,
+      // oprirea se va penaliza!" Se spune O SINGURĂ DATĂ, la prima avertizare, și numai
+      // la probele `auto` — la cele `standing` pilotul TREBUIE să oprească la linie, iar
+      // un „nu opri" acolo ar fi exact instrucțiunea inversă.
+      let nuOpri = '';
+      if (rt.type === 'auto' && rt.kmh != null && !M._nuOpriSpus[rt.name]) {
+        M._nuOpriSpus[rt.name] = true;
+        nuOpri = ' Din mers — nu opri!';
+      }
       say(rt.kmh != null
-            ? `Proba în 500. Viteza ${vitezaRo(rt.kmh)}.` +
-              (alta != null ? ` Apoi schimbare la ${vitezaRo(alta)}.` : '')
+            ? `Proba în 500. Viteza ${vitezaRo(rt.kmh)}.` + nuOpri +
+              (alta != null ? ` Apoi schimbare la ${vitezaRo(alta.kmh)}.` : '') +
+              (nLim ? (nLim === 1 ? ' Cu o zonă de limită.' : ` Cu ${nLim} zone de limită.`) : '')
             : `Proba în 500 — fără viteză setată, o sar.`, 3, 'race');
       // pacing predictiv: dacă proba începe cu o zonă lentă, spune planul de-acum
       if (rt.kmh != null && rt.zones && rt.zones.length) {
@@ -1109,9 +1190,18 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
       if (rt._segIdx == null) rt._segIdx = i;
       else if (i > rt._segIdx) {
         rt._segIdx = i;
-        say(`Acum ${vitezaRo(segs[i].kmh)}.`, 4, 'race');
+        const s = segs[i];
+        // ZONA DE LIMITĂ LEGALĂ (v44) se rostește altfel decât o schimbare de medie,
+        // fiindcă e altceva: nu „media probei s-a schimbat", ci „aici e plăcuță, iar
+        // organizatorul scade porțiunea". La ieșire se spune media la care se REVINE —
+        // și, implicit, că nu se recuperează nimic.
+        const txt = s.limita ? `Limită ${vitezaRo(s.kmh)}.`
+                  : s.iesireLimita ? `Limita gata. Ține ${vitezaRo(s.kmh)}.`
+                  : `Acum ${vitezaRo(s.kmh)}.`;
+        say(txt, 4, 'race');
         tone('ok');
-        log('rt_segment', { name: def.name, kmh: segs[i].kmh, laKm: r2(parcursKm) });
+        log('rt_segment', { name: def.name, kmh: s.kmh, laKm: r2(parcursKm),
+                            limita: !!s.limita, iesireLimita: !!s.iesireLimita });
       }
     }
 
@@ -2172,6 +2262,12 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
   // ── API public ────────────────────────────────────────────────────────────
   return {
     M, onFix, atBox, setTcSchedule, previzualizeazaBox, boxuriApropiate, tintaMaps,
+    // ȘTAMPILA TC — apăsarea butonului. O nouă apăsare o resetează pur și simplu
+    // (confirmarea o cere ecranul, nu mașina: aici nu se deschide niciun dialog).
+    stampeazaTc(rallyMs) { return pornesteStampila(rallyMs != null ? rallyMs : clock.rally()); },
+    // reluarea ștampilei salvate, după o repornire a aplicației — fără jurnal nou
+    reiaStampila(rallyMs) { return rallyMs != null ? pornesteStampila(rallyMs, { nou: false }) : null; },
+    stampilaTick,
     // Butonul „UNDE SUNT": răspunde din starea care există deja, deci nu poate întârzia
     // nimic. Rămâne pe ecran 20 de secunde, fiindcă în mașină un răspuns rostit o dată
     // se pierde exact ca oricare altul.
@@ -2204,7 +2300,8 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
       odo.reset();
       M.routeKm = 0; M.traceM = null; M._projMiss = 0;
       M.rtIdx = 0; M.rt = null; M.nextBoxIdx = 0; M.results = {}; M.lastDebrief = null;
-      M._ann = {}; M._staged = false; M._warnedRt = {}; M._desyncSaid = null; M._confirmedIdx = -1;
+      M._ann = {}; M._staged = false; M._warnedRt = {}; M._nuOpriSpus = {};
+      M._desyncSaid = null; M._confirmedIdx = -1;
       M._virajRefuzat = null; M._turnAcc = 0; M._lastHdg = null; M._lastSnapT = 0;
       // leg nou = drum nou: firimiturile și semnele de ieșire de pe traseu nu se moștenesc
       M.offRoute = null; M._offSemne = []; M._urme = []; M._offSector = null; M._offVorbaMono = 0;
@@ -2251,6 +2348,10 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
     // TC-urile nu mai avertizau nici cu mașina oprită lângă control. main.js o apelează
     // la fiecare secundă; testele o pot apela direct.
     tick() {
+      // Numărătoarea spre starturi bate ÎNAINTE de ieșirea pe PREP: ștampila se poate
+      // apăsa și din panoul de pregătire (TC-ul de dimineață, înainte de START ZIUA),
+      // iar de acolo încolo secundele curg indiferent ce ecran e deschis.
+      stampilaTick();
       if (M.state === 'PREP') return;
       const now = clock.mono();
       // și fără fixuri corecția expiră la timp: altfel, cu GPS-ul mort, ar rămâne pe
