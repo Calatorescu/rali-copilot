@@ -13,7 +13,9 @@ import { buildPlan, detectRts, sanitizeBoxes, groupByLeg, verifyRoadbook,
          normVitezaSalvata, imbinaBuletin,
          DIRECTII_EDITOR, aplicaDirectie, normVirajeProprii, puneVirajPropriu,
          scoateVirajPropriu, aplicaVirajeProprii, instantaneuDirectii,
-         restaureazaDirectii, normDirScanat } from './route.js';
+         restaureazaDirectii, normDirScanat,
+         declaraViraj, retrageViraj, stareViraje,
+         serieRoadbook, frazaSerie } from './route.js';
 import { makeMachine } from './machine.js';
 import { makeDriverModel } from './learn.js';
 import { makeUi, startHeaderClock } from './ui.js';
@@ -25,9 +27,13 @@ import { linkuriTraseu, linkNavigare } from './maps.js';
 import { makeSync } from './sync.js';
 import { efficiencyPoints, efficiencyGap } from './pace.js';
 import { makeHartaEcran, testeazaDale } from './harta-ecran.js';
+import { makeSantinela } from './santinela.js';
 
 const $ = id => document.getElementById(id);
 let store, clock, voice, ui, driver, machine = null, gps = null, plan = null, sync = null;
+// Santinela audio (v47): ține fila trează cât rulează ziua. Vezi santinela.js pentru
+// limitele ei — în apel celular Android ia focusul audio și rămâne doar puntea din machine.
+let santinela = null;
 let boxesRaw = [], reconRec = null;
 // „Virajele mele" (v45): lista de direcții DECLARATE de om, pe leg — { legKey: [{num,dir}] }.
 // Și fotografia direcțiilor citite de scanare, făcută o singură dată, la prima aplicare,
@@ -43,7 +49,7 @@ let hartaIncoerenta = null;
 // Versiunea build-ului — se ține SINCRON cu CACHE din sw.js la fiecare deploy.
 // Vizibilă în antet și scrisă în jurnal la fiecare pornire: „ce versiune rulează
 // telefonul?" se citește, nu se ghicește (02.08, seara — nu se putea ști).
-const BUILD = 'v46';
+const BUILD = 'v47';
 
 async function init() {
   store = await makeStore();
@@ -114,6 +120,11 @@ async function init() {
       // suspendarea putea opri performance.now — cronometrul probei se re-ancorează
       // pe ceasul raliului, iar proiecția face full-scan la primul fix
       if (machine) machine.reanchor();
+      // Fila a fost în fundal (apel, altă aplicație): Chrome poate fi oprit `watchPosition`
+      // acolo, deci golul se reconstruiește din coardă la primul fix (vezi machine.onFix).
+      if (machine) { try { machine.revenitDinFundal(); } catch (e) {} }
+      // Santinela poate fi fost pusă pe pauză de sistem în timpul apelului — se repornește.
+      if (santinela && cursaRuleaza()) santinela.porneste();
     }
   });
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js').catch(() => {});
@@ -315,6 +326,21 @@ function renderPrep() {
   const vf = $('prep-verif');
   if (vf) {
     vf.textContent = '';
+    // ── SERIA LEG-ULUI ACTIV, PERMANENT (v47) ─────────────────────────────
+    // Nu doar în bilanțul scanării, care se citește o dată și dispare: o pagină lipsă e o
+    // stare a roadbook-ului, deci stă pe ecran până e reparată. Rândul verde e la fel de
+    // important — „complet" trebuie să fie o măsurătoare cu cifre, nu o liniștire.
+    if (plan.boxes.length) {
+      const f = frazaSerie(serieRoadbook(plan.boxes));
+      if (f.txt) {
+        const p = document.createElement('p');
+        p.className = 'line';
+        p.style.color = f.rau ? 'var(--bad)' : 'var(--ok)';
+        if (f.rau) p.style.fontWeight = '700';
+        p.textContent = f.txt;
+        vf.appendChild(p);
+      }
+    }
     if (boxesRaw.length) {
       // Avertismentele despre semnele de probă se sting când probele vin din buletin:
       // ele descriu tot niște icoane care nu mai cronometrează nimic, iar un avertisment
@@ -628,6 +654,36 @@ async function scoateLimita(key, deLaBox, panaLaBox) {
 // ele, iar câmpul se golește și își ia focusul singur.
 const virajeLeg = () => (plan && plan.legKey && virajeProprii[plan.legKey]) || [];
 
+// Boxurile pe care se SCRIE. `plan.boxes` sunt CHIAR obiectele din `boxesRaw` (groupByLeg
+// filtrează referințe, buildPlan nu copiază), deci o scriere aici e și scrierea care se
+// salvează în `plan_raw` și cea pe care o citește mașina de stări la fixul următor —
+// un singur exemplar al adevărului, cum e și la `puneDirectie`.
+const boxeleLegului = () => (plan && plan.boxes) || [];
+
+// Fotografia direcțiilor scanate, o SINGURĂ dată pe leg, înaintea primei scrieri. Până la
+// v46 se făcea în `aplicaVirajele`; acum prima scriere poate fi o simplă declarație, deci
+// momentul s-a mutat aici. A doua chemare nu rescrie nimic: altfel „înapoi la direcțiile
+// scanate" ar deveni „înapoi la ce am pus tot eu".
+function fotografiazaScanate() {
+  if (!plan || !plan.legKey) return false;
+  const f = dirScanat[plan.legKey];
+  if (f && typeof f === 'object' && !Array.isArray(f)) return false;
+  dirScanat[plan.legKey] = instantaneuDirectii(boxeleLegului());
+  store.put('dir_scanat', dirScanat).catch(() => {});
+  return true;
+}
+
+// „(a ta)" / „(scanată)" — proveniența direcției care e pe box ACUM. Declarația câștigă
+// doar dacă e chiar scrisă pe box; dacă lista spune una și boxul poartă alta, se spune pe
+// față, fiindcă ăsta e chiar defectul de care ne apărăm.
+function sursaDirectie(b) {
+  if (!b || b.num == null) return '';
+  const v = virajeLeg().find(x => x.num === b.num);
+  if (!v) return '(scanată)';
+  if (b.dir === v.dir) return '(a ta)';
+  return `(⚠ tu ai declarat ${v.dir})`;
+}
+
 function renderViraje() {
   const wrap = $('vp-lista');
   if (!wrap) return;
@@ -648,9 +704,34 @@ function renderViraje() {
     const n = plan ? plan.boxes.length : 0;
     rez.textContent = lista.length
       ? `${lista.length} ${lista.length === 1 ? 'viraj declarat' : 'viraje declarate'}` +
-        (n ? ` · restul de ${n - lista.length} boxuri vor tăcea` : '')
+        (n ? ` · ${n - lista.length} boxuri nedeclarate` : '')
       : 'Niciun viraj declarat încă' + (n ? ` (leg-ul are ${n} boxuri)` : '');
     rez.style.color = lista.length ? 'var(--ok)' : 'var(--dim)';
+  }
+  // ── RÂNDUL DE STARE (v47): cine vorbește ACUM, nu ce ai introdus ───────────
+  // Pe 08.08 lista arăta opt viraje declarate și nimic nu spunea că pe boxuri comanda
+  // scanarea. Rândul de mai jos e singurul loc din care se putea vedea, deci există.
+  const stEl = $('vp-stare');
+  if (stEl && plan) {
+    const s = stareViraje(plan.boxes, lista);
+    if (!lista.length) {
+      stEl.textContent = ''; stEl.style.color = '';
+    } else if (s.neacoperite.length) {
+      stEl.textContent = `⚠ direcțiile tale sunt ACTIVE pe ${s.active.length} ` +
+        `${s.active.length === 1 ? 'box' : 'boxuri'}, dar scanarea încă vorbește pe ` +
+        `${s.neacoperite.length}: ${s.neacoperite.slice(0, 12).join(', ')}` +
+        (s.neacoperite.length > 12 ? '…' : '') +
+        '. Apasă AMUȚEȘTE restul ca să tacă.';
+      stEl.style.color = 'var(--bad)';
+    } else {
+      stEl.textContent = `✓ direcțiile tale sunt ACTIVE pe ${s.active.length} ` +
+        `${s.active.length === 1 ? 'box' : 'boxuri'} · restul leg-ului e mut`;
+      stEl.style.color = 'var(--ok)';
+    }
+    if (s.neconcordante.length) {
+      stEl.textContent += ` · ⚠ NEPOTRIVIRE pe ${s.neconcordante.map(x => x.num).join(', ')}`;
+      stEl.style.color = 'var(--bad)';
+    }
   }
   wrap.textContent = '';
   for (const v of lista) {
@@ -692,26 +773,58 @@ async function adaugaViraj(dir) {
     if (inp) inp.select();
     return;
   }
-  const noua = puneVirajPropriu(virajeLeg(), n, dir);
-  if (!noua) { spune('Direcție necunoscută.', true); return; }
-  virajeProprii[plan.legKey] = noua;
+  // FOTOGRAFIA se face înaintea PRIMEI scrieri pe leg, nu la apăsarea butonului mare:
+  // de-aici încolo prima scriere e chiar declarația asta, iar fără fotografie „înapoi la
+  // direcțiile scanate" ar rămâne fără la ce să se întoarcă (și ✕ n-ar avea ce reface).
+  fotografiazaScanate();
+  // DECLARAȚIA INTRĂ ÎN VIGOARE ACUM. Se scrie pe boxul BRUT — sursa adevărului, cea
+  // salvată în depozit — iar `plan.boxes` sunt CHIAR aceleași obiecte (buildPlan nu
+  // copiază), deci vocea folosește direcția nouă de la fixul următor, și cu cursa pornită.
+  const brut = boxeleLegului();
+  const r = declaraViraj(brut, virajeLeg(), n, dir);
+  if (!r) { spune('Direcție necunoscută.', true); return; }
+  virajeProprii[plan.legKey] = r.lista;
   await salveazaViraje();
-  try { store.log('viraj_propriu', { leg: plan.legKey, boxNum: n, dir }, Date.now()); } catch (e) {}
-  spune(`box ${n} → ${dir}`, false);
+  if (r.schimbare) {
+    await store.put('plan_raw', boxesRaw);
+    try { store.log('flag_manual', { ce: 'dir', boxNum: n, km: r.box ? r.box.sumKm : null,
+                                     leg: plan.legKey, inainte: r.schimbare.inainte,
+                                     dupa: r.schimbare.dupa,
+                                     sursa: 'viraje_proprii' }, Date.now()); } catch (e) {}
+  }
+  try { store.log('viraj_propriu', { leg: plan.legKey, boxNum: n, dir,
+                                     aplicat: !!r.schimbare,
+                                     eraDeja: !r.schimbare && !!r.box }, Date.now()); } catch (e) {}
+  spune(`box ${n} → ${dir}` + (r.schimbare ? ' · ACTIV' : ' · era deja'), false);
   if (inp) { inp.value = ''; inp.focus(); }
   renderViraje();
 }
 
+// ✕ pe un rând din listă. Nu întreabă nimic, dar readuce pe box direcția scanată (sau îl
+// face mut, dacă scanarea nu-i citise niciuna): altfel ștergerea ar lăsa în urmă direcția
+// lui pe un box care nu mai e în lista lui, fără nicio evidență de unde vine.
 async function stergeViraj(num) {
   if (!plan || !plan.legKey) return;
-  virajeProprii[plan.legKey] = scoateVirajPropriu(virajeLeg(), num);
+  const r = retrageViraj(boxeleLegului(), virajeLeg(), num, dirScanat[plan.legKey]);
+  virajeProprii[plan.legKey] = r.lista;
   await salveazaViraje();
-  try { store.log('viraj_propriu_sters', { leg: plan.legKey, boxNum: num }, Date.now()); } catch (e) {}
+  if (r.schimbare) {
+    await store.put('plan_raw', boxesRaw);
+    try { store.log('flag_manual', { ce: 'dir', boxNum: num, leg: plan.legKey,
+                                     inainte: r.schimbare.inainte, dupa: r.schimbare.dupa,
+                                     sursa: 'viraj_retras' }, Date.now()); } catch (e) {}
+  }
+  try { store.log('viraj_propriu_sters', { leg: plan.legKey, boxNum: num,
+                                           inapoiLa: r.spre === undefined ? null : r.spre,
+                                           schimbat: !!r.schimbare }, Date.now()); } catch (e) {}
   renderViraje();
 }
 
-// APLICAREA. Singurul pas cu confirmare din cardul ăsta, fiindcă e singurul care schimbă
-// dintr-o dată toate direcțiile leg-ului — iar cifrele trebuie citite înainte, nu după.
+// AMUȚIREA RESTULUI. De la v47 butonul ăsta NU mai pune direcțiile lui — alea au intrat
+// deja, una câte una, la introducere. Rămâne singura decizie care nu se poate deduce dintr-o
+// declarație: ce se face cu boxurile despre care el n-a spus nimic. Ele devin ÎNAINTE, adică
+// MUTE, iar asta e singura schimbare care atinge dintr-o dată tot leg-ul — deci cere
+// confirmare, cu cifrele înainte, nu după.
 async function aplicaVirajele() {
   if (!plan || !plan.boxes.length) { alert('Scanează întâi roadbook-ul.'); return; }
   const lista = virajeLeg();
@@ -719,18 +832,18 @@ async function aplicaVirajele() {
   const total = plan.boxes.length;
   const exista = lista.filter(v => plan.boxes.some(x => x.num === v.num)).length;
   const inexistente = lista.length - exista;
-  if (!confirm(`Pun direcțiile tale pe ${exista} ${exista === 1 ? 'box' : 'boxuri'} și ` +
-               `ÎNAINTE pe restul de ${total - exista}.\n\n` +
-               (inexistente ? `${inexistente} din lista ta nu există în ${plan.legLabel || 'leg-ul activ'} și se ignoră.\n\n` : '') +
-               `Scanarea rămâne pentru kilometraje și probe. Semnele de probă și TC-urile ` +
-               `nu se ating.\n\nAplic?`)) return;
-  // FOTOGRAFIA DIRECȚIILOR SCANATE se face O SINGURĂ DATĂ pe leg, la prima aplicare.
-  // A doua aplicare n-are voie s-o rescrie: atunci direcțiile curente sunt deja ALE LUI,
-  // iar „înapoi la direcțiile scanate" ar deveni „înapoi la ce am pus tot eu".
-  if (!dirScanat[plan.legKey] || typeof dirScanat[plan.legKey] !== 'object' || Array.isArray(dirScanat[plan.legKey])) {
-    dirScanat[plan.legKey] = instantaneuDirectii(plan.boxes);
-    await store.put('dir_scanat', dirScanat);
-  }
+  const st0 = stareViraje(plan.boxes, lista);
+  if (!confirm(`AMUȚESC restul: ${total - exista} ${total - exista === 1 ? 'box' : 'boxuri'} ` +
+               `despre care n-ai spus nimic devin ÎNAINTE.\n\n` +
+               `Direcțiile tale (${exista}) sunt deja active — nu se ating.\n` +
+               (st0.neacoperite.length
+                 ? `Dintre cele care se amuțesc, ${st0.neacoperite.length} au acum o direcție ` +
+                   `de viraj citită de scanare: ${st0.neacoperite.slice(0, 12).join(', ')}` +
+                   (st0.neacoperite.length > 12 ? '…' : '') + '.\n'
+                 : 'Niciunul dintre ele nu mai are direcție de viraj — restul e deja mut.\n') +
+               (inexistente ? `\n${inexistente} din lista ta nu există în ${plan.legLabel || 'leg-ul activ'} și se ignoră.\n` : '') +
+               `\nSemnele de probă, TC-urile și kilometrajele nu se ating.\n\nAmuțesc?`)) return;
+  fotografiazaScanate();
   const r = aplicaVirajeProprii(plan.boxes, lista);
   for (const s of r.schimbate) {
     try { store.log('flag_manual', { ce: 'dir', boxNum: s.num, km: s.km, leg: plan.legKey,
@@ -967,8 +1080,12 @@ function randProba(b) {
   // bifa de la semne, ca omul să vadă dintr-o privire ce crede aplicația despre box.
   const dirCap = document.createElement('p');
   dirCap.className = 'line dim';
+  // CINE a pus direcția de acum (v47). Până azi ecranul arăta direcția, nu proveniența ei —
+  // iar exact asta a lipsit pe 08.08: boxul 4 arăta „dreapta" fără să spună că e a scanării,
+  // în timp ce în lista lui scria ÎNAINTE. Sursa se citește într-o privire, lângă direcție.
   dirCap.textContent = 'direcția din tulipă' +
-    (b.dir ? '' : ' — boxul n-are nicio direcție citită') + ':';
+    (b.dir ? ` — acum ${b.dir} ${sursaDirectie(b)}`
+           : ' — boxul n-are nicio direcție citită') + ':';
   rand.appendChild(dirCap);
   const dirRand = document.createElement('div');
   dirRand.className = 'dirrow';
@@ -1339,6 +1456,16 @@ async function startDay(dinPreluare) {
   });
   if (!gps.start()) { alert('GPS indisponibil.'); return; }
   machine.start();
+  // SANTINELA pornește cu ziua: fila trebuie să rămână trează și când Andreas răspunde la
+  // telefon. START ZIUA e un tap, deci redarea are gestul de utilizator de care are nevoie.
+  if (!santinela) santinela = makeSantinela({
+    log: (t, d) => { try { store.log(t, d, Date.now()); } catch (e) {} }
+  });
+  santinela.porneste();
+  // ── AVERTISMENTELE DE LA START (v47), rostite O DATĂ ────────────────────────
+  // Amândouă apără de același fel de defect: o stare pe care ecranul o știe și pilotul nu.
+  // Se spun aici, la ultimul moment în care mai poate opri mașina și repara, nu pe drum.
+  avertizeazaLaStart();
   // Bătaia de inimă independentă de GPS (audit, #5): cronometrul probei, avertizările
   // TC și închiderea pe estimare NU mai depind de sosirea fixurilor. `machine` e citit
   // la fiecare bătaie, deci schimbarea de leg (mașină nouă) nu rupe nimic.
@@ -1349,7 +1476,36 @@ async function startDay(dinPreluare) {
 
 function stopGps() {
   if (gps) { gps.stop(); gps = null; }
+  if (santinela) santinela.opreste();
   clearInterval(tickId); tickId = null;
+}
+
+// Ce se spune cu voce tare la START ZIUA, o dată, dacă e cazul. Ambele avertismente descriu
+// o stare care exista deja pe ecran și pe care nimeni n-a citit-o la timp:
+//  • direcțiile scanate încă active pe boxurile nedeclarate — cauza abandonului din 08.08;
+//  • roadbook cu o gaură în serie — pagina nefotografiată din aceeași zi.
+function avertizeazaLaStart() {
+  if (!plan || !plan.boxes.length) return;
+  const lista = virajeLeg();
+  if (lista.length) {
+    const s = stareViraje(plan.boxes, lista);
+    if (s.neacoperite.length) {
+      voice.say(`Atenție: direcțiile scanate sunt încă active pe ${s.neacoperite.length} ` +
+                `${s.neacoperite.length === 1 ? 'box nedeclarat' : 'boxuri nedeclarate'}.`,
+                3, 'viraje', 'ritm');
+      try { store.log('avertisment_start', { ce: 'viraje_neamutite', leg: plan.legKey,
+                                             active: s.active.length,
+                                             neacoperite: s.neacoperite }, Date.now()); } catch (e) {}
+    }
+  }
+  const ser = serieRoadbook(plan.boxes);
+  if (!ser.complet) {
+    voice.say(`Atenție: roadbook-ul are o gaură — lipsesc ${ser.boxuriLipsa.length} boxuri.`,
+              3, 'roadbook', 'ritm');
+    try { store.log('roadbook_gaurit', { leg: plan.legKey, boxuriLipsa: ser.boxuriLipsa,
+                                         paginiLipsa: ser.paginiLipsa,
+                                         cand: 'start' }, Date.now()); } catch (e) {}
+  }
 }
 
 // Leg-ul următor: aceeași zi, kilometraj care repornește de la 0. START curat pe
@@ -1744,6 +1900,21 @@ async function scaneazaPozele(fisiere) {
   try { store.log('scan_bilant', { selectate: imgs.length, scanate: rezultate.length,
     reusite: rezultate.filter(r => r.ok).length, cazute: cazute.length,
     boxuri: boxesRaw.length }, Date.now()); } catch (e) {}
+  // ── „8 din 8 ✓" NU ÎNSEAMNĂ ÎNTREG (v47) ──────────────────────────────────
+  // 08.08.2026: opt poze selectate, opt scanate, bilanț verde — și o gaură de nouă boxuri
+  // (28-36), fiindcă pagina 84 nu fusese fotografiată niciodată. Bilanțul raporta despre
+  // ce a PRIMIT; seria spune ce LIPSEȘTE. Se verifică pe fiecare leg, nu doar pe cel activ:
+  // pagina lipsă poate fi în leg-ul de mâine, iar atunci se repară azi, în parcare.
+  for (const g of groupByLeg(boxesRaw)) {
+    const ser = serieRoadbook(g.boxes);
+    if (ser.complet) continue;
+    try { store.log('roadbook_gaurit', { leg: g.key, boxuriLipsa: ser.boxuriLipsa,
+                                         paginiLipsa: ser.paginiLipsa,
+                                         cand: 'scanare' }, Date.now()); } catch (e) {}
+    // Alertă, nu doar un rând pe ecran: e singurul moment în care pozele mai sunt la
+    // îndemână, iar remediul e o singură fotografie. Rândul de pe ecran rămâne oricum.
+    alert(`${g.label}: ${frazaSerie(ser).txt}`);
+  }
 }
 
 // ── BULETINUL DIRECTORULUI DE CURSĂ, fotografiat ────────────────────────────

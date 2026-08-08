@@ -151,6 +151,10 @@ const OFF_REPER_MAX = 40;
 //  • 200 km/h viteză-țintă rostită — mediile de la Sibiu sunt între 20 și 50 km/h, iar
 //    recuperările reale ajung la 60-70. La 200 km/h nu se mai discută despre ritm, ci
 //    despre o probă pierdută; cifra n-ar fi un sfat, ci o glumă periculoasă.
+// PUNTEA PESTE GOLUL DE GPS (v47). `MIN_MS` = de la cât se consideră gol: fixurile vin la
+// 1-6 s în mers, deci 5 s e deja neobișnuit. `MAX_M` = plafonul de sanitate; peste el nu e
+// gol, e teleport. `VORBA_M` = sub cât nu se rostește nimic (zgomot GPS, nu gaură).
+const PUNTE_MIN_MS = 5000, PUNTE_MAX_M = 5000, PUNTE_VORBA_M = 20;
 const IMPOSIBIL_DIST_M = 500000, IMPOSIBIL_KMH = 200;
 const HARTA_STRICATA_TXT = 'Nu știu unde e boxul — harta traseului pare greșită. Mergi după roadbook.';
 
@@ -239,6 +243,9 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
     // segmentul de calibrare curent e POLUAT? (null = curat; altfel motivul, pentru jurnal)
     _calPoluat: null,
     _anchorKm: 0,
+    // puntea peste golul de GPS: kilometrul la ultimul fix REAL + semnalul de revenire
+    // din fundal (apel, altă aplicație), pus de ecran prin `revenitDinFundal()`
+    _kmLaUltimulFix: null, _dinFundal: false,
     // poziția absolută: ancora geografică + cât s-a curbat drumul de la ea
     _anchorPos: null, _lastPos: null, _curveDeg: 0, _curveHdg: null
   };
@@ -356,6 +363,35 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
 
   // ── poziția ───────────────────────────────────────────────────────────────
   function onFix(fix) {
+    // ── PUNTEA PESTE GOLUL DE GPS (v47) ────────────────────────────────────
+    // Raportat de Andreas, 08.08.2026: într-un apel telefonic sau cu altă aplicație în
+    // față, kilometrii se opresc, iar la revenire poziția rămâne în urmă cu TOT golul.
+    // În jurnalul zilei se vede boala: `gps_stale {deS:16}`. Cauza nu e la noi — Chrome
+    // încetinește sau suspendă `watchPosition` pe filele din fundal (aceeași încetinire
+    // măsurată în vault: 158 s vs 17 s per operație, filă ascunsă fără/cu sunet).
+    //
+    // Ce se pierdea: odometrul refuză din construcție pașii cu dt ≥ 30 s (vezi
+    // makeOdometer) și, peste 15 s, se RESETA de tot mai jos — adică golul se arunca
+    // integral. Corect ca apărare împotriva unui teleport, greșit ca purtare la un gol
+    // banal: mașina a mers, drumul s-a făcut, doar noi n-am privit.
+    //
+    // Puntea pune înapoi ce se poate demonstra: COARDA, adică linia dreaptă între ultimul
+    // fix de dinainte și primul de după. Nu e drumul real — drumul real e mai lung, mereu —
+    // deci e o PODEA, exact ca la `pozitieAbsoluta`. Mai puțin decât adevărul, dar în
+    // aceeași direcție, în loc de zero.
+    const pozInainte = M._lastPos ? { ...M._lastPos } : null;
+    const golMs = M._lastFixMono != null ? clock.mono() - M._lastFixMono : 0;
+    const dinFundal = !!M._dinFundal;
+    M._dinFundal = false;
+    let coardaM = 0, golRefuzat = null;
+    if (pozInainte && fix.lat != null && M.state !== 'PREP' &&
+        (golMs > PUNTE_MIN_MS || dinFundal)) {
+      const d = haversineM(pozInainte.lat, pozInainte.lng, fix.lat, fix.lng);
+      // Peste plafon nu e gol, e teleport (fix aberant, preluare pe alt telefon, podea
+      // GPS): se tratează exact ca până acum — nu se adaugă nimic, dar se scrie în jurnal.
+      if (d > PUNTE_MAX_M) golRefuzat = Math.round(d);
+      else coardaM = d;
+    }
     // După o gaură lungă de GPS, tick() a avansat deja poziția pe estimare —
     // odometrul NU are voie să adune și el aceeași gaură (fixul nou vs. cel vechi).
     if (M._lastFixMono != null && clock.mono() - M._lastFixMono > 15000) {
@@ -390,6 +426,7 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
       : (fix.speedMs != null ? fix.speedMs * 3.6 : M.speedKmh);
 
     const incM = odo.step(fix);
+    let proiectiePrinsa = false;
     if (plan.trace && plan.anchorMap) {
       // prima prindere pe urmă: căutare pe TOATĂ urma (poți porni de oriunde —
       // preluare, repornire la mijloc de leg); după aceea, fereastra monotonă
@@ -403,6 +440,7 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
         M._projMiss = 0;
         M.traceM = proj.cumM;
         M.routeKm = plan.anchorMap.officialKm(proj.cumM);
+        proiectiePrinsa = true;   // poziția e absolută și adevărată: puntea n-are ce adăuga
       } else {
         // în afara coridorului: mergem pe odometru până revine proiecția
         M._projMiss = (M._projMiss || 0) + 1;
@@ -422,6 +460,53 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
       pozitieAbsoluta(fix);   // vezi mai jos — GPS-ul nu e doar odometru
       turnDetect(fix);        // virajele rămân reperele de resincronizare
     }
+    // ── RECONCILIEREA GOLULUI ───────────────────────────────────────────────
+    // Se face DUPĂ actualizarea normală, ca podea, nu ca adunare — și asta rezolvă
+    // singurul mod în care puntea putea strica ceva: DUBLA NUMĂRARE. În probă, `tick()`
+    // avansează deja poziția pe estimare la viteza-țintă cât timp GPS-ul tace (vezi
+    // `pos_estimat`); dacă puntea ar ADĂUGA coarda peste estimare, proba ar sări înainte
+    // cu golul de două ori. Deci: poziția devine cea mai mare dintre ce a estimat proba
+    // și ancora ultimului fix REAL plus coarda. Amândouă sunt podele; câștigă cea mai
+    // informată. Diferența intră în jurnal, ca la debrief să se vadă care a vorbit.
+    if (coardaM > 0 && !proiectiePrinsa && M._kmLaUltimulFix != null) {
+      // Cât a avansat deja poziția de la ultimul fix real, prin ORICE cale: estimarea din
+      // probă (`pos_estimat`) sau podeaua liniei drepte din `pozitieAbsoluta`. Ambele sunt
+      // podele legitime, deci nu se dublează — se compară.
+      const avansatM = Math.round((M.routeKm - M._kmLaUltimulFix) * 1000);
+      const podeaKm = M._kmLaUltimulFix + (coardaM / 1000) * M.calFactor;
+      const adaugatM = Math.round(Math.max(0, podeaKm - M.routeKm) * 1000);
+      if (adaugatM > 0) {
+        M.routeKm = podeaKm;
+        if (M.traceM != null) M.traceM += adaugatM;
+      }
+      // CONTORUL BRUT e o socoteală separată de poziție, și el a pierdut golul în ORICE
+      // caz: `odo.step` refuză pașii lungi și se resetează peste 15 s. Măsurat în test:
+      // pe un segment oficial de 3,00 km cu un gol de 450 m, contorul arăta 2,565 —
+      // adică raport 1,17, o „eroare de odometru" de 17% care nu există. Deci contorul se
+      // completează, iar segmentul se aruncă oricum: kilometrii nevăzuți nu sunt riglă.
+      const lipsaM = Math.max(0, coardaM - incM);
+      if (lipsaM > 0) M._rawSinceAnchor += lipsaM / 1000;
+      // Poluarea NU depinde de cine a mișcat poziția. Chiar dacă podeaua liniei drepte a
+      // acoperit deja golul (drum drept), măsurătoarea de calibrare a rămas ciuntită.
+      if (lipsaM >= PUNTE_VORBA_M || adaugatM > 0) poluCal('gaura_gps');
+      log('gps_gaura', { secunde: Math.round(golMs / 1000), metriAdaugati: adaugatM,
+                         coardaM: Math.round(coardaM), avansatM,
+                         completatOdo: Math.round(lipsaM),
+                         dinFundal, inRt: !!M.rt, routeKm: r2(M.routeKm) });
+      // O singură frază, clasa 'ritm' (nu taie niciodată o manevră). Sub 20 m nu merită
+      // un cuvânt: acolo suntem în zgomotul GPS-ului, nu într-o gaură.
+      const spusM = Math.max(adaugatM, Math.round(lipsaM));
+      if (spusM >= PUNTE_VORBA_M) {
+        M._gpsLostSaid = false;      // revenirea s-a anunțat AICI, cu cifra
+        say(`GPS revenit — am completat ${spusM} de metri.`, 3, 'gps', 'ritm');
+      }
+    } else if (golRefuzat != null) {
+      log('gps_gaura_refuzata', { secunde: Math.round(golMs / 1000), distM: golRefuzat,
+                                  dinFundal, motiv: 'peste plafon' });
+    }
+    // Ancora golului: kilometrul la ULTIMUL FIX REAL, înainte ca `tick()` să apuce să
+    // estimeze ceva. Fără el, „ancoră + coardă" n-ar avea de unde pleca.
+    M._kmLaUltimulFix = M.routeKm;
 
     if (M.rt) {
       // Distanța din probă se DERIVĂ din poziția pe traseu, nu se adună separat.
@@ -1380,6 +1465,37 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
   function atBox(num, confirmat) {
     const p = previzualizeazaBox(num);
     if (!p) { say(`Boxul ${num} nu există.`, 2); return false; }
+    // ── ÎN OFF-ROUTE, „SUNT LA BOX N" E REINTRARE (v47) ─────────────────────
+    // Raportat de Andreas din mașină, 08.08.2026: a ales boxul de trei ori la rând și a
+    // scris numărul de mână, iar vocea a continuat „boxul 39 în spate la un kilometru".
+    // În jurnal se vede: 13:13:04, 13:13:05, 13:13:06 — trei `sync_refuzat` în trei
+    // secunde (deltaM −1192/−1200/−1207), poziția nemișcată, ghidajul netulburat.
+    //
+    // Cauza e o poartă corectă pusă în locul greșit. `p.mare` cere confirmare fiindcă o
+    // apăsare accidentală a mutat odată poziția cu 1330 m în plină probă — dar ÎN
+    // off-route un salt de un kilometru nu e un accident, e chiar scopul: pilotul s-a
+    // rătăcit un kilometru și îmi spune unde a ajuns. Cerându-i confirmarea, aplicația
+    // trata cel mai puternic semnal uman care există ca pe o greșeală de deget.
+    //
+    // De-aici încolo, alegerea explicită a unui box în off-route înseamnă trei lucruri
+    // într-o singură apăsare: ieșirea din off-route, snapul la boxul ALES (nu la ținta pe
+    // care o calculase aplicația) și confirmarea rostită. Fără dialog: dialogul era chiar
+    // pasul care nu se închidea.
+    if (M.offRoute) {
+      // Singura poartă care rămâne: un salt care ar închide o probă în curs. Aia nu se
+      // mai poate desface, deci se refuză — dar SE SPUNE, pe ecran și cu voce, cu numele
+      // probei și cu ce să apese în loc. Tăcerea era jumătatea rea a defectului.
+      if (p.rupeRt && confirmat !== true) {
+        log('sync_refuzat', { boxNum: num, deltaM: p.deltaM, rupeRt: p.rupeRt,
+                              inOffRoute: true });
+        say(`Nu pot să te mut la boxul ${num}: ${p.rupeRt}. Apasă AM REVENIT PE TRASEU ` +
+            `dacă vrei să te iau de la boxul ${M.offRoute.boxNum != null ? M.offRoute.boxNum : 'de reintrare'}.`,
+            4, 'offroute', 'manevra');
+        return p;
+      }
+      iesiOffRoute('sunt_la_box', p.idx);
+      return true;
+    }
     // Confirmare la: salt peste 400 m, salt care atinge liniile probei, sau ORICE salt
     // cu proba în curs (audit, #8) — un −112 m tăcut în probă schimbă devierea afișată
     // cu zeci de secunde și pilotul reacționează la o cifră falsă. v1 era deja strict
@@ -1608,7 +1724,18 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
       const potrivit = b && M.offRoute.distM <= 150 &&
         (/^GIRATORIU/.test(b.dir || '') || (right ? /^DREAPTA/ : /^STÂNGA/).test(b.dir || ''));
       if (potrivit) { iesiOffRoute('viraj'); return; }
+      // REFUZUL RĂMÂNE, DAR NU MAI TACE (v47). Aici nu e un semnal uman, e detectorul de
+      // viraje: pe 08.08, la 13:12:52, a văzut un viraj cu ținta la 1079 m — un snap acolo
+      // ar fi teleportat mașina un kilometru, exact defectul din Dumbrăvița. Deci nu se
+      // mută nimic automat. Ce se schimbă e tăcerea: pilotul aude o dată pe episod că
+      // aplicația a observat virajul și de ce nu acționează, plus ce poate apăsa el.
       log('snap_ignorat_offroute', { spreDreapta: right, distM: M.offRoute.distM });
+      if (!M.offRoute._virajSpus) {
+        M.offRoute._virajSpus = true;
+        say('Am văzut un viraj, dar nu te mut singur cât ești în afara traseului. ' +
+            'Dacă ești la un box, alege-l din SUNT LA BOX și te iau de acolo.',
+            2, 'offroute', 'ritm');
+      }
       return;
     }
     // ÎNTÂRZIEREA DETECTĂRII (tura 5, 02.08): virajul se confirmă abia la ~2,5 s după
@@ -2164,7 +2291,10 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
         (spuneDesc ? ` — ${o.descriere}.` : '.'), 3, 'offroute', 'manevra');
   }
 
-  function iesiOffRoute(cum) {
+  // `idxAles` — boxul pe care l-a ALES pilotul (v47). Fără el se folosește ținta calculată
+  // de aplicație, ca până acum. Cu el, omul bate calculul: el vede tabla cu numărul boxului,
+  // aplicația vede doar o distanță.
+  function iesiOffRoute(cum, idxAles = null) {
     const o = M.offRoute;
     if (!o) return;
     // Reintrarea închide fereastra murdară: `snapToBox` de mai jos cheamă `calibreaza`,
@@ -2172,11 +2302,24 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
     // ridică explicit, nu se bazează pe cel de la intrare: între timp putea fi coborât
     // de o confirmare de box făcută chiar în timpul rătăcirii (07.08, 13:13:41).
     poluCal('offroute');
+    const idx = idxAles != null ? idxAles : o.idx;
+    const b = idx != null ? plan.boxes[idx] : null;
     M.offRoute = null; M._offSemne = []; M._desyncSaid = null;
-    log('offroute_iesire', { cum, boxNum: o.boxNum, ratacitM: Math.round((M.routeKm - o.kmLaIesire) * 1000) });
+    log('offroute_iesire', { cum, boxNum: b ? b.num : o.boxNum,
+                             ales: idxAles != null ? true : null,
+                             ratacitM: Math.round((M.routeKm - o.kmLaIesire) * 1000) });
     M._lastSnapT = clock.mono();
-    snapToBox(o.idx, 'offroute_' + cum);
-    say(`Te-am prins, continuăm de la boxul ${o.boxNum}.`, 4, 'offroute', 'manevra');
+    // Starea „oarbă" n-avea țintă, deci n-avea nici index — iar `snapToBox(null)` arunca pe
+    // `plan.boxes[null].sumKm`. Adică butonul „AM REVENIT" se putea apăsa exact atunci când
+    // aplicația nu știa unde e și cădea. Ieșirea se face oricum: fără box, doar se dezgheață.
+    if (b) {
+      snapToBox(idx, 'offroute_' + cum);
+      say(`Te-am prins, continuăm de la boxul ${b.num}.`, 4, 'offroute', 'manevra');
+    } else {
+      log('offroute_iesire_fara_box', { cum });
+      say('Am reluat instrucțiunile. Dacă poziția nu e bună, apasă SUNT LA BOX.',
+          4, 'offroute', 'manevra');
+    }
     tone('ok');
     refaTintaMaps(true);            // înapoi pe traseu: ținta redevine boxul următor
     ui.render(M, plan);
@@ -2362,6 +2505,7 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
       M._lant = null; M.deasa = false; M.lant = null; M._ritmVorbaT = 0;
       M._dirStart = M._lastPos ? { ...M._lastPos } : null;
       M._lastFixMono = null; M._gpsLostSaid = false;
+      M._kmLaUltimulFix = null; M._dinFundal = false;   // puntea peste gol pleacă de la zero
       // zi/leg nou = riglă nouă: măsurătorile de calibrare NU se moștenesc între leg-uri
       cal = makeCalibrator();
       M.calFactor = 1; M._rawSinceAnchor = 0; M._calAnchorKm = 0; M._anchorKm = 0;
@@ -2451,6 +2595,10 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
       }
       M._projMiss = 5;   // primul fix după revenire face full-scan pe urmă
     },
+    // Fila a fost în fundal (apel telefonic, altă aplicație). Pe Android, Chrome poate
+    // încetini sau opri `watchPosition` acolo — deci golul se poate fi produs chiar dacă
+    // ultimul fix pare recent. Steagul spune punții să se uite la coardă necondiționat.
+    revenitDinFundal() { M._dinFundal = true; },
     resume(st) {  // preluarea de pe alt telefon / după repornire
       M.routeKm = st.routeKm; M.rtIdx = st.rtIdx; M.results = {};
       if (plan.anchorMap) M.traceM = plan.anchorMap.traceM(st.routeKm);   // proiecția se re-prinde aici

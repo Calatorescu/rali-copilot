@@ -110,9 +110,10 @@
          hârtia în mână; varianta veche costa „dreapta acum" pe un drum drept, în probă. -->
     <div class="card">
       <p class="lbl">VIRAJELE MELE — direcțiile pe care le declari tu</p>
-      <p class="line dim">Scrie numărul boxului, apoi apasă direcția. Se adaugă în listă și
-        câmpul se golește singur — mergi mai departe cu următorul. La final apeși APLICĂ:
-        boxurile din listă primesc direcția ta, toate celelalte devin ÎNAINTE și tac.</p>
+      <p class="line dim">Scrie numărul boxului, apoi apasă direcția. Direcția intră pe box
+        ÎN ACEEAȘI APĂSARE — nu mai există niciun pas de confirmare între ce ai declarat și
+        ce spune vocea. Butonul de jos face doar un lucru în plus: amuțește boxurile despre
+        care n-ai spus nimic.</p>
       <div class="row">
         <input type="number" id="vp-num" placeholder="nr. box" inputmode="numeric"
                min="1" max="999">
@@ -120,8 +121,9 @@
       </div>
       <div id="vp-butoane" class="dirrow"></div>
       <p class="line" id="vp-rezumat"></p>
+      <p class="line" id="vp-stare"></p>
       <div id="vp-lista"></div>
-      <button class="btn pri" id="vp-aplica">APLICĂ — restul ÎNAINTE</button>
+      <button class="btn pri" id="vp-aplica">AMUȚEȘTE restul boxurilor (ÎNAINTE)</button>
       <p class="line dim">Semnele de probă, TC-urile și kilometrajele NU se ating — se
         schimbă doar direcțiile. Poți apăsa din nou oricând, inclusiv după o rescanare.</p>
       <button class="btn sec sm" id="vp-restaureaza">înapoi la direcțiile scanate</button>

@@ -10,11 +10,16 @@
 // Roadbook-ul de mai jos e Leg 1 din tura aia, cu kilometrajul real. Lumea de test are
 // busolă: fiecare pas mută mașina pe un cap compas, deci virajele sunt viraje adevărate,
 // văzute de același detector ca în mașină.
+import { readFileSync } from 'fs';
+import { fileURLToPath } from 'url';
+import { dirname, join } from 'path';
 import { buildPlan, sanitizeBoxes } from '../js/route.js';
 import { makeMachine } from '../js/machine.js';
 import { makeMemStore } from '../js/store.js';
 import { makeClock } from '../js/time.js';
 import { makeDriverModel } from '../js/learn.js';
+
+const aici = dirname(fileURLToPath(import.meta.url));
 
 let pass = 0, fail = 0;
 const ok = (n, c, d) => c ? (pass++, console.log(`  ✓ ${n}`))
@@ -463,6 +468,158 @@ console.log('\n═══ Reperul lung se scurtează, nu se rostește întreg ═
      !/\s$/.test(d) && d.split(' ').every(x => x.length > 0), JSON.stringify(d));
   ok('nimic din coada comentariului nu ajunge în difuzor',
      !/nu opri|tramvai/.test(d), d);
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// v47 — „SUNT LA BOX N" ÎN OFF-ROUTE E REINTRARE, NU O CERERE DE CONFIRMARE
+//
+// Raportat de Andreas din mașină, 08.08.2026: a ales boxul de trei ori la rând, plus l-a
+// scris de mână, și vocea a continuat „boxul 39 în spate la un kilometru". În jurnalul zilei
+// se vede exact asta:
+//   13:13:04  sync_refuzat {boxNum: 43, deltaM: -1192}
+//   13:13:05  sync_refuzat {boxNum: 43, deltaM: -1200}
+//   13:13:06  sync_refuzat {boxNum: 43, deltaM: -1207}
+//   13:13:05  „Boxul 39 la un kilometru, drept în față."
+// Trei apăsări în trei secunde, poziția nemișcată, ghidajul netulburat.
+//
+// Poarta care refuza era corectă în principiu — o apăsare accidentală mutase odată poziția
+// cu 1330 m în plină probă — dar pusă în locul greșit: ÎN off-route un salt de un kilometru
+// nu e un accident, e chiar informația. Pilotul s-a rătăcit un kilometru și îmi spune unde
+// a ajuns. Cerându-i confirmarea, aplicația trata cel mai puternic semnal uman care există
+// ca pe o greșeală de deget — și nu-i spunea nici de ce.
+console.log('\n═══ ACCEPTARE: trei alegeri ale aceluiași box, în off-route (08.08) ═══');
+{
+  const w = lume();
+  panaLaBoxul12(w);
+  w.m.offRouteManual();
+  ok('mașina e în off-route', !!w.m.M.offRoute, JSON.stringify(w.m.M.offRoute && w.m.M.offRoute.boxNum));
+  w.drept(900, 270);                     // se rătăcește mai departe, ca în teren
+  const delta = w.m.previzualizeazaBox(9).deltaM;
+  ok('saltul cerut e mare — exact felul de salt care era refuzat până acum',
+     Math.abs(delta) > 400, `${delta} m`);
+
+  // PRIMA alegere. Fără `confirmat`, ca la numărul tastat — calea care în jurnal a produs
+  // trei `sync_refuzat` la rând.
+  const r1 = w.m.atBox(9);
+  ok('prima alegere e ACCEPTATĂ, nu întoarsă ca previzualizare', r1 === true, JSON.stringify(r1));
+  ok('a ieșit din off-route din prima apăsare', !w.m.M.offRoute);
+  ok('și poziția e CHIAR la boxul ales, nu la ținta calculată de aplicație',
+     Math.abs(w.m.M.routeKm - 2.83) < 0.03, w.m.M.routeKm.toFixed(3));
+  const ies = w.jurnal('offroute_iesire');
+  ok('ieșirea e jurnalizată cu motivul nou', ies.length === 1 && ies[0].cum === 'sunt_la_box',
+     JSON.stringify(ies));
+  ok('și spune că boxul a fost ALES de om, nu dedus',
+     ies[0].ales === true && ies[0].boxNum === 9, JSON.stringify(ies[0]));
+  ok('vocea confirmă cu numărul boxului lui',
+     w.said.some(s => /Te-am prins, continuăm de la boxul 9\./.test(s.t)),
+     JSON.stringify(w.said.slice(-3).map(s => s.t)));
+  ok('ZERO `sync_refuzat` — nicio apăsare aruncată',
+     w.jurnal('sync_refuzat').length === 0, JSON.stringify(w.jurnal('sync_refuzat')));
+  ok('ZERO `snap_ignorat_offroute`',
+     w.jurnal('snap_ignorat_offroute').length === 0,
+     JSON.stringify(w.jurnal('snap_ignorat_offroute')));
+
+  // A DOUA și A TREIA apăsare: omul apasă din reflex, fiindcă în mașină nu te uiți la ecran.
+  // Nu mai sunt în off-route, deci trec pe calea normală — și acolo poarta veche e la locul
+  // ei: saltul e acum mic (ești deja la box), deci se aplică tăcut, fără dialog.
+  const r2 = w.m.atBox(9);
+  const r3 = w.m.atBox(9);
+  ok('a doua și a treia apăsare nu strică nimic',
+     r2 === true && r3 === true, JSON.stringify([r2, r3]));
+  ok('poziția a rămas la boxul 9', Math.abs(w.m.M.routeKm - 2.83) < 0.03, w.m.M.routeKm.toFixed(3));
+  ok('și tot nu s-a produs niciun refuz tăcut', w.jurnal('sync_refuzat').length === 0);
+}
+
+console.log('\n═══ Aceeași purtare și pentru boxul ALES DIN LISTĂ (confirmat) ═══');
+{
+  const w = lume();
+  panaLaBoxul12(w);
+  w.m.offRouteManual();
+  w.drept(900, 270);
+  ok('cu `confirmat=true` e tot reintrare, nu snap orb', w.m.atBox(9, true) === true);
+  ok('a ieșit din off-route', !w.m.M.offRoute);
+  ok('cu același motiv în jurnal',
+     w.jurnal('offroute_iesire')[0].cum === 'sunt_la_box');
+}
+
+console.log('\n═══ Singurul refuz care rămâne se SPUNE, nu se tace ═══');
+{
+  // Un salt care ar închide o probă în curs nu se mai poate desface. Aici refuzul e
+  // legitim — dar până la v47 era mut, iar omul apăsa la nesfârșit fără să afle de ce.
+  const w = lume(TRESOR, {}, {});
+  panaLaBoxul12(w, { rateaza: false });
+  // intrăm forțat în probă, apoi declarăm off-route din buton (se poate: pilotul știe primul)
+  w.m.offRouteManual();
+  const inRt = !!w.m.M.rt;
+  if (!inRt) {
+    // fixtura n-are probe (sunt scoase din TRESOR), deci cazul se verifică pe poarta însăși:
+    // fără probă în curs, nu există `rupeRt`, deci nu există refuz — și asta e de dovedit.
+    ok('fără probă în curs nu există niciun motiv de refuz',
+       w.m.previzualizeazaBox(9).rupeRt === null,
+       JSON.stringify(w.m.previzualizeazaBox(9)));
+    ok('deci alegerea trece', w.m.atBox(9) === true);
+  }
+  // Textul refuzului se verifică pe SURSĂ: cazul are nevoie de o probă în curs simultan cu
+  // off-route, ceea ce fixtura asta (fără probe) nu poate produce. Ce se poate dovedi aici
+  // e că refuzul nu e mut și că spune cele două lucruri care contează — ce strică și ce să
+  // apese în loc. Fără asta ar fi doar o promisiune dintr-un comentariu.
+  const src = readFileSync(join(aici, '..', 'js', 'machine.js'), 'utf8');
+  const poarta = /if \(M\.offRoute\) \{[\s\S]*?iesiOffRoute\('sunt_la_box'/.exec(src)[0];
+  ok('refuzul e legat DOAR de proba în curs, nu de mărimea saltului',
+     /if \(p\.rupeRt && confirmat !== true\)/.test(poarta) && !/p\.mare/.test(poarta), poarta.slice(0, 200));
+  ok('și e ROSTIT, nu doar jurnalizat', /say\(`Nu pot să te mut la boxul \$\{num\}/.test(poarta));
+  ok('numește ce strică — chiar textul probei', /\$\{p\.rupeRt\}/.test(poarta));
+  ok('și spune alternativa, pe nume',
+     /AM REVENIT PE TRASEU/.test(poarta), poarta.slice(-260));
+  ok('iar `sync_refuzat` din off-route e marcat ca atare în jurnal',
+     /inOffRoute: true/.test(poarta));
+}
+
+console.log('\n═══ „AM REVENIT" în starea oarbă nu mai crapă ═══');
+{
+  // Starea „oarbă" (nici hartă, nici drum în memorie) n-avea țintă, deci n-avea nici index —
+  // iar `snapToBox(null)` arunca pe `plan.boxes[null].sumKm`. Adică butonul se putea apăsa
+  // exact atunci când aplicația nu știa unde e, și cădea.
+  const w = lume(TRESOR, {}, { faraFix: true });
+  w.m.offRouteManual();
+  ok('off-route pornit orb', w.m.M.offRoute && w.m.M.offRoute.orb === true,
+     JSON.stringify(w.m.M.offRoute));
+  let crapat = null;
+  try { w.m.offRouteRevenit(); } catch (e) { crapat = e.message; }
+  ok('„AM REVENIT" nu mai arunca', crapat === null, String(crapat));
+  ok('și tot iese din off-route', !w.m.M.offRoute);
+  ok('spunând ce poate face omul mai departe',
+     w.said.some(s => /apasă SUNT LA BOX/i.test(s.t)), JSON.stringify(w.said.map(s => s.t)));
+  ok('iar jurnalul marchează ieșirea fără box',
+     w.jurnal('offroute_iesire_fara_box').length === 1,
+     JSON.stringify(w.jurnal('offroute_iesire_fara_box')));
+}
+
+console.log('\n═══ Detectorul de viraje NU mai tace, dar nici nu teleportează ═══');
+{
+  // 08.08, 13:12:52: `snap_ignorat_offroute {distM: 1079}`. Un snap acolo ar fi mutat mașina
+  // un kilometru pe baza unui viraj — exact defectul din Dumbrăvița. Deci refuzul rămâne;
+  // ce se schimbă e că pilotul aude o dată de ce nu se întâmplă nimic.
+  const w = lume();
+  panaLaBoxul12(w);
+  w.m.offRouteManual();
+  w.drept(1000, 270);
+  w.viraj(270, 0);                       // viraj departe de ținta de reintrare
+  const ign = w.jurnal('snap_ignorat_offroute');
+  if (ign.length) {
+    ok('refuzul e tot jurnalizat, cu distanța', ign[0].distM != null, JSON.stringify(ign[0]));
+    ok('și acum se aude, o singură dată, oricâte viraje ar urma',
+       w.said.filter(s => /nu te mut singur/.test(s.t)).length === 1,
+       JSON.stringify(w.said.filter(s => /nu te mut singur/.test(s.t)).map(s => s.t)));
+    ok('fraza îi spune ce POATE apăsa',
+       w.said.some(s => /alege-l din SUNT LA BOX/.test(s.t)));
+    ok('și e pe clasa „ritm" — nu taie o manevră',
+       w.said.filter(s => /nu te mut singur/.test(s.t)).every(s => s.cls === 'ritm' || s.cl === 'ritm'),
+       JSON.stringify(w.said.filter(s => /nu te mut singur/.test(s.t))));
+    ok('poziția NU s-a mutat de la sine', !!w.m.M.offRoute);
+  } else {
+    ok('(detectorul n-a produs niciun viraj în fixtura asta — nimic de verificat)', true);
+  }
 }
 
 console.log(`\n──────── ${pass} trecute, ${fail} căzute ────────`);

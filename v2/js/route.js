@@ -354,6 +354,80 @@ export function scoateVirajPropriu(lista, num) {
   return (Array.isArray(lista) ? lista : []).filter(v => v && v.num !== num);
 }
 
+// ── DECLARAȚIA INTRĂ ÎN VIGOARE LA INTRODUCERE (v47) ────────────────────────
+// Sibiu, 08.08.2026, cauza abandonului. Andreas a declarat opt direcții între 11:09:31 și
+// 11:10:11, printre ele `box 4 → ÎNAINTE`. La 11:12:21, cu mașina la 12 km/h, vocea a
+// strigat „Trei la rând: dreapta, dreapta, apoi giratoriu" — lanțul 4·6·7 — iar la
+// 11:12:38 „dreapta" pe chiar boxul 4. În jurnalul zilei NU există niciun `flag_manual`
+// cu `sursa:'viraje_proprii'`: apăsarea pe „APLICĂ" n-a avut loc, deci toate declarațiile
+// lui au stat pasive, iar direcțiile scanate au vorbit peste ele.
+//
+// Vina nu e a lui că n-a apăsat. Vina e a unui design care cerea DOI pași pentru o decizie
+// deja luată: dacă omul a scris „boxul 4 face ÎNAINTE", boxul 4 face ÎNAINTE. Nu există
+// nicio stare intermediară în care declarația lui există dar nu se aplică — aia e doar o
+// capcană care arată ca o listă gata.
+//
+// De-aici încolo: o declarație = o scriere pe box, în aceeași apăsare. Butonul mare rămâne
+// doar pentru ce nu se poate deduce dintr-o singură declarație — amuțirea RESTULUI.
+// Întoarce `null` doar când intrarea e respinsă de sită (număr sau direcție imposibile);
+// când boxul lipsește din leg, lista se ține (ecranul o arată roșu), dar `box` e null.
+export function declaraViraj(boxes, lista, num, dir) {
+  const n = typeof num === 'string' ? parseInt(num, 10) : num;
+  const noua = puneVirajPropriu(lista, n, dir);
+  if (!noua) return null;
+  const box = (Array.isArray(boxes) ? boxes : []).find(b => b && b.num === n) || null;
+  return { lista: noua, num: n, box, schimbare: box ? aplicaDirectie(box, dir) : null };
+}
+
+// Retragerea unei declarații (✕). Nu întreabă nimic — dar nu are voie să lase în urmă
+// direcția LUI pe un box care nu mai e al lui: ar rămâne o direcție fără nicio evidență,
+// nici a scanării, nici a listei. Se pune înapoi ce citise scanarea (`foto[num]`, unde
+// `null` e o valoare legitimă = box mut) sau, dacă nu există fotografie, nimic — box mut.
+export function retrageViraj(boxes, lista, num, foto) {
+  const n = typeof num === 'string' ? parseInt(num, 10) : num;
+  const noua = scoateVirajPropriu(lista, n);
+  const box = (Array.isArray(boxes) ? boxes : []).find(b => b && b.num === n) || null;
+  if (!box) return { lista: noua, num: n, box: null, schimbare: null, spre: undefined };
+  const spre = foto && typeof foto === 'object' && foto[String(n)] !== undefined
+    ? foto[String(n)] : null;
+  const inainte = box.dir || null;
+  if (spre === null) {                       // mut la loc: aplicaDirectie nu scrie null
+    box.dir = null;
+    return { lista: noua, num: n, box,
+             schimbare: inainte === null ? null : { inainte, dupa: null }, spre };
+  }
+  return { lista: noua, num: n, box, schimbare: aplicaDirectie(box, spre), spre };
+}
+
+// ── STAREA VIZIBILĂ: cine vorbește ACUM pe fiecare box ──────────────────────
+// Defectul de azi a fost invizibil pe ecran: lista arăta opt viraje declarate, iar nimic
+// nu spunea că pe boxuri direcțiile scanate erau încă stăpâne. Starea de mai jos există
+// ca ecranul să poată spune adevărul într-o propoziție, iar START ZIUA să poată avertiza.
+//   active        — declarații care CHIAR sunt scrise pe boxul lor acum
+//   neconcordante — declarate, dar boxul poartă altceva (n-ar trebui să existe după v47)
+//   lipsa         — numere declarate care nu există în leg
+//   neacoperite   — boxurile cu direcție de VIRAJ care nu sunt în lista lui. Ele sunt
+//                   pericolul: acolo vorbește scanarea. Zero = restul e amuțit.
+export function stareViraje(boxes, lista) {
+  const bs = Array.isArray(boxes) ? boxes : [];
+  const dorit = new Map();
+  for (const v of (Array.isArray(lista) ? lista : []))
+    if (v && Number.isInteger(v.num) && DIR_OK.has(v.dir)) dorit.set(v.num, v.dir);
+  const active = [], neconcordante = [], neacoperite = [];
+  const gasite = new Set();
+  for (const b of bs) {
+    if (!b || b.num == null) continue;
+    if (dorit.has(b.num)) {
+      gasite.add(b.num);
+      if (b.dir === dorit.get(b.num)) active.push(b.num);
+      else neconcordante.push({ num: b.num, cerut: dorit.get(b.num), are: b.dir || null });
+    } else if (TURN_DIRS.has(b.dir || '')) neacoperite.push(b.num);
+  }
+  const lipsa = [...dorit.keys()].filter(n => !gasite.has(n)).sort((a, z) => a - z);
+  return { declarate: dorit.size, active, neconcordante, lipsa, neacoperite,
+           amutit: neacoperite.length === 0, total: bs.length };
+}
+
 // Fotografia direcțiilor de ACUM, ca să se poată reveni la ele. `null` e o valoare
 // legitimă aici: un box pe care scanarea nu i-a citit direcția era MUT, iar „înapoi la
 // direcțiile scanate" trebuie să-l facă mut la loc, nu să-i inventeze un ÎNAINTE.
@@ -404,6 +478,101 @@ export function restaureazaDirectii(boxes, instantaneu) {
     if (s) schimbate.push({ num: b.num, inainte: s.inainte, dupa: s.dupa });
   }
   return schimbate;
+}
+
+// ── ROADBOOK GĂURIT: pagina nefotografiată (v47) ────────────────────────────
+// Sibiu, 08.08.2026, scanarea de la 13:08. Leg-ul TR 13 are boxurile 1-75 pe nouă pagini
+// tipărite (81-89). Andreas a selectat OPT poze — pagina 84 n-a intrat. Bilanțul a scris
+// „8 din 8 scanate ✓, 66 boxuri": fiecare cifră adevărată, întregul inutil. Aplicația a
+// rămas cu o gaură de nouă boxuri (28-36) și n-a spus NIMIC; în cursă, cockpitul sărea de
+// la 27 la 37 fără explicație.
+//
+// Aceeași clasă cu plafonul tăcut de 12 pagini (05.08): unealta raportează despre CE A
+// PRIMIT, nu despre ce ar fi trebuit să primească. Un roadbook e o SERIE — 1, 2, 3, … —
+// iar o serie cu o gaură se recunoaște fără să știi nimic din afară. Deci se recunoaște
+// determinist, după fiecare scanare, și se spune până e reparată.
+//
+// Două serii, verificate separat și coroborate:
+//  • NUMERELE de box: orice salt n → n+k cu k ≥ 2 înseamnă boxuri care lipsesc;
+//  • PAGINILE tipărite (`box.page`): dacă boxurile de la marginile găurii stau pe pagini
+//    care nu sunt vecine, paginile dintre ele n-au intrat deloc — și atunci se poate spune
+//    exact CE poză lipsește, adică ce trebuie refăcut.
+// Coroborarea se face pe boxurile găurii, nu pe două liste independente: așa mesajul e
+// „lipsesc boxurile 28-36, pagina 84" și nu două avertismente care par fără legătură.
+export function serieRoadbook(boxes) {
+  const bs = (Array.isArray(boxes) ? boxes : []).filter(b => b && Number.isInteger(b.num));
+  const nums = [...new Set(bs.map(b => b.num))].sort((a, z) => a - z);
+  const pagini = [...new Set(bs.map(b => b.page).filter(p => Number.isInteger(p)))]
+                   .sort((a, z) => a - z);
+  const pagDe = new Map();
+  for (const b of bs) if (Number.isInteger(b.page) && !pagDe.has(b.num)) pagDe.set(b.num, b.page);
+
+  const gauri = [];
+  for (let i = 1; i < nums.length; i++) {
+    const a = nums[i - 1], z = nums[i];
+    if (z - a < 2) continue;                       // serie continuă (sau numere sărite de 1)
+    const boxuriLipsa = [];
+    for (let n = a + 1; n < z; n++) boxuriLipsa.push(n);
+    const pa = pagDe.get(a), pz = pagDe.get(z);
+    const paginiLipsa = [];
+    if (Number.isInteger(pa) && Number.isInteger(pz))
+      for (let p = pa + 1; p < pz; p++) paginiLipsa.push(p);
+    gauri.push({ deLaBox: a, panaLaBox: z, boxuriLipsa, paginiLipsa });
+  }
+  // Pagini absente din serie care NU se explică prin nicio gaură de numere: se raportează
+  // separat, altfel o pagină pierdută la CAPĂTUL leg-ului ar trece neobservată.
+  const explicate = new Set(gauri.flatMap(g => g.paginiLipsa));
+  const paginiOrfane = [];
+  for (let i = 1; i < pagini.length; i++)
+    for (let p = pagini[i - 1] + 1; p < pagini[i]; p++)
+      if (!explicate.has(p)) paginiOrfane.push(p);
+
+  const boxuriLipsa = gauri.flatMap(g => g.boxuriLipsa);
+  const paginiLipsa = [...explicate, ...paginiOrfane].sort((a, z) => a - z);
+  return { nums, pagini, gauri, paginiOrfane, boxuriLipsa, paginiLipsa,
+           complet: !boxuriLipsa.length && !paginiLipsa.length,
+           primul: nums.length ? nums[0] : null,
+           ultimul: nums.length ? nums[nums.length - 1] : null,
+           primaPag: pagini.length ? pagini[0] : null,
+           ultimaPag: pagini.length ? pagini[pagini.length - 1] : null };
+}
+
+// Intervalele scrise cum le citește un om: [28,29,…,36] → „28-36"; [3,7,8] → „3, 7-8".
+function intervale(v) {
+  const out = [];
+  for (let i = 0; i < v.length; i++) {
+    let j = i;
+    while (j + 1 < v.length && v[j + 1] === v[j] + 1) j++;
+    out.push(j > i ? `${v[i]}-${v[j]}` : String(v[i]));
+    i = j;
+  }
+  return out.join(', ');
+}
+
+// Fraza de pe ecran. Roșie când lipsește ceva, verde când seria e întreagă — și în ambele
+// cazuri cu CIFRE, ca „complet" să fie o măsurătoare, nu o liniștire.
+export function frazaSerie(s) {
+  if (!s || !s.nums.length) return { rau: false, txt: '' };
+  if (s.complet)
+    return { rau: false,
+             txt: `✓ serie completă ${s.primul}-${s.ultimul} (${s.nums.length} boxuri)` +
+                  (s.primaPag != null
+                    ? ` · pagini ${s.primaPag}-${s.ultimaPag}, toate` : '') };
+  const bucati = [];
+  for (const g of s.gauri) {
+    bucati.push(`LIPSESC boxurile ${intervale(g.boxuriLipsa)}` +
+      (g.paginiLipsa.length
+        ? ` — ${g.paginiLipsa.length === 1 ? 'pagina' : 'paginile'} ` +
+          `${intervale(g.paginiLipsa)} nu ${g.paginiLipsa.length === 1 ? 'a' : 'au'} fost ` +
+          `${g.paginiLipsa.length === 1 ? 'fotografiată' : 'fotografiate'}`
+        : ' — paginile sunt vecine, deci lipsesc din citirea paginii, nu din poze'));
+  }
+  if (s.paginiOrfane.length)
+    bucati.push(`${s.paginiOrfane.length === 1 ? 'pagina' : 'paginile'} ` +
+                `${intervale(s.paginiOrfane)} nu ${s.paginiOrfane.length === 1 ? 'a' : 'au'} intrat deloc`);
+  return { rau: true,
+           txt: `⚠ ${bucati.join(' · ')}. Refotografiază și scanează doar ce lipsește; ` +
+                `restul rămâne.` };
 }
 
 // ── Verificatorul de roadbook (propunerea 1 din audit, 02.08.2026) ──────────

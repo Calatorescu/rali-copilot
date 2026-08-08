@@ -1,12 +1,13 @@
 // RALI 2 · service worker — offline-first, scope /v2/.
 // ATENȚIE la deploy: CACHE se urcă MANUAL aici (scriptul deploy-pwa urcă doar sw-ul
 // din rădăcină). Fără bump, telefonul servește versiunea veche.
-const CACHE = 'rali2-v46';
+const CACHE = 'rali2-v47';
 const ASSETS = ['./', './index.html', './app.css', './manifest.json', './icon.svg',
   './js/main.js', './js/machine.js', './js/ui.js', './js/voice.js', './js/gps.js',
   './js/geo.js', './js/pace.js', './js/route.js', './js/store.js', './js/scan.js',
   './js/time.js', './js/learn.js', './js/debrief.js', './js/ble.js', './js/sync.js',
-  './js/repere.js', './js/maps.js', './js/harta-vie.js', './js/harta-ecran.js'];
+  './js/repere.js', './js/maps.js', './js/harta-vie.js', './js/harta-ecran.js',
+  './js/santinela.js'];
 
 // ── CACHE-UL DE DALE (v35) ──────────────────────────────────────────────────
 // Separat de cache-ul aplicației, din două motive:

@@ -182,7 +182,9 @@ export async function importDay(store, dump, { confirmat = false } = {}) {
 export function resumeStateFromJournal(journal) {
   let out = { state: 'LIAISON', routeKm: 0, rtIdx: 0, rtStartRally: null, done: {} };
   for (const e of journal) {
-    if (e.type === 'pos') { out.routeKm = e.routeKm; }
+    // fișierul poate veni de pe alt telefon: un routeKm ne-numeric ar face poziția NaN
+    // și ar otrăvi tot ce se calculează din ea (audit, 08.08.2026)
+    if (e.type === 'pos') { if (Number.isFinite(e.routeKm)) out.routeKm = e.routeKm; }
     else if (e.type === 'rt_start') { out.state = 'RT_RUN'; out.rtStartRally = e.t; out.rtIdx = e.rtIdx; }
     else if (e.type === 'rt_result') { out.state = 'LIAISON'; out.done[e.name] = e.pts; out.rtIdx = e.rtIdx + 1; out.rtStartRally = null; }
     else if (e.type === 'day_end') { out.state = 'DAY_END'; }

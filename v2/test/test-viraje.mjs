@@ -20,7 +20,8 @@ import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { buildPlan, sanitizeBoxes, normFlags, areFlag,
          normVirajeProprii, puneVirajPropriu, scoateVirajPropriu,
-         aplicaVirajeProprii, instantaneuDirectii, restaureazaDirectii } from '../js/route.js';
+         aplicaVirajeProprii, instantaneuDirectii, restaureazaDirectii,
+         declaraViraj, retrageViraj, stareViraje } from '../js/route.js';
 import { makeMachine } from '../js/machine.js';
 import { makeMemStore, exportDay, importDay } from '../js/store.js';
 import { makeClock } from '../js/time.js';
@@ -317,9 +318,13 @@ console.log('\n═══ Ecranul: cardul și cablajul lui ═══');
      add.indexOf('inp.select()') < add.indexOf("inp.value = ''"));
   ok('fiecare intrare lasă urmă în jurnal', /store\.log\('viraj_propriu'/.test(add));
   const apl = /async function aplicaVirajele[\s\S]*?\n}/.exec(main)[0];
-  ok('aplicarea cere confirmare cu CIFRELE pe ecran',
-     /confirm\(/.test(apl) && /Pun direcțiile tale pe \$\{exista\}/.test(apl) &&
-     /ÎNAINTE pe restul de \$\{total - exista\}/.test(apl));
+  // v47: butonul nu mai APLICĂ direcțiile lui (alea intră la introducere) — amuțește
+  // restul. Confirmarea spune tot cifrele, dar cifrele care descriu ce se schimbă ACUM.
+  ok('amuțirea cere confirmare cu CIFRELE pe ecran',
+     /confirm\(/.test(apl) && /AMUȚESC restul: \$\{total - exista\}/.test(apl) &&
+     /devin ÎNAINTE/.test(apl));
+  ok('și spune limpede că direcțiile lui sunt DEJA active, nu se ating',
+     /Direcțiile tale \(\$\{exista\}\) sunt deja active/.test(apl));
   ok('trece prin aplicaVirajeProprii, deci prin aplicaDirectie și sita DIR_OK',
      /aplicaVirajeProprii\(plan\.boxes, lista\)/.test(apl));
   ok('scrie un flag_manual per box schimbat, cu sursa lui',
@@ -333,10 +338,16 @@ console.log('\n═══ Ecranul: cardul și cablajul lui ═══');
   const rest = /async function restaureazaScanate[\s\S]*?\n}/.exec(main)[0];
   ok('restaurarea cere confirmare și spune că lista NU se pierde',
      /confirm\(/.test(rest) && /Lista ta de viraje NU se șterge/.test(rest));
+  // v47: fotografia s-a mutat într-o funcție a ei și se face înaintea PRIMEI scrieri pe
+  // leg — care de-acum poate fi o simplă declarație, nu apăsarea butonului mare.
+  const foto = /function fotografiazaScanate\(\)[\s\S]*?\n}/.exec(main)[0];
   ok('fotografia direcțiilor scanate se face O SINGURĂ DATĂ pe leg',
      // conditia s-a largit la audit (07.08, seara): si o fotografie de forma gresita
      // (string dintr-un import corupt) lasa fotografierea sa se refaca, nu o blocheaza
-     /if \(!dirScanat\[plan\.legKey\] \|\| typeof dirScanat\[plan\.legKey\] !== 'object'[\s\S]{0,260}instantaneuDirectii\(plan\.boxes\)/.test(apl));
+     /typeof f === 'object' && !Array\.isArray\(f\)\) return false/.test(foto) &&
+     /instantaneuDirectii\(boxeleLegului\(\)\)/.test(foto));
+  ok('și se face ÎNAINTEA primei scrieri, adică la prima declarație',
+     /fotografiazaScanate\(\);[\s\S]{0,400}declaraViraj\(/.test(add));
   ok('lista e ținută pe LEG — numerele de box repornesc la fiecare leg',
      /virajeProprii\[plan\.legKey\]/.test(main) &&
      /const virajeLeg = \(\) => \(plan && plan\.legKey && virajeProprii\[plan\.legKey\]\)/.test(main));
@@ -345,8 +356,186 @@ console.log('\n═══ Ecranul: cardul și cablajul lui ═══');
   ok('ștergerea roadbook-ului ia lista cu ea — e legată de boxurile lui',
      /await store\.del\('viraje_proprii'\); await store\.del\('dir_scanat'\)/.test(main) &&
      /viraje declarate de tine/.test(main));
-  ok('BUILD-ul e v46 — versiunea care duce „virajele mele" mai departe',
-     /const BUILD = 'v46'/.test(main));
+  ok('BUILD-ul e v47 — versiunea care duce „virajele mele" mai departe',
+     /const BUILD = 'v47'/.test(main));
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// v47 — DECLARAȚIA INTRĂ ÎN VIGOARE LA INTRODUCERE
+//
+// Cauza abandonului de la Sibiu, 08.08.2026, măsurată în jurnal:
+//   11:09:31  viraj_propriu {boxNum: 4, dir: 'ÎNAINTE'}      ← el a declarat
+//   …opt declarații între 11:09:31 și 11:10:11, niciun `flag_manual sursa:'viraje_proprii'`
+//   11:10:28  day_start
+//   11:12:21  lant {boxuri:[4,6,7], spanM:370, kmh:12}
+//             „Trei la rând: dreapta, dreapta, apoi giratoriu, ieșirea 1."
+//   11:12:38  cue {boxNum: 4} → „dreapta"                    ← direcția SCANATĂ a vorbit
+// Lista lui exista, completă, și n-avea nicio putere: se activa doar la apăsarea butonului
+// „APLICĂ", iar apăsarea nu s-a întâmplat niciodată. Doi pași pentru o decizie deja luată.
+//
+// Fixtura de mai jos e structura reală din jurnal: boxul 4 dreapta („Str. Ocnei"), boxul 6
+// dreapta, boxul 7 giratoriu ieșirea 1, cu 370 m de la 4 la 7 — adică exact lanțul de trei.
+const SIBIU = () => sanitizeBoxes([
+  { num: 1, sumKm: 0.00, dir: 'ÎNAINTE', flags: ['TC'], comment: 'TC 5' },
+  { num: 2, sumKm: 0.40, dir: 'ÎNAINTE', flags: [], comment: '' },
+  { num: 3, sumKm: 0.60, dir: 'ÎNAINTE', flags: [], comment: '' },
+  { num: 4, sumKm: 0.90, dir: 'DREAPTA', flags: [], comment: 'Str. Ocnei' },
+  { num: 6, sumKm: 1.10, dir: 'DREAPTA', flags: [], comment: '' },
+  { num: 7, sumKm: 1.27, dir: 'GIRATORIU-1', flags: [], comment: '' },
+  { num: 9, sumKm: 2.20, dir: 'ÎNAINTE', flags: [], comment: '' }
+]);
+
+console.log('\n═══ ACCEPTARE: declarația singură, fără nicio altă apăsare (08.08) ═══');
+{
+  // Exact ce a făcut el: A SCRIS „4", A APĂSAT „ÎNAINTE". Nimic altceva. Calea din
+  // `adaugaViraj`, adică `declaraViraj` — nu `aplicaVirajeProprii`, care e butonul mare.
+  const boxes = SIBIU();
+  const r = declaraViraj(boxes, [], 4, 'ÎNAINTE');
+  ok('declarația a intrat în listă', r.lista.length === 1 && r.lista[0].num === 4);
+  ok('ȘI s-a scris PE BOX, în aceeași apăsare',
+     boxes.find(b => b.num === 4).dir === 'ÎNAINTE',
+     String(boxes.find(b => b.num === 4).dir));
+  ok('schimbarea e raportată, ca ecranul s-o poată jurnaliza',
+     r.schimbare && r.schimbare.inainte === 'DREAPTA' && r.schimbare.dupa === 'ÎNAINTE',
+     JSON.stringify(r.schimbare));
+  ok('boxurile nedeclarate NU s-au atins — asta rămâne treaba butonului de amuțire',
+     boxes.find(b => b.num === 6).dir === 'DREAPTA' &&
+     boxes.find(b => b.num === 7).dir === 'GIRATORIU-1');
+
+  // …și acum mașina trece peste boxul 4, ca la 11:12
+  const w = lume(boxes);
+  w.condu(1.40);
+  const man = w.manevre().join(' | ');
+  const jur = w.store.journal;
+  ok('ZERO anunț de viraj pe boxul 4', !jur.some(e => e.type === 'cue' && e.boxNum === 4),
+     JSON.stringify(jur.filter(e => e.type === 'cue').map(e => e.boxNum)));
+  ok('ZERO „manevra_neconfirmata" pe boxul 4',
+     !jur.some(e => e.type === 'offroute_semn' && e.tip === 'manevra_neconfirmata' && e.boxNum === 4),
+     JSON.stringify(jur.filter(e => e.type === 'offroute_semn')));
+  ok('lanțul de TREI nu se mai formează — rămân două manevre, 6 și 7',
+     !jur.some(e => e.type === 'lant'), JSON.stringify(jur.filter(e => e.type === 'lant')));
+  ok('boxurile 6 și 7 sunt anunțate fiecare la rândul lui',
+     jur.some(e => e.type === 'cue' && e.boxNum === 6) &&
+     jur.some(e => e.type === 'cue' && e.boxNum === 7),
+     JSON.stringify(jur.filter(e => e.type === 'cue').map(e => e.boxNum)));
+  ok('și nicio frază rostită nu mai conține „Trei la rând"',
+     !/Trei la rând/.test(man), man);
+}
+
+console.log('\n═══ Contra-proba: pe purtarea de până la v47, același drum PICĂ ═══');
+{
+  // Fără aplicare — adică exact ce s-a întâmplat pe 08.08: lista există, boxul e neatins.
+  const boxes = SIBIU();
+  const lista = puneVirajPropriu([], 4, 'ÎNAINTE');
+  ok('lista lui e completă', lista.length === 1 && lista[0].dir === 'ÎNAINTE');
+  ok('dar boxul 4 poartă tot direcția SCANATĂ',
+     boxes.find(b => b.num === 4).dir === 'DREAPTA');
+  const w = lume(boxes);
+  w.condu(1.40);
+  const jur = w.store.journal;
+  ok('deci lanțul de trei se formează, ca în jurnalul real',
+     jur.some(e => e.type === 'lant' && e.boxuri.join() === '4,6,7'),
+     JSON.stringify(jur.filter(e => e.type === 'lant')));
+  ok('și vocea strigă „Trei la rând", cu boxul 4 în el',
+     /Trei la rând/.test(w.manevre().join(' | ')), w.manevre().join(' | '));
+  ok('spanul măsurat e cel din jurnal: 370 m de la boxul 4 la boxul 7',
+     jur.find(e => e.type === 'lant').spanM === 370,
+     String(jur.find(e => e.type === 'lant').spanM));
+}
+
+console.log('\n═══ Starea vizibilă: cine vorbește ACUM pe fiecare box ═══');
+{
+  const boxes = SIBIU();
+  let lista = [];
+  let s = stareViraje(boxes, lista);
+  ok('fără nicio declarație, cele trei viraje scanate sunt neacoperite',
+     s.neacoperite.join() === '4,6,7' && s.amutit === false, JSON.stringify(s.neacoperite));
+  const r1 = declaraViraj(boxes, lista, 4, 'ÎNAINTE'); lista = r1.lista;
+  s = stareViraje(boxes, lista);
+  ok('după declarația pe 4, ea e ACTIVĂ și rămân două neacoperite',
+     s.active.join() === '4' && s.neacoperite.join() === '6,7', JSON.stringify(s));
+  const r2 = declaraViraj(boxes, lista, 6, 'DREAPTA'); lista = r2.lista;
+  ok('o declarație care coincide cu scanarea nu schimbă nimic pe box, dar intră în listă',
+     r2.schimbare === null && lista.length === 2, JSON.stringify(r2));
+  s = stareViraje(boxes, lista);
+  ok('și e tot ACTIVĂ — starea se citește de pe box, nu din istoric',
+     s.active.join() === '4,6' && s.neacoperite.join() === '7', JSON.stringify(s));
+  const r3 = declaraViraj(boxes, lista, 7, 'GIRATORIU-3'); lista = r3.lista;
+  s = stareViraje(boxes, lista);
+  ok('cu toate virajele declarate, restul leg-ului e MUT',
+     s.amutit === true && s.neacoperite.length === 0 && s.active.length === 3,
+     JSON.stringify(s));
+  ok('boxul declarat care nu există în leg e raportat separat, nu confundat cu unul activ',
+     stareViraje(boxes, [...lista, { num: 118, dir: 'DREAPTA' }]).lipsa.join() === '118');
+  // nepotrivirea: cineva a scris altceva pe box după declarație (rescanare)
+  boxes.find(b => b.num === 4).dir = 'DREAPTA';
+  s = stareViraje(boxes, lista);
+  ok('dacă boxul poartă altceva decât ai declarat, se spune pe față',
+     s.neconcordante.length === 1 && s.neconcordante[0].num === 4 &&
+     s.neconcordante[0].cerut === 'ÎNAINTE' && s.neconcordante[0].are === 'DREAPTA',
+     JSON.stringify(s.neconcordante));
+  ok('și nu se mai numără ca activă', !s.active.includes(4), JSON.stringify(s.active));
+}
+
+console.log('\n═══ ✕ retrage declarația ȘI readuce direcția scanată ═══');
+{
+  const boxes = SIBIU();
+  const foto = instantaneuDirectii(boxes);        // fotografia, ca în `fotografiazaScanate`
+  let lista = declaraViraj(boxes, [], 4, 'ÎNAINTE').lista;
+  ok('boxul 4 e pe ÎNAINTE, al lui', boxes.find(b => b.num === 4).dir === 'ÎNAINTE');
+  const r = retrageViraj(boxes, lista, 4, foto);
+  ok('✕ scoate intrarea din listă', r.lista.length === 0);
+  ok('și readuce pe box direcția CITITĂ DE SCANARE, nu o lasă pe a lui',
+     boxes.find(b => b.num === 4).dir === 'DREAPTA',
+     String(boxes.find(b => b.num === 4).dir));
+  ok('schimbarea e raportată, ca să intre în jurnal',
+     r.schimbare.inainte === 'ÎNAINTE' && r.schimbare.dupa === 'DREAPTA' && r.spre === 'DREAPTA',
+     JSON.stringify(r));
+
+  // boxul care era MUT la scanare trebuie să redevină MUT, nu să primească un ÎNAINTE
+  const b2 = sanitizeBoxes([{ num: 1, sumKm: 0, dir: null, flags: [], comment: '' },
+                            { num: 2, sumKm: 0.5, dir: null, flags: [], comment: '' }]);
+  const f2 = instantaneuDirectii(b2);
+  const l2 = declaraViraj(b2, [], 2, 'DREAPTA').lista;
+  ok('declarația pe un box mut îl scrie', b2.find(b => b.num === 2).dir === 'DREAPTA');
+  const r2 = retrageViraj(b2, l2, 2, f2);
+  ok('iar ✕ îl face MUT la loc — nu i se inventează un ÎNAINTE',
+     b2.find(b => b.num === 2).dir === null, String(b2.find(b => b.num === 2).dir));
+  ok('și se vede în raport unde s-a întors', r2.spre === null, JSON.stringify(r2));
+
+  // fără fotografie (retragere înainte de orice fotografiere): box mut, nu direcția lui
+  const b3 = SIBIU();
+  const l3 = declaraViraj(b3, [], 4, 'ÎNAINTE').lista;
+  retrageViraj(b3, l3, 4, null);
+  ok('fără fotografie, boxul rămâne MUT — direcția lui nu are voie să supraviețuiască ștergerii',
+     b3.find(b => b.num === 4).dir === null, String(b3.find(b => b.num === 4).dir));
+  ok('un ✕ pe un box care nu există nu crapă',
+     retrageViraj(SIBIU(), [{ num: 118, dir: 'DREAPTA' }], 118, null).lista.length === 0);
+}
+
+console.log('\n═══ Ne-regresie: amuțirea restului face tot ce făcea ═══');
+{
+  // Butonul mare și-a schimbat numele și textul, nu efectul: `aplicaVirajeProprii` e
+  // aceeași funcție, cu aceleași cifre — testată sus. Aici se verifică doar că cele două
+  // căi ajung la ACEEAȘI stare: declarații una câte una + amuțire = vechea aplicare.
+  const prinDeclaratii = SIBIU();
+  let lista = [];
+  for (const [n, d] of [[5, 'DREAPTA'], [7, 'GIRATORIU-3']]) {
+    const r = declaraViraj(prinDeclaratii, lista, n, d);
+    lista = r.lista;
+  }
+  aplicaVirajeProprii(prinDeclaratii, lista);
+  const prinAplicare = SIBIU();
+  aplicaVirajeProprii(prinAplicare, [{ num: 5, dir: 'DREAPTA' }, { num: 7, dir: 'GIRATORIU-3' }]);
+  ok('cele două căi dau exact aceleași direcții pe toate boxurile',
+     prinDeclaratii.map(b => `${b.num}:${b.dir}`).join() ===
+     prinAplicare.map(b => `${b.num}:${b.dir}`).join(),
+     JSON.stringify(prinDeclaratii.map(b => [b.num, b.dir])));
+  ok('amuțirea de după declarații încă schimbă ceva (boxurile 4 și 6, nedeclarate)',
+     prinDeclaratii.find(b => b.num === 4).dir === 'ÎNAINTE' &&
+     prinDeclaratii.find(b => b.num === 6).dir === 'ÎNAINTE');
+  ok('și după amuțire restul e MUT, măsurat',
+     stareViraje(prinDeclaratii, lista).amutit === true);
 }
 
 console.log(`\n──────── ${pass} trecute, ${fail} căzute ────────`);
