@@ -342,7 +342,7 @@ console.log('\n═══ Ecranul: rândul de butoane și cablajul lui ═══'
   // oară crezând că butonul n-a mers — deși direcția SE schimbase deja.
   ok('cardul se redesenează și când rebuildPlan se amână (cursă pornită)',
      /await rebuildPlan\(\);[\s\S]*renderProbe\(\);/.test(fn));
-  ok('versiunea build-ului e v47', /const BUILD = 'v47'/.test(main));
+  ok('versiunea build-ului e v48', /const BUILD = 'v48'/.test(main));
 
   const html = readFileSync(join(aici, '..', 'index.html'), 'utf8');
   ok('ecranul spune ce ține corectura și ce o pierde',
@@ -357,7 +357,7 @@ console.log('\n═══ Ecranul: rândul de butoane și cablajul lui ═══'
   ok('butoanele de direcție au rândul lor, care se rupe pe telefon',
      /\.dirrow \{[^}]*flex-wrap: wrap/.test(css));
   const sw = readFileSync(join(aici, '..', 'sw.js'), 'utf8');
-  ok('cache-ul service worker-ului e bumpat la v47', /const CACHE = 'rali2-v47'/.test(sw));
+  ok('cache-ul service worker-ului e bumpat la v48', /const CACHE = 'rali2-v48'/.test(sw));
 }
 
 console.log('\n═══ Promptul tulipelor: ce spune acum despre desen ═══');

@@ -247,7 +247,12 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
     // din fundal (apel, altă aplicație), pus de ecran prin `revenitDinFundal()`
     _kmLaUltimulFix: null, _dinFundal: false,
     // poziția absolută: ancora geografică + cât s-a curbat drumul de la ea
-    _anchorPos: null, _lastPos: null, _curveDeg: 0, _curveHdg: null
+    _anchorPos: null, _lastPos: null, _curveDeg: 0, _curveHdg: null,
+    // ZBATEREA: aceeași sumă de valori absolute ca `_curveDeg`, dar NEîntreruptă de
+    // ancore — cumulată de la începutul leg-ului. Din ea se citește zbaterea pe orice
+    // fereastră de drum (vezi zbatereLaKm), pentru semnătura giratoriilor.
+    _zbCum: 0, _zbHdg: null,
+    _girLogat: {}          // giratoriile deja notate ca „fără semnătură", una pe box
   };
   const odo = makeOdometer();
   let cal = makeCalibrator();
@@ -417,6 +422,10 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
     if (fix.headingDeg != null && M.speedKmh > 8) {
       if (M._curveHdg != null) M._curveDeg += Math.abs(angDiff(fix.headingDeg, M._curveHdg));
       M._curveHdg = fix.headingDeg;
+      // aceeași măsurătoare, dar fără reset la ancore: contorul de ZBATERE, care se
+      // ștampilează pe fiecare firimitură de drum mai jos
+      if (M._zbHdg != null) M._zbCum += Math.abs(angDiff(fix.headingDeg, M._zbHdg));
+      M._zbHdg = fix.headingDeg;
     }
     // corecția stă pe ecran 20 s, apoi dispare singură — și când e rostită, și când nu
     if (M.corectie && clock.mono() > M.corectie.panaMono) M.corectie = null;
@@ -525,7 +534,9 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
     if (M.state !== 'PREP' && fix.lat != null) {
       const u = M._urme[M._urme.length - 1];
       if (!u || haversineM(u.lat, u.lng, fix.lat, fix.lng) >= 10) {
-        M._urme.push({ lat: fix.lat, lng: fix.lng, km: M.routeKm });
+        // `zb` = contorul de zbatere la momentul firimiturii. Diferența lui între două
+        // firimituri = câte grade s-a răsucit direcția pe bucata dintre ele.
+        M._urme.push({ lat: fix.lat, lng: fix.lng, km: M.routeKm, zb: M._zbCum });
         if (M._urme.length > 800) M._urme.shift();     // ~8 km de drum, memorie neglijabilă
       }
     }
@@ -1992,6 +2003,47 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
                             bearingDeg(a.lat, a.lng, b.lat, b.lng)));
   }
 
+  // ── GIRATORIUL NU SE VEDE ÎN COTIREA NETĂ ─────────────────────────────────
+  // Sibiu, 08.08.2026, 15:21, boxul 55 (GIRATORIU-2, declarat de pilot la 13:16:37).
+  // Pilotul a traversat giratoriul CORECT, iar aplicația i-a spus, la 148 m, că a ieșit
+  // de pe traseu:
+  //   15:21:32  offroute_semn { tip: 'manevra_neconfirmata', boxNum: 55 }
+  //   15:21:36  offroute_semn { tip: 'viraj_dupa_ratare' } → offroute_intrare, 148 m
+  // Cauza nu e un prag prost calibrat, e mărimea măsurată greșită. `schimbareDirectieLaKm`
+  // măsoară cotirea NETĂ (direcția de dinainte vs. cea de după). La un giratoriu cu ieșirea
+  // ~drept înainte — ieșirea 2 la patru ramuri, cazul cel mai frecvent — intri, ocolești
+  // insula, ieși, și direcția netă se întoarce la ~0°. Deci detectorul vede „a mers drept
+  // peste box", iar prima curbă naturală de după devine „viraj după ratare". Fals pozitiv
+  // de CLASĂ: mușcă la fiecare giratoriu traversat drept, nu doar la boxul 55.
+  //
+  // Mărimea care VEDE un giratoriu e ZBATEREA: suma valorilor ABSOLUTE ale schimbărilor
+  // de direcție. Geometria unui giratoriu cu patru ramuri, luat pe ieșirea 2: deviere
+  // dreapta la intrare (~45°) + ocolirea insulei spre stânga (~90°) + deviere dreapta la
+  // ieșire (~45°) = ~180° de zbatere, cu cotire netă 0. Un drum care merge chiar drept
+  // pe acolo n-are de unde să producă atâta.
+  const GIR_ZBATERE_GRD = 50, GIR_FEREASTRA_M = 150;
+  // PRAGUL, 50°: peste OFF_COT_GRD (40° = „aici drumul a cotit o dată"), ca o simplă
+  // curbă de drum să nu treacă drept giratoriu, și mult sub cele ~180° pe care le dă
+  // geometria — marjă pentru fixuri rare, care taie din zbatere. Cifra e ALEASĂ pe
+  // geometrie, nu măsurată pe teren; putem, fiindcă amândouă ramurile ei duc la același
+  // rezultat pentru pilot (niciun semn de off-route) și diferă doar prin ce scrie în
+  // jurnal — deci un prag greșit costă o linie de jurnal, nu o alarmă falsă.
+  // FEREASTRA, ±150 m: un giratoriu ocupă 60-80 m de drum, iar kilometrul boxului poate
+  // fi în urmă cu până la OFF_BOX_M (120 m) fără ca poziția să fie considerată greșită.
+  function zbatereLaKm(km, razaM = GIR_FEREASTRA_M) {
+    const raza = razaM / 1000;
+    let min = null, max = null, n = 0;
+    for (const u of M._urme) {
+      if (u.zb == null || Math.abs(u.km - km) > raza) continue;
+      n++;
+      if (min == null || u.zb < min) min = u.zb;
+      if (max == null || u.zb > max) max = u.zb;
+    }
+    // contorul e monoton crescător, deci max−min = zbaterea acumulată în fereastră.
+    // Sub două firimituri nu există „între", deci nu există măsurătoare.
+    return n < 2 ? null : { grd: max - min, n };
+  }
+
   function semnOffRoute(tip, boxNum, idx) {
     if (!M.offRouteOn || M.offRoute) return;
     const acum = clock.mono();
@@ -2012,6 +2064,31 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
       const b = plan.boxes[i];
       if (b.sumKm > M.routeKm - OFF_BOX_M / 1000) break;
       if (!TURN_DIRS.has(b.dir || '')) continue;
+      // GIRATORIILE se confirmă pe ZBATERE, nu pe cotirea netă — vezi zbatereLaKm.
+      if (/^GIRATORIU/.test(b.dir || '')) {
+        const zb = zbatereLaKm(b.sumKm);
+        if (zb && zb.grd >= GIR_ZBATERE_GRD) continue;    // semnătura e acolo: l-a traversat
+        // Zbaterea nu se vede. Asta NU e o dovadă că giratoriul a fost ratat, iar boxul
+        // NU ridică semn de ieșire de pe traseu. Motivul, în ordinea importanței:
+        //  • un giratoriu „ratat" fizic înseamnă aproape întotdeauna ALTĂ IEȘIRE, nu
+        //    mersul drept peste el — iar altă ieșire se vede pe DISTANȚĂ, la boxurile
+        //    următoare (desincronizare), nu pe unghi;
+        //  • cu fixuri rare, un giratoriu întreg încape între două fixuri și zbaterea
+        //    dispare fără ca pilotul să fi greșit ceva;
+        //  • iar un „ai ieșit de pe traseu" fals, rostit la 148 m, costă mai mult decât
+        //    o ratare descoperită la boxul următor: pilotul oprește și caută o greșeală
+        //    care nu există, exact în mijlocul unei legături cronometrate.
+        // Rămâne o linie de jurnal, ca debriefingul să știe unde n-am avut semnătura —
+        // o singură dată pe box, altfel s-ar scrie la fiecare fix cât ține leg-ul.
+        if (!M._girLogat[b.num]) {
+          M._girLogat[b.num] = true;
+          log('giratoriu_neconfirmat', { boxNum: b.num, dir: b.dir,
+                                         zbatereGrd: zb ? Math.round(zb.grd) : null,
+                                         firimituri: zb ? zb.n : 0,
+                                         pragGrd: GIR_ZBATERE_GRD });
+        }
+        continue;
+      }
       // …dar numai dacă mașina chiar a mers DREPT pe acolo. Fără verificarea asta,
       // două viraje făcute și nedetectate (bucla József, la 7 km/h) ar fi declarat
       // ieșirea de pe traseu exact în locul unde pilotul conducea corect.
@@ -2497,6 +2574,7 @@ export function makeMachine({ plan, clock, voice, store, ui, driver, opts = {} }
       M._virajRefuzat = null; M._turnAcc = 0; M._lastHdg = null; M._lastSnapT = 0;
       // leg nou = drum nou: firimiturile și semnele de ieșire de pe traseu nu se moștenesc
       M.offRoute = null; M._offSemne = []; M._urme = []; M._offSector = null; M._offVorbaMono = 0;
+      M._zbCum = 0; M._zbHdg = null; M._girLogat = {};   // zbaterea pleacă de la zero cu firimiturile
       // paznicul de direcție se re-armează la fiecare zi/leg nou
       M._dirEtapa = 0; M.dirAlerta = null; M.corectie = null; M.unde = null;
       // ghidajul continuu repornește la fiecare zi/leg: prima confirmare vine după

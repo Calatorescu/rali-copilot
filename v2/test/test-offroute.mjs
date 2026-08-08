@@ -72,6 +72,19 @@ function lume(boxes = TRESOR, opts = {}, { faraFix = false } = {}) {
     for (let i = 1; i <= n; i++) pas(7, dela + d * i);
     drept(40, spre, 10);
   };
+  // GIRATORIU, ca în teren: deviere spre DREAPTA ca să prinzi inelul, ocolirea insulei
+  // spre STÂNGA, deviere spre DREAPTA pe ieșire. Pe ieșirea care pleacă ~drept înainte
+  // (`spre` = `dela`) direcția NETĂ se întoarce de unde a plecat — exact forma care a
+  // păcălit paznicul la boxul 55 — dar zbaterea totală rămâne ~180°.
+  const giratoriu = (dela, spre_ = dela, pasM = 7) => {
+    for (const d of [20, 40, 45]) pas(pasM, dela + d);      // intrarea pe inel
+    const de = dela + 45, la = spre_ - 45;                  // ocolirea insulei, spre stânga
+    const arc = ((la - de + 540) % 360) - 180;
+    const n = Math.max(1, Math.round(Math.abs(arc) / 20));
+    for (let i = 1; i <= n; i++) pas(pasM, de + (arc / n) * i);
+    for (const d of [-25, -10, 0]) pas(pasM, spre_ + d);    // ieșirea de pe inel
+    drept(40, spre_, 10);
+  };
   const salt = ms => { wall += ms; };
   // condu spre un punct geografic (folosit ca să te întorci la punctul de reintrare)
   const spre = (pct, metri, pasM = 12) => {
@@ -84,7 +97,7 @@ function lume(boxes = TRESOR, opts = {}, { faraFix = false } = {}) {
       pas(Math.min(pasM, metri - d), brg);
     }
   };
-  return { m, store, said, pas, drept, viraj, salt, spre,
+  return { m, store, said, pas, drept, viraj, giratoriu, salt, spre,
            jurnal: t => store.journal.filter(e => e.type === t) };
 }
 
@@ -620,6 +633,129 @@ console.log('\n═══ Detectorul de viraje NU mai tace, dar nici nu teleporte
   } else {
     ok('(detectorul n-a produs niciun viraj în fixtura asta — nimic de verificat)', true);
   }
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// SIBIU, 08.08.2026, 15:21 — GIRATORIUL TRAVERSAT CORECT, DECLARAT „IEȘIT DE PE TRASEU"
+// ══════════════════════════════════════════════════════════════════════════════
+// Din jurnalul zilei (2026-08-08.json, leg 2|5). Boxul 55 fusese declarat de pilot
+// GIRATORIU-2 (viraj_propriu 13:16:37, aplicat 13:17:42). La 15:21 l-a traversat CORECT:
+//   15:21:32  offroute_semn { tip: 'manevra_neconfirmata', boxNum: 55 }
+//   15:21:36  offroute_semn { tip: 'viraj_dupa_ratare' } → offroute_intrare, 148 m
+// Cauza: confirmarea căuta o cotire NETĂ (OFF_COT_GRD, 40°). La un giratoriu cu ieșirea
+// ~drept înainte, intrarea + ocolirea insulei + ieșirea se anulează și cotirea netă e ~0,
+// deși volanul s-a răsucit ~180°. Deci „a mers drept peste box", iar prima curbă de după
+// a devenit „viraj după ratare". Fals pozitiv de clasă: la fiecare giratoriu traversat drept.
+const SIBIU_55 = sanitizeBoxes([
+  { num: 53, sumKm: 0.00, dir: 'ÎNAINTE',     comment: 'START Leg 2' },
+  { num: 55, sumKm: 0.50, dir: 'GIRATORIU-2', comment: 'Giratoriu, ieșirea 2' },
+  { num: 56, sumKm: 1.00, dir: 'DREAPTA',     comment: 'Dreapta după giratoriu' },
+  { num: 57, sumKm: 1.30, dir: 'ÎNAINTE',     comment: 'Înainte' }
+]);
+
+console.log('\n═══ Sibiu, boxul 55: giratoriul traversat drept NU mai e „manevră ratată" ═══');
+{
+  const w = lume(SIBIU_55);
+  w.drept(450, 0);                 // start → giratoriu (km 0,45)
+  w.giratoriu(0, 0);               // ieșirea 2: intri-ocolești-ieși, direcție netă ~0
+  w.drept(300, 0);                 // peste OFF_BOX_M (120 m): aici apărea semnul, la 15:21:32
+  ok('niciun semn de manevră ratată pe giratoriu',
+     !w.jurnal('offroute_semn').some(s => s.tip === 'manevra_neconfirmata'),
+     JSON.stringify(w.jurnal('offroute_semn')));
+  ok('și nici măcar „fără semnătură" — zbaterea giratoriului s-a văzut',
+     w.jurnal('giratoriu_neconfirmat').length === 0,
+     JSON.stringify(w.jurnal('giratoriu_neconfirmat')));
+
+  w.viraj(0, 90);                  // prima curbă naturală de după — cea luată drept „viraj după ratare"
+  ok('curba de după nu mai e „viraj după ratare"',
+     !w.jurnal('offroute_semn').some(s => s.tip === 'viraj_dupa_ratare'),
+     JSON.stringify(w.jurnal('offroute_semn')));
+  ok('zero semne de ieșire de pe traseu, cap-coadă',
+     w.jurnal('offroute_semn').length === 0, JSON.stringify(w.jurnal('offroute_semn')));
+  ok('și, esențial, aplicația NU declară ieșirea de pe traseu (în teren: 148 m)',
+     !w.m.M.offRoute && w.jurnal('offroute_intrare').length === 0,
+     JSON.stringify(w.jurnal('offroute_intrare')));
+  ok('pilotul nu aude nimic despre traseu',
+     !w.said.some(s => /Ai ieșit de pe traseu/.test(s.t)),
+     JSON.stringify(w.said.filter(s => /traseu/.test(s.t)).map(s => s.t)));
+}
+
+console.log('\n═══ Giratoriu cu ieșirea 1: se confirmă și pe regula veche, și pe cea nouă ═══');
+{
+  // Aici cotirea netă CHIAR există (~90° dreapta), deci regula veche l-ar fi trecut
+  // oricum. Testul apără exact asta: reparația n-a mutat cazul ăsta pe altă ramură.
+  const GIR1 = sanitizeBoxes([
+    { num: 1, sumKm: 0.00, dir: 'ÎNAINTE',     comment: 'START' },
+    { num: 2, sumKm: 0.50, dir: 'GIRATORIU-1', comment: 'Giratoriu, ieșirea 1' },
+    { num: 3, sumKm: 1.00, dir: 'ÎNAINTE',     comment: 'Înainte' }
+  ]);
+  const w = lume(GIR1);
+  w.drept(450, 0);
+  w.giratoriu(0, 90);              // ieșirea 1: cotire netă ~90° dreapta
+  w.drept(300, 90);
+  ok('niciun semn de manevră ratată', w.jurnal('offroute_semn').length === 0,
+     JSON.stringify(w.jurnal('offroute_semn')));
+  ok('și nici „fără semnătură"', w.jurnal('giratoriu_neconfirmat').length === 0,
+     JSON.stringify(w.jurnal('giratoriu_neconfirmat')));
+  ok('nicio ieșire de pe traseu', !w.m.M.offRoute);
+}
+
+console.log('\n═══ Giratoriu fără zbatere vizibilă (fixuri rare): se notează, nu se acuză ═══');
+{
+  // În teren fixurile au venit și la ~6 s. La 40 km/h asta e un fix la 67 m: un giratoriu
+  // întreg încape între două fixuri, iar zbaterea dispare complet. Aici, cazul-limită:
+  // mașina trece peste box fără NICIO schimbare de direcție înregistrată.
+  const w = lume(SIBIU_55);
+  w.drept(900, 0);                 // drept peste boxul 55, fără nicio zbatere
+  const gir = w.jurnal('giratoriu_neconfirmat');
+  ok('lipsa semnăturii se notează în jurnal, cu box și prag',
+     gir.length === 1 && gir[0].boxNum === 55 && gir[0].pragGrd === 50,
+     JSON.stringify(gir));
+  ok('nota spune și cât s-a măsurat, ca să se poată calibra mai târziu',
+     gir.length === 1 && gir[0].zbatereGrd === 0 && gir[0].firimituri > 2,
+     JSON.stringify(gir));
+  ok('se scrie o SINGURĂ dată, nu la fiecare fix', gir.length === 1, String(gir.length));
+  ok('dar NU produce niciun semn de ieșire de pe traseu',
+     w.jurnal('offroute_semn').length === 0, JSON.stringify(w.jurnal('offroute_semn')));
+  ok('și nici ieșirea propriu-zisă', !w.m.M.offRoute && w.jurnal('offroute_intrare').length === 0,
+     JSON.stringify(w.jurnal('offroute_intrare')));
+
+  // …iar dacă giratoriul chiar a fost ratat (altă ieșire), greșeala se vede pe DISTANȚĂ
+  // la boxurile următoare — care e drumul pe care ne bazăm, nu ghicitul pe unghi.
+  ok('desincronizarea rămâne să prindă ratarea reală',
+     w.jurnal('desync_warn').some(e => e.boxNum === 55),
+     JSON.stringify(w.jurnal('desync_warn')));
+}
+
+console.log('\n═══ Virajele obișnuite: regula veche, neatinsă ═══');
+{
+  // STÂNGA ratat — cazul-etalon Tresor, rejucat scurt: semnul TREBUIE să apară.
+  const w = lume();
+  panaLaBoxul12(w);
+  ok('un STÂNGA ratat produce în continuare semnul',
+     w.jurnal('offroute_semn').some(s => s.tip === 'manevra_neconfirmata' && s.boxNum === 12),
+     JSON.stringify(w.jurnal('offroute_semn')));
+  ok('și nu se strecoară pe ramura giratoriilor',
+     w.jurnal('giratoriu_neconfirmat').length === 0,
+     JSON.stringify(w.jurnal('giratoriu_neconfirmat')));
+
+  // DREAPTA ratat, într-un roadbook care ARE și giratorii: ramurile nu se amestecă
+  const MIXT = sanitizeBoxes([
+    { num: 1, sumKm: 0.00, dir: 'ÎNAINTE',     comment: 'START' },
+    { num: 2, sumKm: 0.50, dir: 'GIRATORIU-2', comment: 'Giratoriu, ieșirea 2' },
+    { num: 3, sumKm: 1.00, dir: 'DREAPTA',     comment: 'Dreapta' },
+    { num: 4, sumKm: 1.40, dir: 'ÎNAINTE',     comment: 'Înainte' }
+  ]);
+  const w2 = lume(MIXT);
+  w2.drept(450, 0);
+  w2.giratoriu(0, 0);              // giratoriul, luat corect
+  w2.drept(600, 0);                // …dar dreapta de la boxul 3 e ratată: drept înainte
+  ok('giratoriul luat corect nu produce semn',
+     !w2.jurnal('offroute_semn').some(s => s.boxNum === 2),
+     JSON.stringify(w2.jurnal('offroute_semn')));
+  ok('iar DREAPTA ratat de după el produce semn, ca înainte',
+     w2.jurnal('offroute_semn').some(s => s.tip === 'manevra_neconfirmata' && s.boxNum === 3),
+     JSON.stringify(w2.jurnal('offroute_semn')));
 }
 
 console.log(`\n──────── ${pass} trecute, ${fail} căzute ────────`);

@@ -356,8 +356,8 @@ console.log('\n═══ Ecranul: cardul și cablajul lui ═══');
   ok('ștergerea roadbook-ului ia lista cu ea — e legată de boxurile lui',
      /await store\.del\('viraje_proprii'\); await store\.del\('dir_scanat'\)/.test(main) &&
      /viraje declarate de tine/.test(main));
-  ok('BUILD-ul e v47 — versiunea care duce „virajele mele" mai departe',
-     /const BUILD = 'v47'/.test(main));
+  ok('BUILD-ul e v48 — versiunea care duce „virajele mele" mai departe',
+     /const BUILD = 'v48'/.test(main));
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
